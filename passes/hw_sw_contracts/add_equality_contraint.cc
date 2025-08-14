@@ -57,7 +57,7 @@ struct AddEqualityCheck : public Pass {
 	void help() override
 	{
 		log("\n");
-		log("    add_equality_check <out_wirename> <left_wire> <right_wire> {--width num} --signed\n");
+		log("    add_equality_check <out_wirename> <left_wire> <right_wire> --signed\n");
 		log("\n");
 	}
 
@@ -70,7 +70,6 @@ struct AddEqualityCheck : public Pass {
 			return;
 		}
 
-		int wire_width = 1;
 		int is_signed = 0;
 		std::string out_name = RTLIL::escape_id(args[1]);
 		std::string l_name = RTLIL::escape_id(args[2]);
@@ -82,30 +81,15 @@ struct AddEqualityCheck : public Pass {
 		}
 
 		string is_signed_str = "--signed";
-		string width_str = "--width";
 
 		for(int i = 1; i <= 3; i++){
-			if((args[i] == is_signed_str) || (args[i] == width_str)){
-				log_error("FAILURE: signed or width placed in wrong location");
+			if((args[i] == is_signed_str)){
+				log_error("FAILURE: signed placed in wrong location");
 				return;
 			}
 		}
 
 		for(size_t i = 4; i < args.size(); i++){
-			if(args[i] == width_str){
-				if(i + 1 == args.size()){
-					log_error("FAILURE: No string provided for the width");
-
-					return;
-				}
-
-				bool success = stringToInt(args[i + 1], wire_width);
-				if(!success){
-					log_error("FAILURE: Invalid number provided");
-					return;
-				}
-			}
-
 			if(args[i] == is_signed_str){
 				is_signed = 1;
 			}
@@ -119,6 +103,10 @@ struct AddEqualityCheck : public Pass {
 			RTLIL::Wire *l_wire = mod->wire(l_id);
 			RTLIL::Wire *r_wire = mod->wire(r_id);
 
+			if(l_wire->width !=r_wire->width){
+				log_error("FAILURE: The two compared wires have different width");
+			}
+			int wire_width = l_wire->width;
 
 
 			if(l_wire == nullptr){
