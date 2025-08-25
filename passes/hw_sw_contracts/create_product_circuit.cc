@@ -80,22 +80,31 @@ struct CreateProductCircuit : public Pass {
 				new_wire->is_signed = wire->is_signed;
 
 				new_wire->attributes = wire->attributes;
-
-				prod_module->addWire(new_name, new_wire);
 			}
 
 			for (auto cell : mod->cells()){
+
 				auto new_name = IdString(cell->name.str() + suffix);
 				Cell *new_cell = prod_module->addCell(new_name, cell->type);
 
 				new_cell->parameters = cell->parameters;
 				new_cell->attributes = cell->attributes;
 
-				prod_module->addCell(new_name, new_cell);
-
+				for(std::pair<IdString, SigSpec> it : cell->connections()){
+					IdString name = it.first;
+					SigSpec sig = it.second;
+					std::vector<RTLIL::SigBit> sig_bits;
+					for(SigBit bit : sig.bits()){
+						if(bit.wire != NULL){
+							bit.wire = prod_module->wire(IdString(bit.wire->name.str() + suffix));
+						}
+						sig_bits.push_back(bit);
+					}
+					new_cell->setPort(name, SigSpec(sig_bits));
+				}
 			}
 
-			for(auto it : mod->connections()){
+			for(SigSig it : mod->connections()){
 				SigSpec sig1 = it.first;
 				std::vector<RTLIL::SigBit> sig1_bits;
 				for(SigBit bit : sig1.bits()){
@@ -114,12 +123,13 @@ struct CreateProductCircuit : public Pass {
 					}
 					sig2_bits.push_back(bit);
 				}
-				sig2 = SigSpec(sig1_bits);
+				sig2 = SigSpec(sig2_bits);
 				
 				prod_module->connect(sig1, sig2);
 
 			}
 
+			prod_module->fixup_ports();
 			design->add(prod_module);
 		}
 
