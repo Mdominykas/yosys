@@ -63,7 +63,7 @@ struct CreateProductCircuit : public Pass {
 
 		for(std::string suffix : {left_suffix, right_suffix}){
 			Module *prod_module = new Module();
-			prod_module->name = IdString(mod->name.str() + suffix);
+			prod_module->name = IdString(RTLIL::escape_id(mod->name.str() + suffix));
 			
 
 			for (auto wire : mod->wires()){
@@ -126,15 +126,47 @@ struct CreateProductCircuit : public Pass {
 				sig2 = SigSpec(sig2_bits);
 				
 				prod_module->connect(sig1, sig2);
-
+				
 			}
 
 			prod_module->fixup_ports();
 			design->add(prod_module);
 		}
 
+		Module *main_module = new Module();
+		Cell *left_cell = main_module->addCell(RTLIL::escape_id("leftie" + left_suffix), mod->name.str() + left_suffix);
+		Cell *right_cell = main_module->addCell(RTLIL::escape_id("rightie" + right_suffix), mod->name.str() + right_suffix);
+
+		// construction of a common module
+		for(Wire *wire : mod->wires()){
+			if(wire->port_input){
+				IdString new_name = wire->name;
+				auto new_wire = main_module->addWire(new_name, wire->width);
+				
+				// I am not too sure if you need to copy these or if it sufficient to copy these
+				new_wire->width = wire->width;
+				new_wire->start_offset = wire->start_offset;
+				new_wire->port_id = wire->port_id;
+				new_wire->port_input = wire->port_input;
+				new_wire->port_output = wire->port_output;
+				new_wire->upto = wire->upto;
+				new_wire->is_signed = wire->is_signed;
+
+				new_wire->attributes = wire->attributes;
+
+				left_cell->setPort(wire->name.str() + left_suffix, SigSpec(new_wire));
+				right_cell->setPort(wire->name.str() + right_suffix, SigSpec(new_wire));
+			}
+		}
+
+
+
+		main_module->fixup_ports();
+		// TODO: check if you can use the same name
+		main_module->name = IdString(RTLIL::escape_id("main_" + RTLIL::unescape_id(mod->name.str())));
 		design->remove(mod);
 
+		design->add(main_module);
 	}
 
 

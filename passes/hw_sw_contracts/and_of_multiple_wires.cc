@@ -63,22 +63,22 @@ struct AndOfMultipleWires : public Pass {
 
         for(int i = 0; i < wire_cnt; i++){
 
-            std::string current_output;
+            std::string current_output_name;
             if(i + 1 == wire_cnt){
-                current_output = output_wire;
+                current_output_name = output_wire;
             }
             else{
-                current_output = output_wire + "_partial_" + std::to_string(i);
+                current_output_name = output_wire + "_partial_" + std::to_string(i);
             }
 
-            RTLIL::IdString and_cell_name = RTLIL::escape_id("cell_for_"  + current_output);
+            RTLIL::IdString and_cell_name = RTLIL::escape_id("cell_for_"  + current_output_name);
 
             RTLIL::Cell *and_cell = mod->addCell(and_cell_name, IdString("$and"));
 
             and_cell->setPort(ID::A, cum_and);
 			and_cell->setPort(ID::B, mod->wire(wire_ids[i]));
 
-            RTLIL::Wire *out_wire = mod->addWire(RTLIL::escape_id(current_output));
+            RTLIL::Wire *out_wire = mod->addWire(RTLIL::escape_id(current_output_name));
 
 			and_cell->setPort(ID::Y, out_wire);
 
