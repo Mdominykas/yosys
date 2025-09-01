@@ -1,3 +1,4 @@
+OBJS += passes/hw_sw_contracts/extract_dependencies.o
 OBJS += passes/hw_sw_contracts/dump_list_of_wires.o
 OBJS += passes/hw_sw_contracts/and_of_multiple_wires.o
 OBJS += passes/hw_sw_contracts/add_equality_contraint.o

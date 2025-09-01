@@ -57,7 +57,8 @@ struct DumpListOfWires : public Pass {
 	void help() override
 	{
 		log("\n");
-		log("    dump_list_of_wires output_file_name \n");
+		log("    dump_list_of_wires output_file_name --register \n");
+		log("    If flag --register is provided, then only the registers (flip flop output wires) are dumped \n");
 		log("\n");
 	}
 
@@ -65,9 +66,16 @@ struct DumpListOfWires : public Pass {
 	{
 		log_header(design, "Executing DUMP_LIST_OF_WIRES pass.\n");
 
-		if(args.size() != ((size_t) 2)){
-			log_error("FAILURE: incorrect arguments for dump_list_of_wires");
+		if(args.size() < 2){
+			log_error("FAILURE: too few arguments for dump_list_of_wires");
 			return;
+		}
+
+		bool dump_registers = false;
+		for(auto arg : args){
+			if(arg == "--register"){
+				dump_registers = true;
+			}
 		}
 
 		std::string out_filename = args[1];
@@ -78,8 +86,22 @@ struct DumpListOfWires : public Pass {
         Module *mod = design->selected_modules()[0];
 
 		vector<std::string> wire_names;
-		for(Wire *wire : mod->wires()){
-			wire_names.push_back(RTLIL::unescape_id(wire->name.str()));
+		if(dump_registers){
+			for (auto &cell : mod->cells_) {
+				if (RTLIL::builtin_ff_cell_types().count(cell.second->type)){
+					if (((cell.second)->getPort(ID::Q)).is_wire()) {
+
+						Wire *w_reg = ((cell.second)->getPort(ID::Q)).as_wire();
+						wire_names.push_back(RTLIL::unescape_id(w_reg->name.str()));		
+					}
+				
+				}
+			}      
+        }
+		else{
+			for(Wire *wire : mod->wires()){
+				wire_names.push_back(RTLIL::unescape_id(wire->name.str()));
+			}
 		}
 		
 		std::ofstream output(out_filename);
