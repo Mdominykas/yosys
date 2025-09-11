@@ -5,6 +5,7 @@
 #include "kernel/celltypes.h"
 #include "kernel/json.h"
 #include "libs/sha1/sha1.h"
+#include "passes/hw_sw_contracts/configuration_file.cc"
 #include <stdlib.h>
 #include <stdio.h>
 #include <set>
@@ -19,7 +20,7 @@ struct ExtractDependencies : public Pass {
 	void help() override
 	{
 		log("\n");
-		log("    extract_dependencies important_wire hist_len\n");
+		log("    extract_dependencies <important_wire> <hist_len> <configuration_file>\n");
 		log("\n");
 	}
 
@@ -27,7 +28,7 @@ struct ExtractDependencies : public Pass {
 	{
 		log_header(design, "Executing EXTRACT_DEPENDENCIES pass.\n");
 
-        if(args.size() != 3){
+        if(args.size() != 4){
 			log_error("ERROR: Incorrect number of arguments");
 		}
 
@@ -45,7 +46,14 @@ struct ExtractDependencies : public Pass {
 			log_error("ERROR: more that one module selected");
 		}
 
+        ConfigurationFile conf = ConfigurationFile(args[3]);
+
         Module *mod = design->selected_modules()[0];
+
+        Wire *clock_wire = mod->wire(IdString(RTLIL::escape_id(conf.clock_name)));
+        if(clock_wire == nullptr){
+            log_error("ERROR: clock wire not found");
+        }
 
         log_assert(!mod->has_memories());
 	    log_assert(!mod->has_processes());
@@ -63,7 +71,24 @@ struct ExtractDependencies : public Pass {
             cell_names_to_indices[cell->name] = ((int) cell_names.size());
             cell_names.push_back(cell->name);
             previous_cells.push_back(std::vector<int>());
-            is_flip_flop.push_back(RTLIL::builtin_ff_cell_types().count(cell->type) > 0);
+            bool is_flip_flop_cell = false;
+            if(RTLIL::builtin_ff_cell_types().count(cell->type) > 0){
+                auto con = cell->connections();
+                if(cell->type != IdString("$dff")){
+                    // std::cout << "found cell with type " << cell->type.str() << std::endl;
+                    // for(auto [name, spec] : con){
+                    //     std::cout << "it has a connection named: " << name.str() << std::endl;
+                    // }
+                    log_error("ERROR: all flip flops should have been converted to the '$dff' type");
+                }
+
+                auto c_name = IdString("\\CLK");
+                auto sigspec = con.at(c_name);
+                if((sigspec.is_wire()) && (sigspec.as_wire() == clock_wire)){
+                    is_flip_flop_cell = true;
+                }
+            }
+            is_flip_flop.push_back(is_flip_flop_cell);
         }
 
         for(Cell *cell : mod->cells()){
