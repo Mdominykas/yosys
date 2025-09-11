@@ -75,10 +75,6 @@ struct ExtractDependencies : public Pass {
             if(RTLIL::builtin_ff_cell_types().count(cell->type) > 0){
                 auto con = cell->connections();
                 if(cell->type != IdString("$dff")){
-                    // std::cout << "found cell with type " << cell->type.str() << std::endl;
-                    // for(auto [name, spec] : con){
-                    //     std::cout << "it has a connection named: " << name.str() << std::endl;
-                    // }
                     log_error("ERROR: all flip flops should have been converted to the '$dff' type");
                 }
 
@@ -93,17 +89,13 @@ struct ExtractDependencies : public Pass {
 
         for(Cell *cell : mod->cells()){
             int cell_id = cell_names_to_indices[cell->name];
-            for(auto x : cell->connections()){
-                IdString name = x.first;
-                SigSpec sig = x.second;
-                assert((cell->input(name)) || (cell->output(name)));
-                assert((!cell->input(name)) || (!cell->output(name)));
-
+            for(auto [sigName, sig] : cell->connections()){
+                assert((cell->input(sigName)) || (cell->output(sigName)));
+                assert((!cell->input(sigName)) || (!cell->output(sigName)));
 
                 for(SigBit bit : sig.bits()){
                     if(bit.is_wire()){
                         Wire* wire = bit.wire;
-                        std::cout << "radau wire su adresu: " << wire << std::endl;
                         if(wire_to_index.find(wire) == wire_to_index.end()){
                             wire_to_index[wire] = wire_to_index.size();
                             wire_used_as_input_for.push_back(std::vector<int>());
@@ -111,10 +103,10 @@ struct ExtractDependencies : public Pass {
                         }
 
                         int wire_id = wire_to_index[wire];
-                        if(cell->input(name)){
+                        if(cell->input(sigName)){
                             wire_used_as_input_for[wire_id].push_back(cell_id);
                         }
-                        else if(cell->output(name)){
+                        else if(cell->output(sigName)){
                             wire_used_as_output_for[wire_id].push_back(cell_id);
                         }
                         else{
@@ -123,6 +115,10 @@ struct ExtractDependencies : public Pass {
                     }
                 }
             }
+        }
+
+        if(!mod->connections().empty()){
+            log_error("ERROR: module's connections are not empty. Run opt_clean pass before");
         }
 
         for(size_t i = 0; i < wire_to_index.size(); i++){
@@ -145,8 +141,6 @@ struct ExtractDependencies : public Pass {
         if(final_wire == NULL){
             log_error("ERROR: Final wire not found");
         }
-
-        std::cout << "final wire index is: " << final_wire << std::endl;
 
         if(wire_to_index.find(final_wire) == wire_to_index.end()){
             log_error("ERROR: final wire was not processed during the dependency analysis");
