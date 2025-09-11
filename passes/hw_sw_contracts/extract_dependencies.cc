@@ -14,24 +14,6 @@
 USING_YOSYS_NAMESPACE
 PRIVATE_NAMESPACE_BEGIN
 
-bool stringToInt(const std::string &s, int &result) {
-    try {
-        size_t pos;
-        result = std::stoi(s, &pos);
-
-        if (pos != s.size()) {
-            return false;
-        }
-        return true;
-    } 
-    catch (const std::invalid_argument &) {
-        return false;
-    } 
-    catch (const std::out_of_range &) {
-        return false;
-    }
-}
-
 struct ExtractDependencies : public Pass {
 	ExtractDependencies() : Pass("extract_dependencies", "Finds all the cells that are influencing that wire and puts them in a separate module") { }
 	void help() override
@@ -49,12 +31,14 @@ struct ExtractDependencies : public Pass {
 			log_error("ERROR: Incorrect number of arguments");
 		}
 
-
         std::string wire_name = args[1];
-        int hist_len;
-        bool extracted_int = stringToInt(args[2], hist_len);
-        if(!extracted_int){
-            log_error("ERROR: incorrectly parsed int");
+
+        char *endptr;
+        errno = 0;
+        int hist_len = strtol(args[2].c_str(), &endptr, 10);
+        
+        if((endptr == args[2].c_str()) || (*endptr != '\0') || (errno == ERANGE)){
+            log_error("ERROR: incorrectly parsed numbers");
         }
 
         if(design->selected_modules().size() > 1){

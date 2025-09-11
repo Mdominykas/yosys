@@ -33,25 +33,6 @@
 USING_YOSYS_NAMESPACE
 PRIVATE_NAMESPACE_BEGIN
 
-bool stringToInt(const std::string &s, int &result) {
-    try {
-        size_t pos;
-        result = std::stoi(s, &pos);
-
-        if (pos != s.size()) {
-            return false;
-        }
-        return true;
-    } 
-    catch (const std::invalid_argument &) {
-        return false;
-    } 
-    catch (const std::out_of_range &) {
-        return false;
-    }
-}
-
-
 struct PreservePastValues : public Pass {
 	PreservePastValues() : Pass("preserve_past_values", "Keeps the value of a wire/register in flip-flop cells for some number of  cycles") { }
 	void help() override
@@ -73,13 +54,13 @@ struct PreservePastValues : public Pass {
 		std::string component_name = RTLIL::escape_id(args[1]);
 		RTLIL::IdString component_id = IdString(component_name);
 
-		int number_of_cycles;
-		bool parsed_number_of_cycles = stringToInt(args[2], number_of_cycles);
-		if(!parsed_number_of_cycles){
-			log_error("FAILURE: Invalid number provided");
-			return;
-		}
-
+		char *endptr;
+        errno = 0;
+        int number_of_cycles = strtol(args[2].c_str(), &endptr, 10);
+        
+        if((endptr == args[2].c_str()) || (*endptr != '\0') || (errno == ERANGE)){
+            log_error("ERROR: incorrectly parsed number of cycles");
+        }
 
 		if(design->selected_modules().size() > 1){
 			log_warning("WARNING: more that one module selected");

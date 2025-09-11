@@ -33,24 +33,6 @@
 USING_YOSYS_NAMESPACE
 PRIVATE_NAMESPACE_BEGIN
 
-bool stringToInt(const std::string &s, int &result) {
-    try {
-        size_t pos;
-        result = std::stoi(s, &pos);
-
-        if (pos != s.size()) {
-            return false;
-        }
-        return true;
-    } 
-    catch (const std::invalid_argument &) {
-        return false;
-    } 
-    catch (const std::out_of_range &) {
-        return false;
-    }
-}
-
 
 struct DumpListOfWires : public Pass {
 	DumpListOfWires() : Pass("dump_list_of_wires", "Dumps all wires into a file") { }

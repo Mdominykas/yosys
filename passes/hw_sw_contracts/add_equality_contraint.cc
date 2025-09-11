@@ -33,24 +33,6 @@
 USING_YOSYS_NAMESPACE
 PRIVATE_NAMESPACE_BEGIN
 
-bool stringToInt(const std::string &s, int &result) {
-    try {
-        size_t pos;
-        result = std::stoi(s, &pos);
-
-        if (pos != s.size()) {
-            return false;
-        }
-        return true;
-    } 
-    catch (const std::invalid_argument &) {
-        return false;
-    } 
-    catch (const std::out_of_range &) {
-        return false;
-    }
-}
-
 
 struct AddEqualityCheck : public Pass {
 	AddEqualityCheck() : Pass("add_equality_check", "Adds a wire that is only true if both of the given wires have the same value") { }
