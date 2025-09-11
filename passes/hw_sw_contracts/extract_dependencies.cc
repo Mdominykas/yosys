@@ -67,28 +67,23 @@ struct ExtractDependencies : public Pass {
 	    log_assert(!mod->has_processes());
 
 
-        std::vector<std::string> cell_names;
-        std::map<std::string, int> cell_names_to_indices;
+        std::vector<RTLIL::IdString> cell_names;
+        std::map<RTLIL::IdString, int> cell_names_to_indices;
         std::vector<std::vector<int> > previous_cells;
         std::vector<bool> is_flip_flop;
 
-        std::map<Wire*, int> wire_to_index;
-        std::vector<std::vector<int> > cell_has_wire_as_input, cell_has_wire_as_output;
+        std::map<Wire*, size_t> wire_to_index;
+        std::vector<std::vector<int> > wire_used_as_input_for, wire_used_as_output_for;
 
         for(Cell *cell : mod->cells()){
-            cell_names.push_back(cell->name.str());
-            cell_names_to_indices[cell->name.str()] = ((int) cell_names_to_indices.size());
+            cell_names_to_indices[cell->name] = ((int) cell_names.size());
+            cell_names.push_back(cell->name);
             previous_cells.push_back(std::vector<int>());
             is_flip_flop.push_back(RTLIL::builtin_ff_cell_types().count(cell->type) > 0);
         }
 
         for(Cell *cell : mod->cells()){
-            // TODO: 
-            // 1. rasti, kurie wires ateina
-            // 2. rasti, kurie wires iseina
-            // 3. sujungti ateinancius su ieinanciais 
-            // 4. paleisti bfs
-            int cell_id = cell_names[cell->name];
+            int cell_id = cell_names_to_indices[cell->name];
             for(auto x : cell->connections()){
                 IdString name = x.first;
                 SigSpec sig = x.second;
@@ -99,27 +94,31 @@ struct ExtractDependencies : public Pass {
                 for(SigBit bit : sig.bits()){
                     if(bit.is_wire()){
                         Wire* wire = bit.wire;
+                        std::cout << "radau wire su adresu: " << wire << std::endl;
                         if(wire_to_index.find(wire) == wire_to_index.end()){
-                            wire_to_index[wire] = ((int) wire_to_index.size());
-                            cell_has_wire_as_input.push_back(std::vector<int>());
-                            cell_has_wire_as_output.push_back(std::vector<int>());
+                            wire_to_index[wire] = wire_to_index.size();
+                            wire_used_as_input_for.push_back(std::vector<int>());
+                            wire_used_as_output_for.push_back(std::vector<int>());
                         }
 
                         int wire_id = wire_to_index[wire];
                         if(cell->input(name)){
-                            cell_has_wire_as_input[wire_id].push_back(cell_id);
+                            wire_used_as_input_for[wire_id].push_back(cell_id);
                         }
-                        if(cell->output(name)){
-                            cell_has_wire_as_output[wire_id].push_back(cell_id);
+                        else if(cell->output(name)){
+                            wire_used_as_output_for[wire_id].push_back(cell_id);
+                        }
+                        else{
+                            assert(false);
                         }
                     }
                 }
             }
         }
 
-        for(int i = 0; i < ((int) wire_to_index.size()); i++){
-            for(int inp_cell : cell_has_wire_as_input[i]){
-                for(int out_cell : cell_has_wire_as_output[i]){
+        for(size_t i = 0; i < wire_to_index.size(); i++){
+            for(int inp_cell : wire_used_as_input_for[i]){
+                for(int out_cell : wire_used_as_output_for[i]){
                     previous_cells[out_cell].push_back(inp_cell);
                 }
             }
@@ -130,16 +129,22 @@ struct ExtractDependencies : public Pass {
         assert(cell_count < INF_DIST);
         std::vector<int> dist(cell_count, INF_DIST);
 
-        // Now we run bfs on the search tree
+        // Now we run bfs on the dependency tree
         std::deque<int> q;
 
         Wire *final_wire = mod->wire(RTLIL::escape_id(wire_name));
         if(final_wire == NULL){
             log_error("ERROR: Final wire not found");
         }
+
+        std::cout << "final wire index is: " << final_wire << std::endl;
+
+        if(wire_to_index.find(final_wire) == wire_to_index.end()){
+            log_error("ERROR: final wire was not processed during the dependency analysis");
+        }
         int last_id = wire_to_index[final_wire];
 
-        for(int final_cell : cell_has_wire_as_output[final_wire]){
+        for(int final_cell : wire_used_as_output_for[last_id]){
             q.push_back(final_cell);
             dist[final_cell] = 0;
         }
@@ -164,31 +169,59 @@ struct ExtractDependencies : public Pass {
 
         Module *predictor_module = new Module();
 		predictor_module->name = IdString(RTLIL::escape_id("predictor_" + RTLIL::unescape_id(mod->name.str())));
+        vector<Wire*> predictor_wires(wire_to_index.size(), nullptr);
         
-        for(auto it : wire_to_index){
-            Wire *wire = it.first;
-            int wire_id = it.second;
+        for(auto [wire, wire_id] : wire_to_index){
             bool wire_needed = false;
-            for(int out_cell : cell_has_wire_as_output[i]){
+            for(int out_cell : wire_used_as_output_for[wire_id]){
                 if(dist[out_cell] <= hist_len){
                     wire_needed = true;
                 }
             }
-            if(wire_needed){
-                predictor_module->addWire(wire->name, wire);
+            for(int inp_cell : wire_used_as_input_for[wire_id]){
+                if(dist[inp_cell] <= hist_len){
+                    wire_needed = true;
+                }
             }
+
+            if(wire_needed){
+                Wire* new_wire = predictor_module->addWire(wire->name, wire);
+                assert(new_wire != nullptr);
+                predictor_wires[wire_id] = new_wire;
+            }
+
         }
 
         for(size_t cell_id = 0; cell_id < cell_names.size(); cell_id++){
-            Cell *cell_in_mod = mod->cell(IdString(cell_names[cell_id]));
+            if(dist[cell_id] > hist_len){
+                continue;
+            }
+            Cell *cell_in_mod = mod->cell(cell_names[cell_id]);
 
             Cell *cell_in_predictor = predictor_module->addCell(cell_in_mod->name, cell_in_mod->type);
             cell_in_predictor->parameters = cell_in_mod->parameters;
         	cell_in_predictor->attributes = cell_in_mod->attributes;
+            for(auto [specName, sigSpec] : cell_in_mod->connections()){
+                vector<RTLIL::SigChunk> sigChunks;
+                for(auto chunk : sigSpec.chunks()){
+                    SigChunk newChunk = SigChunk(chunk);
+                    if(chunk.wire != NULL){
+                        size_t wire_id = wire_to_index[chunk.wire];
+                        assert(predictor_wires[wire_id] != NULL);
+                        newChunk.wire = predictor_wires[wire_id];
+                        
+                    }
+                    sigChunks.push_back(newChunk);
+                }
+                cell_in_predictor->setPort(specName, sigChunks);
+            }
             
         }
 
         predictor_module->fixup_ports();
+
+        design->add(predictor_module);
+
 	}
 
 
