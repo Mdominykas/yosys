@@ -185,7 +185,7 @@ struct ExtractDependencies : public Pass {
             for(int out_cell : wire_used_as_output_for[wire_id]){
                 if(dist[out_cell] <= hist_len){
                     wire_needed = true;
-                    if((dist[out_cell] == hist_len) && (is_flip_flop[out_cell])){
+                    if((dist[out_cell] <= hist_len) && (is_flip_flop[out_cell])){
                         should_be_used_as_input = true;
                     }
                 }
