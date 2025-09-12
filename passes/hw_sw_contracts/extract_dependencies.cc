@@ -88,7 +88,6 @@ struct ExtractDependencies : public Pass {
         }
 
         for(Cell *cell : mod->cells()){
-            // std::cout << "nagrineju cell su pavadinimu: " << cell->name.str() << std::endl;
             int cell_id = cell_names_to_indices[cell->name];
             for(auto [sigName, sig] : cell->connections()){
                 assert((cell->input(sigName)) || (cell->output(sigName)));
@@ -106,11 +105,9 @@ struct ExtractDependencies : public Pass {
 
                         int wire_id = wire_to_index[wire];
                         if(cell->input(sigName)){
-                            // std::cout << "inputo wire: " << wire->name.str() << std::endl;
                             wire_used_as_input_for[wire_id].push_back(cell_id);
                         }
                         else if(cell->output(sigName)){
-                            // std::cout << "outputo wire: " << wire->name.str() << std::endl;
                             wire_used_as_output_for[wire_id].push_back(cell_id);
                         }
                         else{
@@ -120,7 +117,6 @@ struct ExtractDependencies : public Pass {
                 }
 
             }
-            // std::cout << std::endl;
         }
 
         if(!mod->connections().empty()){
@@ -128,21 +124,12 @@ struct ExtractDependencies : public Pass {
         }
 
         for(size_t i = 0; i < wire_to_index.size(); i++){
-            // std::cout << "connecting cells for wire with number " << i << std::endl;
-            // for(int inp_cell : wire_used_as_input_for[i]){
-            //     std::cout << "this wire is used as input for: " << inp_cell << std::endl;
-            // }
-            // for(int out_cell : wire_used_as_output_for[i]){
-            //     std::cout << "this wire is used as output for: " << out_cell << std::endl;
-            // }
 
             for(int inp_cell : wire_used_as_input_for[i]){
                 for(int out_cell : wire_used_as_output_for[i]){
-                    // std::cout << "previous_cells of " << out_cell << " contains " << inp_cell << std::endl;
                     previous_cells[inp_cell].push_back(out_cell);
                 }
             }
-            // std::cout << std::endl;
         }
 
         const int INF_DIST = 1e9;
@@ -168,28 +155,13 @@ struct ExtractDependencies : public Pass {
             dist[final_cell] = 0;
         }
 
-        // std::cout << "wires: " << std::endl;
-        // for(auto [wire, wire_id] : wire_to_index){
-        //     std::cout << wire->name.str() << " -> " << wire_id << std::endl;
-        // }
-
-        // std::cout << "cells: " << std::endl;
-        // for(auto [idString, id] :  cell_names_to_indices){
-        //     std::cout << idString.str() << " -> " << id << std::endl;
-        // }
-
-
         while(!q.empty()){
             int cur = q.front();
             q.pop_front();
-            // std::cout << "bfs visits " << cur << std::endl;
-            // std::cout << "dist to here is: " << dist[cur] << std::endl;
 
             int time_here = is_flip_flop[cur] ? 1 : 0;
             for(int pr : previous_cells[cur]){
-                // std::cout << "investigating: " << pr << std::endl;
                 if(dist[pr] > dist[cur] + time_here){
-                    // std::cout << "adding: " << pr << "to the queue\n";
                     dist[pr] = dist[cur] + time_here;
                     if(time_here == 0){
                         q.push_front(pr);
@@ -204,12 +176,18 @@ struct ExtractDependencies : public Pass {
         Module *predictor_module = new Module();
 		predictor_module->name = IdString(RTLIL::escape_id("predictor_" + RTLIL::unescape_id(mod->name.str())));
         vector<Wire*> predictor_wires(wire_to_index.size(), nullptr);
+        vector<Wire*> wires_for_inputs;
+        std::map<Wire*, Wire*> module_wire_to_predictor_wire;
         
         for(auto [wire, wire_id] : wire_to_index){
             bool wire_needed = false;
+            bool should_be_used_as_input = wire_used_as_output_for[wire_id].empty();
             for(int out_cell : wire_used_as_output_for[wire_id]){
                 if(dist[out_cell] <= hist_len){
                     wire_needed = true;
+                    if((dist[out_cell] == hist_len) && (is_flip_flop[out_cell])){
+                        should_be_used_as_input = true;
+                    }
                 }
             }
             for(int inp_cell : wire_used_as_input_for[wire_id]){
@@ -218,13 +196,23 @@ struct ExtractDependencies : public Pass {
                 }
             }
 
+
             if(wire_needed){
                 Wire* new_wire = predictor_module->addWire(wire->name, wire);
+                if(should_be_used_as_input){
+                    wires_for_inputs.push_back(wire);
+                }
+                new_wire->port_input = should_be_used_as_input;
+                new_wire->port_output = false;
                 assert(new_wire != nullptr);
                 predictor_wires[wire_id] = new_wire;
+                module_wire_to_predictor_wire[wire] = new_wire;
             }
 
         }
+
+        log_assert(module_wire_to_predictor_wire.find(final_wire) != module_wire_to_predictor_wire.end());
+        module_wire_to_predictor_wire[final_wire]->port_output = true;
 
         for(size_t cell_id = 0; cell_id < cell_names.size(); cell_id++){
             if(dist[cell_id] > hist_len){
@@ -256,6 +244,18 @@ struct ExtractDependencies : public Pass {
 
         design->add(predictor_module);
 
+        Cell* predictor_cell = mod->addCell(RTLIL::escape_id(wire_name + "_predictor"), predictor_module->name);
+        for(Wire *wire : wires_for_inputs){
+            Wire *pred_wire = module_wire_to_predictor_wire[wire];
+            predictor_cell->setPort(pred_wire->name, SigSpec(wire));
+        }
+
+        Wire *pred_out = mod->addWire(RTLIL::escape_id(wire_name + "_pred"), final_wire);
+        predictor_cell->setPort(module_wire_to_predictor_wire[final_wire]->name, SigSpec(pred_out));
+
+        // TODO: the order here might matter later on
+        predictor_module->fixup_ports();
+        mod->fixup_ports();
 	}
 
 
