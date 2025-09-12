@@ -88,10 +88,12 @@ struct ExtractDependencies : public Pass {
         }
 
         for(Cell *cell : mod->cells()){
+            // std::cout << "nagrineju cell su pavadinimu: " << cell->name.str() << std::endl;
             int cell_id = cell_names_to_indices[cell->name];
             for(auto [sigName, sig] : cell->connections()){
                 assert((cell->input(sigName)) || (cell->output(sigName)));
                 assert((!cell->input(sigName)) || (!cell->output(sigName)));
+
 
                 for(SigBit bit : sig.bits()){
                     if(bit.is_wire()){
@@ -104,9 +106,11 @@ struct ExtractDependencies : public Pass {
 
                         int wire_id = wire_to_index[wire];
                         if(cell->input(sigName)){
+                            // std::cout << "inputo wire: " << wire->name.str() << std::endl;
                             wire_used_as_input_for[wire_id].push_back(cell_id);
                         }
                         else if(cell->output(sigName)){
+                            // std::cout << "outputo wire: " << wire->name.str() << std::endl;
                             wire_used_as_output_for[wire_id].push_back(cell_id);
                         }
                         else{
@@ -114,7 +118,9 @@ struct ExtractDependencies : public Pass {
                         }
                     }
                 }
+
             }
+            // std::cout << std::endl;
         }
 
         if(!mod->connections().empty()){
@@ -122,11 +128,21 @@ struct ExtractDependencies : public Pass {
         }
 
         for(size_t i = 0; i < wire_to_index.size(); i++){
+            // std::cout << "connecting cells for wire with number " << i << std::endl;
+            // for(int inp_cell : wire_used_as_input_for[i]){
+            //     std::cout << "this wire is used as input for: " << inp_cell << std::endl;
+            // }
+            // for(int out_cell : wire_used_as_output_for[i]){
+            //     std::cout << "this wire is used as output for: " << out_cell << std::endl;
+            // }
+
             for(int inp_cell : wire_used_as_input_for[i]){
                 for(int out_cell : wire_used_as_output_for[i]){
-                    previous_cells[out_cell].push_back(inp_cell);
+                    // std::cout << "previous_cells of " << out_cell << " contains " << inp_cell << std::endl;
+                    previous_cells[inp_cell].push_back(out_cell);
                 }
             }
+            // std::cout << std::endl;
         }
 
         const int INF_DIST = 1e9;
@@ -152,13 +168,28 @@ struct ExtractDependencies : public Pass {
             dist[final_cell] = 0;
         }
 
+        // std::cout << "wires: " << std::endl;
+        // for(auto [wire, wire_id] : wire_to_index){
+        //     std::cout << wire->name.str() << " -> " << wire_id << std::endl;
+        // }
+
+        // std::cout << "cells: " << std::endl;
+        // for(auto [idString, id] :  cell_names_to_indices){
+        //     std::cout << idString.str() << " -> " << id << std::endl;
+        // }
+
+
         while(!q.empty()){
             int cur = q.front();
             q.pop_front();
+            // std::cout << "bfs visits " << cur << std::endl;
+            // std::cout << "dist to here is: " << dist[cur] << std::endl;
 
             int time_here = is_flip_flop[cur] ? 1 : 0;
             for(int pr : previous_cells[cur]){
+                // std::cout << "investigating: " << pr << std::endl;
                 if(dist[pr] > dist[cur] + time_here){
+                    // std::cout << "adding: " << pr << "to the queue\n";
                     dist[pr] = dist[cur] + time_here;
                     if(time_here == 0){
                         q.push_front(pr);
