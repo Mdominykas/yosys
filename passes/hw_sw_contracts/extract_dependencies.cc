@@ -42,6 +42,8 @@ struct ExtractDependencies : public Pass {
             log_error("ERROR: incorrectly parsed numbers");
         }
 
+        hist_len = 100;
+
         if(design->selected_modules().size() > 1){
 			log_error("ERROR: more that one module selected");
 		}
@@ -177,16 +179,19 @@ struct ExtractDependencies : public Pass {
 		predictor_module->name = IdString(RTLIL::escape_id("predictor_" + RTLIL::unescape_id(mod->name.str())));
         vector<Wire*> predictor_wires(wire_to_index.size(), nullptr);
         vector<Wire*> wires_for_inputs;
-        std::map<Wire*, Wire*> module_wire_to_predictor_wire;
+        std::map<Wire*, Wire*> module_wire_to_predictor_wire, predictor_wire_to_module_wire;
+
+        std::set<Wire*> relevant_ff_wires_in_predictor;
         
         for(auto [wire, wire_id] : wire_to_index){
             bool wire_needed = false;
             bool should_be_used_as_input = wire_used_as_output_for[wire_id].empty();
+            bool should_be_used_as_ff = false;
             for(int out_cell : wire_used_as_output_for[wire_id]){
                 if(dist[out_cell] <= hist_len){
                     wire_needed = true;
                     if((dist[out_cell] <= hist_len) && (is_flip_flop[out_cell])){
-                        should_be_used_as_input = true;
+                        should_be_used_as_ff = true;
                     }
                 }
             }
@@ -202,17 +207,43 @@ struct ExtractDependencies : public Pass {
                 if(should_be_used_as_input){
                     wires_for_inputs.push_back(wire);
                 }
-                new_wire->port_input = should_be_used_as_input;
+                new_wire->port_input = false;
                 new_wire->port_output = false;
                 assert(new_wire != nullptr);
                 predictor_wires[wire_id] = new_wire;
                 module_wire_to_predictor_wire[wire] = new_wire;
+                predictor_wire_to_module_wire[new_wire] = wire;
+                if(should_be_used_as_ff){
+                    relevant_ff_wires_in_predictor.insert(new_wire);
+                }
             }
 
         }
 
         log_assert(module_wire_to_predictor_wire.find(final_wire) != module_wire_to_predictor_wire.end());
         module_wire_to_predictor_wire[final_wire]->port_output = true;
+
+        std::map<Wire*, Wire*> module_wire_to_input_wire;
+
+        for(Wire *wire : wires_for_inputs){
+            IdString input_name = IdString(RTLIL::escape_id("inp_" + RTLIL::unescape_id(wire->name.str())));
+            std::cout << "pridesiu inputo wire: " << input_name.str() << std::endl;
+            
+            Wire* input_wire = predictor_module->addWire(input_name, wire);
+            input_wire->port_input = true;
+            input_wire->port_output = false;
+            module_wire_to_input_wire[wire] = input_wire;
+        }
+
+        for(Wire *wire : relevant_ff_wires_in_predictor){
+            IdString input_name = IdString(RTLIL::escape_id("inp_" + RTLIL::unescape_id(wire->name.str())));
+            std::cout << "(del ff) pridesiu inputo wire: " << input_name.str() << std::endl;
+            
+            Wire* input_wire = predictor_module->addWire(input_name, wire);
+            input_wire->port_input = true;
+            input_wire->port_output = false;
+            module_wire_to_input_wire[predictor_wire_to_module_wire[wire]] = input_wire;
+        }
 
         for(size_t cell_id = 0; cell_id < cell_names.size(); cell_id++){
             if(dist[cell_id] > hist_len){
@@ -231,7 +262,14 @@ struct ExtractDependencies : public Pass {
                         size_t wire_id = wire_to_index[chunk.wire];
                         assert(predictor_wires[wire_id] != NULL);
                         newChunk.wire = predictor_wires[wire_id];
-                        
+                        // TODO: fix and uncomment this man rodos blogai, bet noreciau pasiziureti dar
+                        if((cell_in_mod->input(specName)) && (relevant_ff_wires_in_predictor.find(newChunk.wire) != relevant_ff_wires_in_predictor.end())){
+                            assert(predictor_wire_to_module_wire.find(newChunk.wire) != predictor_wire_to_module_wire.end());
+                            Wire* chunkWireInMod = predictor_wire_to_module_wire[newChunk.wire];
+                            assert(module_wire_to_input_wire.find(chunkWireInMod) != module_wire_to_input_wire.end());
+                            newChunk.wire = module_wire_to_input_wire[chunkWireInMod];
+                        }
+                        assert(newChunk.wire->module == predictor_module);
                     }
                     sigChunks.push_back(newChunk);
                 }
@@ -246,16 +284,34 @@ struct ExtractDependencies : public Pass {
 
         Cell* predictor_cell = mod->addCell(RTLIL::escape_id(wire_name + "_predictor"), predictor_module->name);
         for(Wire *wire : wires_for_inputs){
-            Wire *pred_wire = module_wire_to_predictor_wire[wire];
-            predictor_cell->setPort(pred_wire->name, SigSpec(wire));
+            IdString input_name = IdString(RTLIL::escape_id("inp_" + RTLIL::unescape_id(wire->name.str())));
+
+            predictor_cell->setPort(input_name, SigSpec(wire));
         }
+
+        for(Wire *wire : relevant_ff_wires_in_predictor){
+            IdString input_name = IdString(RTLIL::escape_id("inp_" + RTLIL::unescape_id(wire->name.str())));
+
+            predictor_cell->setPort(input_name, SigSpec(predictor_wire_to_module_wire[wire]));
+        }
+
 
         Wire *pred_out = mod->addWire(RTLIL::escape_id(wire_name + "_pred"), final_wire);
         predictor_cell->setPort(module_wire_to_predictor_wire[final_wire]->name, SigSpec(pred_out));
 
-        // TODO: the order here might matter later on
+        // TODO: figure out, when I need to call this function and what it does
         predictor_module->fixup_ports();
         mod->fixup_ports();
+
+        // for(Cell* pred_cell : predictor_module->cells()){
+        //     for(auto& [name, sigSpec] : pred_cell->connections_){
+        //         for(SigBit &bit : sigSpec.bits()){
+        //             if(relevant_ff_wires_in_predictor.find(bit.wire) != relevant_ff_wires_in_predictor.end()){
+        //                 bit.wire = predictor_wire_to_module_wire[bit.wire];
+        //             }
+        //         }
+        //     }
+        // }
 	}
 
 
