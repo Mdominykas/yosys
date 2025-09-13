@@ -214,7 +214,7 @@ struct ExtractDependencies : public Pass {
                 use_in_pred[new_wire] = new_wire;
 
                 if(should_be_used_as_input){
-                    std::cout << "Kaip inputas turi buti naudojama wire: " << wire->name.str() << std::endl;
+                    // std::cout << "Kaip inputas turi buti naudojama wire: " << wire->name.str() << std::endl;
                     wires_for_inputs.insert(wire);
                 }
                 new_wire->port_input = false;
@@ -239,7 +239,7 @@ struct ExtractDependencies : public Pass {
 
         for(ModWire *wire : wires_for_inputs){
             IdString input_name = IdString(RTLIL::escape_id("inp_" + RTLIL::unescape_id(wire->name.str())));
-            std::cout << "pridesiu inputo wire: " << input_name.str() << std::endl;
+            // std::cout << "pridesiu inputo wire: " << input_name.str() << std::endl;
             
             PredInpWire* input_wire = predictor_module->addWire(input_name, wire);
             input_wire->port_input = true;
@@ -250,7 +250,7 @@ struct ExtractDependencies : public Pass {
 
         for(PredWire *wire : relevant_ff_wires_in_predictor){
             IdString input_name = IdString(RTLIL::escape_id("inp_" + RTLIL::unescape_id(wire->name.str())));
-            std::cout << "(del ff) pridesiu inputo wire: " << input_name.str() << std::endl;
+            // std::cout << "(del ff) pridesiu inputo wire: " << input_name.str() << std::endl;
             
             PredInpWire* input_wire = predictor_module->addWire(input_name, wire);
             input_wire->port_input = true;
@@ -276,13 +276,8 @@ struct ExtractDependencies : public Pass {
                         size_t wire_id = wire_to_index[chunk.wire];
                         assert(predictor_wires[wire_id] != NULL);
                         newChunk.wire = predictor_wires[wire_id];
-                        // TODO: fix and uncomment this man rodos blogai, bet noreciau pasiziureti dar
                         if((cell_in_mod->input(specName)) && (relevant_ff_wires_in_predictor.find(newChunk.wire) != relevant_ff_wires_in_predictor.end())){
                             newChunk.wire = use_in_pred[newChunk.wire];
-                            // assert(predictor_wire_to_module_wire.find(newChunk.wire) != predictor_wire_to_module_wire.end());
-                            // Wire* chunkWireInMod = predictor_wire_to_module_wire[newChunk.wire];
-                            // assert(module_wire_to_input_wire.find(chunkWireInMod) != module_wire_to_input_wire.end());
-                            // newChunk.wire = module_wire_to_input_wire[chunkWireInMod];
                         }
                         else if (wires_for_inputs.find(predictor_wire_to_module_wire[newChunk.wire]) != wires_for_inputs.end()){
                             newChunk.wire = use_in_pred[newChunk.wire];
@@ -321,15 +316,7 @@ struct ExtractDependencies : public Pass {
         predictor_module->fixup_ports();
         mod->fixup_ports();
 
-        // for(Cell* pred_cell : predictor_module->cells()){
-        //     for(auto& [name, sigSpec] : pred_cell->connections_){
-        //         for(SigBit &bit : sigSpec.bits()){
-        //             if(relevant_ff_wires_in_predictor.find(bit.wire) != relevant_ff_wires_in_predictor.end()){
-        //                 bit.wire = predictor_wire_to_module_wire[bit.wire];
-        //             }
-        //         }
-        //     }
-        // }
+        // unrolling layers of sequentionality
 	}
 
 

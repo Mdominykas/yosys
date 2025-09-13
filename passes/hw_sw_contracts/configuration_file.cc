@@ -18,6 +18,7 @@ PRIVATE_NAMESPACE_BEGIN
 
 struct ConfigurationFile {
     std::string clock_name;
+    int prediction_bound;
 
     ConfigurationFile() { }
 
@@ -48,12 +49,22 @@ struct ConfigurationFile {
         auto json_items = json.object_items();
 
         if(json_items.find("clock_name") == json_items.end()){
-            log_error("ERROR: configuration files does not contain a name for clock");
+            log_error("ERROR: configuration files does not contain a name for the clock");
         }
         if(!json_items["clock_name"].is_string()){
-            log_error("ERROR: name for a clock must be of type string");
+            log_error("ERROR: name for a clock must be of a string type");
         }
         clock_name = json_items["clock_name"].string_value();
+
+        if(json_items.find("prediction_bound") == json_items.end()){
+            log_error("ERROR: configuration files does not contain a number for the prediction bound");
+        }
+        if(!json_items["prediction_bound"].is_number()){
+            log_error("ERROR: prediction_bound must be a number");
+        }
+
+        prediction_bound = json_items["prediction_bound"].int_value();
+
     }
 };
 
