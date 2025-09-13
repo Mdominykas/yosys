@@ -60,13 +60,16 @@ struct ExtractDependencies : public Pass {
         log_assert(!mod->has_memories());
 	    log_assert(!mod->has_processes());
 
+        typedef Wire PredWire;
+        typedef Wire ModWire;
+        typedef Wire PredInpWire;
 
         std::vector<RTLIL::IdString> cell_names;
         std::map<RTLIL::IdString, int> cell_names_to_indices;
         std::vector<std::vector<int> > previous_cells;
         std::vector<bool> is_flip_flop;
 
-        std::map<Wire*, size_t> wire_to_index;
+        std::map<ModWire*, size_t> wire_to_index;
         std::vector<std::vector<int> > wire_used_as_input_for, wire_used_as_output_for;
 
         for(Cell *cell : mod->cells()){
@@ -142,7 +145,7 @@ struct ExtractDependencies : public Pass {
         // Now we run bfs on the dependency tree
         std::deque<int> q;
 
-        Wire *final_wire = mod->wire(RTLIL::escape_id(wire_name));
+        ModWire *final_wire = mod->wire(RTLIL::escape_id(wire_name));
         if(final_wire == NULL){
             log_error("ERROR: Final wire not found");
         }
@@ -177,11 +180,14 @@ struct ExtractDependencies : public Pass {
 
         Module *predictor_module = new Module();
 		predictor_module->name = IdString(RTLIL::escape_id("predictor_" + RTLIL::unescape_id(mod->name.str())));
-        vector<Wire*> predictor_wires(wire_to_index.size(), nullptr);
-        vector<Wire*> wires_for_inputs;
-        std::map<Wire*, Wire*> module_wire_to_predictor_wire, predictor_wire_to_module_wire;
+        vector<PredWire*> predictor_wires(wire_to_index.size(), nullptr);
+        std::set<ModWire*> wires_for_inputs;
+        std::map<ModWire*, PredWire*> module_wire_to_predictor_wire;
+        std::map<PredWire*, ModWire*> predictor_wire_to_module_wire;
 
-        std::set<Wire*> relevant_ff_wires_in_predictor;
+        std::set<PredWire*> relevant_ff_wires_in_predictor;
+
+        std::map<PredWire*, PredInpWire*> use_in_pred;
         
         for(auto [wire, wire_id] : wire_to_index){
             bool wire_needed = false;
@@ -203,9 +209,13 @@ struct ExtractDependencies : public Pass {
 
 
             if(wire_needed){
-                Wire* new_wire = predictor_module->addWire(wire->name, wire);
+                PredWire* new_wire = predictor_module->addWire(wire->name, wire);
+
+                use_in_pred[new_wire] = new_wire;
+
                 if(should_be_used_as_input){
-                    wires_for_inputs.push_back(wire);
+                    std::cout << "Kaip inputas turi buti naudojama wire: " << wire->name.str() << std::endl;
+                    wires_for_inputs.insert(wire);
                 }
                 new_wire->port_input = false;
                 new_wire->port_output = false;
@@ -223,26 +233,30 @@ struct ExtractDependencies : public Pass {
         log_assert(module_wire_to_predictor_wire.find(final_wire) != module_wire_to_predictor_wire.end());
         module_wire_to_predictor_wire[final_wire]->port_output = true;
 
-        std::map<Wire*, Wire*> module_wire_to_input_wire;
+        std::map<ModWire*, PredInpWire*> module_wire_to_input_wire;
 
-        for(Wire *wire : wires_for_inputs){
+        std::map<Wire*, Wire*> input_wire_to_use_instead_of_predictor_wire;
+
+        for(ModWire *wire : wires_for_inputs){
             IdString input_name = IdString(RTLIL::escape_id("inp_" + RTLIL::unescape_id(wire->name.str())));
             std::cout << "pridesiu inputo wire: " << input_name.str() << std::endl;
             
-            Wire* input_wire = predictor_module->addWire(input_name, wire);
+            PredInpWire* input_wire = predictor_module->addWire(input_name, wire);
             input_wire->port_input = true;
             input_wire->port_output = false;
             module_wire_to_input_wire[wire] = input_wire;
+            use_in_pred[module_wire_to_predictor_wire[wire]] = input_wire;
         }
 
-        for(Wire *wire : relevant_ff_wires_in_predictor){
+        for(PredWire *wire : relevant_ff_wires_in_predictor){
             IdString input_name = IdString(RTLIL::escape_id("inp_" + RTLIL::unescape_id(wire->name.str())));
             std::cout << "(del ff) pridesiu inputo wire: " << input_name.str() << std::endl;
             
-            Wire* input_wire = predictor_module->addWire(input_name, wire);
+            PredInpWire* input_wire = predictor_module->addWire(input_name, wire);
             input_wire->port_input = true;
             input_wire->port_output = false;
             module_wire_to_input_wire[predictor_wire_to_module_wire[wire]] = input_wire;
+            use_in_pred[wire] = input_wire;
         }
 
         for(size_t cell_id = 0; cell_id < cell_names.size(); cell_id++){
@@ -264,10 +278,14 @@ struct ExtractDependencies : public Pass {
                         newChunk.wire = predictor_wires[wire_id];
                         // TODO: fix and uncomment this man rodos blogai, bet noreciau pasiziureti dar
                         if((cell_in_mod->input(specName)) && (relevant_ff_wires_in_predictor.find(newChunk.wire) != relevant_ff_wires_in_predictor.end())){
-                            assert(predictor_wire_to_module_wire.find(newChunk.wire) != predictor_wire_to_module_wire.end());
-                            Wire* chunkWireInMod = predictor_wire_to_module_wire[newChunk.wire];
-                            assert(module_wire_to_input_wire.find(chunkWireInMod) != module_wire_to_input_wire.end());
-                            newChunk.wire = module_wire_to_input_wire[chunkWireInMod];
+                            newChunk.wire = use_in_pred[newChunk.wire];
+                            // assert(predictor_wire_to_module_wire.find(newChunk.wire) != predictor_wire_to_module_wire.end());
+                            // Wire* chunkWireInMod = predictor_wire_to_module_wire[newChunk.wire];
+                            // assert(module_wire_to_input_wire.find(chunkWireInMod) != module_wire_to_input_wire.end());
+                            // newChunk.wire = module_wire_to_input_wire[chunkWireInMod];
+                        }
+                        else if (wires_for_inputs.find(predictor_wire_to_module_wire[newChunk.wire]) != wires_for_inputs.end()){
+                            newChunk.wire = use_in_pred[newChunk.wire];
                         }
                         assert(newChunk.wire->module == predictor_module);
                     }
