@@ -317,7 +317,132 @@ struct ExtractDependencies : public Pass {
         mod->fixup_ports();
 
         // unrolling layers of sequentionality
+
+        vector<vector<Cell*> > cells_in_layers = {{}};
+        for(Cell *pred_cell : predictor_module->cells()){
+            cells_in_layers.back().push_back(pred_cell);
+        }
+
+        for(int level = 0; level < conf.prediction_bound; level++){
+            // we are on level 'level' and we are constructing level 'level+1'
+            cells_in_layers.push_back({});
+            for(Cell* cell : cells_in_layers[level]){
+                IdString new_name = this->next_level_name(cell->name, level);
+                std::cout << "pridesiu cell pavadinimu: " << new_name.str() << " ir tipu: " << cell->type.str() << std::endl;
+                Cell* new_cell = predictor_module->addCell(new_name, cell);
+                cells_in_layers.back().push_back(new_cell);
+            }
+            std::map<PredWire*, PredWire*> wire_in_next_layer;
+
+            for(Cell *cell : cells_in_layers.back()){
+                for(auto [name, sigSpec] : cell->connections()){
+                    for(auto chunk : sigSpec.chunks()){
+                        if((chunk.wire != NULL) && (wire_in_next_layer.find(chunk.wire) == wire_in_next_layer.end())){
+                            IdString new_name = this->next_level_name(chunk.wire->name, level);
+                            Wire* new_wire = predictor_module->addWire(new_name, chunk.wire);
+                            new_wire->port_input = false;
+                            new_wire->port_output = false;
+                            wire_in_next_layer[chunk.wire] = new_wire;
+                        }
+                    }
+                }
+            }
+
+
+            for(Cell *cell : cells_in_layers.back()){
+                vector<std::pair<IdString, SigSpec> > new_connections;
+                for(auto [name, sigSpec] : cell->connections()){
+                    vector<RTLIL::SigChunk> sigChunks;
+                    for(auto chunk : sigSpec.chunks()){
+                        SigChunk newChunk = SigChunk(chunk);
+                        if(chunk.wire != NULL){
+                            std::cout << "(konstruojant lygius) vietoje wire: " << newChunk.wire->name.str() << " naudosiu: " << wire_in_next_layer[chunk.wire]->name.str() << std::endl;
+                            newChunk.wire = wire_in_next_layer[chunk.wire];
+                        }
+                        sigChunks.push_back(newChunk);
+                    }
+
+                    SigSpec sig_before_ff = SigSpec(sigChunks);
+                    new_connections.push_back({name, sig_before_ff});
+                }
+                for(auto [name, sigSpec] : new_connections){
+                    cell->setPort(name, sigSpec);
+                }
+            }
+        }
+
+        std::cout << "uzeinu i ff taisymo vieta" << std::endl;
+        for(int level = 0; level < conf.prediction_bound; level++){
+            std::cout << "dabar level = " << level << std::endl;
+            std::map<SigBit, SigBit> replace_bit_with_past;
+            for(size_t i = 0; i < cells_in_layers[level + 1].size(); i++){
+                Cell *cell = cells_in_layers[level + 1][i];
+                Cell *prev_cell = cells_in_layers[level][i];
+                std::cout << "lyginsiu cellus: " << cell->name.str() << " su praeitu: " << prev_cell->name.str() << std::endl;
+                if(cell->type == IdString("$dff")){
+                    // ff outputs on current level
+                    vector<SigBit> outBits = cell->connections().at(IdString("\\Q")).bits();
+
+                    // inputs on the previous layer
+                    vector<SigBit> inpBits = prev_cell->connections().at(IdString("\\D")).bits();
+                    assert(inpBits.size() == outBits.size());
+                    for(size_t index = 0; index < inpBits.size(); index++){
+                        if(outBits[index].is_wire()){
+                            replace_bit_with_past[outBits[index]] = inpBits[index];
+                            
+                            // debuginimui
+                            std::cout << "nutariu pakesti: " << outBits[index].wire->name.str() << " with: ";
+                            if(inpBits[index].is_wire()){
+                                std::cout << inpBits[index].wire->name.str() << std::endl;
+                            }
+                            else{
+                                std::cout << " kazkokia reiksme" << std::endl;
+                            }
+
+                        }
+                    }
+                }
+            }
+
+            for(Cell *cell : cells_in_layers[level + 1]){
+                vector<std::pair<IdString, SigSpec> > new_connections;
+                for(auto [name, sigSpec] : cell->connections()){
+                    vector<SigBit> sig_bits = sigSpec.bits();
+                    for(size_t i = 0; i < sig_bits.size(); i++){
+                        if(replace_bit_with_past.find(sig_bits[i]) != replace_bit_with_past.end()){
+                            sig_bits[i] = replace_bit_with_past[sig_bits[i]];
+                        }
+                    }
+
+                    SigSpec sig_after_ff = SigSpec(sig_bits);
+                    new_connections.push_back({name, sig_after_ff});
+                }
+                for(auto [name, sigSpec] : new_connections){
+                    cell->setPort(name, sigSpec);
+                }
+            }
+
+        }
+
+        predictor_module->fixup_ports();
 	}
+
+    IdString next_level_name(IdString name, int next_level){
+        if(next_level == 0){
+            return IdString(name.str() + "_level_" + std::to_string(next_level));
+        }
+        else{
+            assert(next_level > 0);
+            std::string cur_name = name.str();
+            size_t to_remove = std::to_string(next_level - 1).size();
+            assert(cur_name.size() > to_remove);
+            for(size_t i = 0; i < to_remove; i++){
+                cur_name.pop_back();
+            }
+
+            return IdString(cur_name + std::to_string(next_level));
+        }
+    }
 
 
 } ExtractDependencies;
