@@ -24,6 +24,11 @@ struct ExtractDependencies : public Pass {
 		log("\n");
 	}
 
+    typedef Wire PredWire;
+    typedef Wire ModWire;
+    typedef Wire PredInpWire;
+
+
 	void execute(std::vector<std::string> args, RTLIL::Design *design) override
 	{
 		log_header(design, "Executing EXTRACT_DEPENDENCIES pass.\n");
@@ -60,10 +65,54 @@ struct ExtractDependencies : public Pass {
         log_assert(!mod->has_memories());
 	    log_assert(!mod->has_processes());
 
-        typedef Wire PredWire;
-        typedef Wire ModWire;
-        typedef Wire PredInpWire;
 
+        if(!mod->connections().empty()){
+            log_error("ERROR: module's connections are not empty. Run opt_clean pass before");
+        }
+
+        ModWire *final_wire = mod->wire(RTLIL::escape_id(wire_name));
+        if(final_wire == NULL){
+            log_error("ERROR: Final wire not found");
+        }
+
+
+        Module *predictor_module = new Module();
+		predictor_module->name = IdString(RTLIL::escape_id("predictor_" + RTLIL::unescape_id(mod->name.str())));
+
+        vector<Cell*> cells_to_add_to_pred = this->find_reverse_reachable_cells(mod, final_wire, clock_wire, hist_len);
+
+
+        std::set<Wire*> input_wires;
+
+        vector<vector<Cell*> > cells_in_layers;
+    
+        vector<Cell*> first_layer = add_layer_of_cells(predictor_module, cells_to_add_to_pred, input_wires, 0);
+        cells_in_layers.push_back(first_layer);
+
+        // construction of all the layers
+        for(int level = 1; level < conf.prediction_bound; level++){
+            vector<Cell*> new_cells = this->add_layer_of_cells(predictor_module, cells_in_layers.back(), input_wires, level);
+            cells_in_layers.push_back(new_cells);
+        }
+
+
+        // rewire ff wires
+        // assert(conf.prediction_bound == ((int) cells_in_layers.size()));
+        // for(int level = 1; level < conf.prediction_bound; level++){
+        //     rewire_ff_to_previous_level(cells_in_layers[level - 1], cells_in_layers[level]);
+        // }
+
+        // add_ff_data_as_module_inputs(predictor_module, cells_in_layers[0]);
+
+        add_predictor_module_to_main_module(design, mod, predictor_module);
+	}
+
+
+
+
+
+
+    vector<Cell*> find_reverse_reachable_cells(Module* mod, Wire *final_wire, Wire *clock_wire, int hist_len){
         std::vector<RTLIL::IdString> cell_names;
         std::map<RTLIL::IdString, int> cell_names_to_indices;
         std::vector<std::vector<int> > previous_cells;
@@ -124,13 +173,12 @@ struct ExtractDependencies : public Pass {
             }
         }
 
-        if(!mod->connections().empty()){
-            log_error("ERROR: module's connections are not empty. Run opt_clean pass before");
-        }
+        
+        int last_id = wire_to_index[final_wire];
 
         for(size_t i = 0; i < wire_to_index.size(); i++){
 
-            for(int inp_cell : wire_used_as_input_for[i]){
+        for(int inp_cell : wire_used_as_input_for[i]){
                 for(int out_cell : wire_used_as_output_for[i]){
                     previous_cells[inp_cell].push_back(out_cell);
                 }
@@ -145,15 +193,6 @@ struct ExtractDependencies : public Pass {
         // Now we run bfs on the dependency tree
         std::deque<int> q;
 
-        ModWire *final_wire = mod->wire(RTLIL::escape_id(wire_name));
-        if(final_wire == NULL){
-            log_error("ERROR: Final wire not found");
-        }
-
-        if(wire_to_index.find(final_wire) == wire_to_index.end()){
-            log_error("ERROR: final wire was not processed during the dependency analysis");
-        }
-        int last_id = wire_to_index[final_wire];
 
         for(int final_cell : wire_used_as_output_for[last_id]){
             q.push_back(final_cell);
@@ -178,254 +217,175 @@ struct ExtractDependencies : public Pass {
             }
         }
 
-        Module *predictor_module = new Module();
-		predictor_module->name = IdString(RTLIL::escape_id("predictor_" + RTLIL::unescape_id(mod->name.str())));
-        vector<PredWire*> predictor_wires(wire_to_index.size(), nullptr);
-        std::set<ModWire*> wires_for_inputs;
-        std::map<ModWire*, PredWire*> module_wire_to_predictor_wire;
-        std::map<PredWire*, ModWire*> predictor_wire_to_module_wire;
+        if(wire_to_index.find(final_wire) == wire_to_index.end()){
+            log_error("ERROR: final wire was not processed during the dependency analysis");
+        }
 
-        std::set<PredWire*> relevant_ff_wires_in_predictor;
+        vector<Cell*> ans;
+        for(size_t index = 0; index < cell_names.size(); index++){
+            if(dist[index] <= hist_len){
+                ans.push_back(mod->cell(cell_names[index]));
+            }
+        }
+        return ans;
+    }
 
-        std::map<PredWire*, PredInpWire*> use_in_pred;
+    vector<Cell*> add_layer_of_cells(Module *predictor_module, vector<Cell*> layer, std::set<Wire*> &input_wires, int level){
+        vector<Cell*> new_layer;
         
-        for(auto [wire, wire_id] : wire_to_index){
-            bool wire_needed = false;
-            bool should_be_used_as_input = wire_used_as_output_for[wire_id].empty();
-            bool should_be_used_as_ff = false;
-            for(int out_cell : wire_used_as_output_for[wire_id]){
-                if(dist[out_cell] <= hist_len){
-                    wire_needed = true;
-                    if((dist[out_cell] <= hist_len) && (is_flip_flop[out_cell])){
-                        should_be_used_as_ff = true;
+        // create new cells
+        for(Cell* cell : layer){
+            IdString new_name = this->next_level_name(cell->name, level);
+            Cell* new_cell = predictor_module->addCell(new_name, cell);
+            new_layer.push_back(new_cell);
+        }
+        std::map<Wire*, PredWire*> wire_in_next_layer;
+
+        // construction of all the wires
+        for(Cell *cell : new_layer){
+            for(auto [name, sigSpec] : cell->connections()){
+                for(auto chunk : sigSpec.chunks()){
+                    if((chunk.wire != NULL) && (wire_in_next_layer.find(chunk.wire) == wire_in_next_layer.end())){
+                        IdString new_name = this->next_level_name(chunk.wire->name, level);
+                        Wire* new_wire;
+                        if((chunk.wire->module != predictor_module) && (chunk.wire->port_input)){
+                            IdString input_wire_name = rename_to_input_wire(chunk.wire->name);
+                            new_wire = predictor_module->addWire(input_wire_name, chunk.wire);
+                            new_wire->port_input = true;
+                            input_wires.insert(new_wire);
+
+                        }
+                        else if(input_wires.find(chunk.wire) == input_wires.end()){
+                            new_wire = predictor_module->addWire(new_name, chunk.wire);
+                            new_wire->port_input = false;
+                        }
+                        else{
+                            new_wire = chunk.wire;
+                        }
+                         
+                        assert(new_wire->module == predictor_module);
+                        new_wire->port_output = false;
+                        wire_in_next_layer[chunk.wire] = new_wire;
                     }
                 }
             }
-            for(int inp_cell : wire_used_as_input_for[wire_id]){
-                if(dist[inp_cell] <= hist_len){
-                    wire_needed = true;
-                }
-            }
-
-
-            if(wire_needed){
-                PredWire* new_wire = predictor_module->addWire(wire->name, wire);
-
-                use_in_pred[new_wire] = new_wire;
-
-                if(should_be_used_as_input){
-                    // std::cout << "Kaip inputas turi buti naudojama wire: " << wire->name.str() << std::endl;
-                    wires_for_inputs.insert(wire);
-                }
-                new_wire->port_input = false;
-                new_wire->port_output = false;
-                assert(new_wire != nullptr);
-                predictor_wires[wire_id] = new_wire;
-                module_wire_to_predictor_wire[wire] = new_wire;
-                predictor_wire_to_module_wire[new_wire] = wire;
-                if(should_be_used_as_ff){
-                    relevant_ff_wires_in_predictor.insert(new_wire);
-                }
-            }
-
         }
 
-        log_assert(module_wire_to_predictor_wire.find(final_wire) != module_wire_to_predictor_wire.end());
-        module_wire_to_predictor_wire[final_wire]->port_output = true;
-
-        std::map<ModWire*, PredInpWire*> module_wire_to_input_wire;
-
-        std::map<Wire*, Wire*> input_wire_to_use_instead_of_predictor_wire;
-
-        for(ModWire *wire : wires_for_inputs){
-            IdString input_name = IdString(RTLIL::escape_id("inp_" + RTLIL::unescape_id(wire->name.str())));
-            // std::cout << "pridesiu inputo wire: " << input_name.str() << std::endl;
-            
-            PredInpWire* input_wire = predictor_module->addWire(input_name, wire);
-            input_wire->port_input = true;
-            input_wire->port_output = false;
-            module_wire_to_input_wire[wire] = input_wire;
-            use_in_pred[module_wire_to_predictor_wire[wire]] = input_wire;
-        }
-
-        for(PredWire *wire : relevant_ff_wires_in_predictor){
-            IdString input_name = IdString(RTLIL::escape_id("inp_" + RTLIL::unescape_id(wire->name.str())));
-            // std::cout << "(del ff) pridesiu inputo wire: " << input_name.str() << std::endl;
-            
-            PredInpWire* input_wire = predictor_module->addWire(input_name, wire);
-            input_wire->port_input = true;
-            input_wire->port_output = false;
-            module_wire_to_input_wire[predictor_wire_to_module_wire[wire]] = input_wire;
-            use_in_pred[wire] = input_wire;
-        }
-
-        for(size_t cell_id = 0; cell_id < cell_names.size(); cell_id++){
-            if(dist[cell_id] > hist_len){
-                continue;
-            }
-            Cell *cell_in_mod = mod->cell(cell_names[cell_id]);
-
-            Cell *cell_in_predictor = predictor_module->addCell(cell_in_mod->name, cell_in_mod->type);
-            cell_in_predictor->parameters = cell_in_mod->parameters;
-        	cell_in_predictor->attributes = cell_in_mod->attributes;
-            for(auto [specName, sigSpec] : cell_in_mod->connections()){
+        // wiring wires to the same level
+        for(Cell *cell : new_layer){
+            vector<std::pair<IdString, SigSpec> > new_connections;
+            for(auto [name, sigSpec] : cell->connections()){
                 vector<RTLIL::SigChunk> sigChunks;
                 for(auto chunk : sigSpec.chunks()){
                     SigChunk newChunk = SigChunk(chunk);
                     if(chunk.wire != NULL){
-                        size_t wire_id = wire_to_index[chunk.wire];
-                        assert(predictor_wires[wire_id] != NULL);
-                        newChunk.wire = predictor_wires[wire_id];
-                        if((cell_in_mod->input(specName)) && (relevant_ff_wires_in_predictor.find(newChunk.wire) != relevant_ff_wires_in_predictor.end())){
-                            newChunk.wire = use_in_pred[newChunk.wire];
-                        }
-                        else if (wires_for_inputs.find(predictor_wire_to_module_wire[newChunk.wire]) != wires_for_inputs.end()){
-                            newChunk.wire = use_in_pred[newChunk.wire];
-                        }
-                        assert(newChunk.wire->module == predictor_module);
+                        newChunk.wire = wire_in_next_layer[chunk.wire];
                     }
                     sigChunks.push_back(newChunk);
                 }
-                cell_in_predictor->setPort(specName, sigChunks);
+
+                SigSpec sig_before_ff = SigSpec(sigChunks);
+                new_connections.push_back({name, sig_before_ff});
             }
-            
+            for(auto [name, sigSpec] : new_connections){
+                cell->setPort(name, sigSpec);
+            }
+        }
+        return new_layer;
+    }
+
+    void add_ff_data_as_module_inputs(Module *predictor_module, vector<Cell*> first_layer){
+        // rewire input wires to use the main input wire
+        // for(int level = 0; level < conf.prediction_bound; level++){
+        //     for(Cell *cell : cells_in_layers[level + 1]){
+        //         vector<std::pair<IdString, SigSpec> > new_connections;
+        //         for(auto [name, sigSpec] : cell->connections()){
+        //             vector<SigBit> sig_bits = sigSpec.bits();
+        //             for(size_t i = 0; i < sig_bits.size(); i++){
+        //                 if(main_input_wire.find(sig_bits[i].wire) != main_input_wire.end()){
+        //                     sig_bits[i].wire = main_input_wire[sig_bits[i].wire];
+        //                 }
+        //             }
+
+        //             SigSpec sig_after_ff = SigSpec(sig_bits);
+        //             new_connections.push_back({name, sig_after_ff});
+        //         }
+        //         for(auto [name, sigSpec] : new_connections){
+        //             cell->setPort(name, sigSpec);
+        //         }
+        //     }
+        // }
+
+    }
+
+    void rewire_ff_to_previous_level(vector<Cell*> previous_level, vector<Cell*> current_level){
+        std::map<SigBit, SigBit> replace_bit_with_past;
+
+        // find how ff output wires should be rewired
+        for(size_t i = 0; i < current_level.size(); i++){
+            Cell *cell = current_level[i];
+            Cell *prev_cell = previous_level[i];
+            if(cell->type == IdString("$dff")){
+                // ff outputs on current level
+                vector<SigBit> outBits = cell->connections().at(IdString("\\Q")).bits();
+
+                // inputs on the previous layer
+                vector<SigBit> inpBits = prev_cell->connections().at(IdString("\\D")).bits();
+                assert(inpBits.size() == outBits.size());
+                for(size_t index = 0; index < inpBits.size(); index++){
+                    if(outBits[index].is_wire()){
+                        replace_bit_with_past[outBits[index]] = inpBits[index];
+
+                    }
+                }
+            }
         }
 
-        predictor_module->fixup_ports();
+        // rewire ff output wires
+        for(Cell *cell : current_level){
+            vector<std::pair<IdString, SigSpec> > new_connections;
+            for(auto [name, sigSpec] : cell->connections()){
+                vector<SigBit> sig_bits = sigSpec.bits();
+                for(size_t i = 0; i < sig_bits.size(); i++){
+                    if(replace_bit_with_past.find(sig_bits[i]) != replace_bit_with_past.end()){
+                        sig_bits[i] = replace_bit_with_past[sig_bits[i]];
+                    }
+                }
 
+                SigSpec sig_after_ff = SigSpec(sig_bits);
+                new_connections.push_back({name, sig_after_ff});
+            }
+            for(auto [name, sigSpec] : new_connections){
+                cell->setPort(name, sigSpec);
+            }
+        }
+
+    }
+
+    void add_predictor_module_to_main_module(Design *design, Module *mod, Module *predictor_module){
+        predictor_module->fixup_ports();
         design->add(predictor_module);
 
-        Cell* predictor_cell = mod->addCell(RTLIL::escape_id(wire_name + "_predictor"), predictor_module->name);
-        for(Wire *wire : wires_for_inputs){
-            IdString input_name = IdString(RTLIL::escape_id("inp_" + RTLIL::unescape_id(wire->name.str())));
+        // TODO: write this part
+        // Cell* predictor_cell = mod->addCell(RTLIL::escape_id(wire_name + "_predictor"), predictor_module->name);
+        // for(Wire *wire : wires_for_inputs){
+        //     IdString input_name = IdString(RTLIL::escape_id("inp_" + RTLIL::unescape_id(wire->name.str())));
 
-            predictor_cell->setPort(input_name, SigSpec(wire));
-        }
+        //     predictor_cell->setPort(input_name, SigSpec(wire));
+        // }
 
-        for(Wire *wire : relevant_ff_wires_in_predictor){
-            IdString input_name = IdString(RTLIL::escape_id("inp_" + RTLIL::unescape_id(wire->name.str())));
+        // for(Wire *wire : relevant_ff_wires_in_predictor){
+        //     IdString input_name = IdString(RTLIL::escape_id("inp_" + RTLIL::unescape_id(wire->name.str())));
 
-            predictor_cell->setPort(input_name, SigSpec(predictor_wire_to_module_wire[wire]));
-        }
+        //     predictor_cell->setPort(input_name, SigSpec(predictor_wire_to_module_wire[wire]));
+        // }
 
+        // Wire *pred_out = mod->addWire(RTLIL::escape_id(wire_name + "_pred"), final_wire);
+        // predictor_cell->setPort(module_wire_to_predictor_wire[final_wire]->name, SigSpec(pred_out));
 
-        Wire *pred_out = mod->addWire(RTLIL::escape_id(wire_name + "_pred"), final_wire);
-        predictor_cell->setPort(module_wire_to_predictor_wire[final_wire]->name, SigSpec(pred_out));
+        // mod->fixup_ports();
 
-        // TODO: figure out, when I need to call this function and what it does
-        predictor_module->fixup_ports();
-        mod->fixup_ports();
-
-        // unrolling layers of sequentionality
-
-        vector<vector<Cell*> > cells_in_layers = {{}};
-        for(Cell *pred_cell : predictor_module->cells()){
-            cells_in_layers.back().push_back(pred_cell);
-        }
-
-        for(int level = 0; level < conf.prediction_bound; level++){
-            // we are on level 'level' and we are constructing level 'level+1'
-            cells_in_layers.push_back({});
-            for(Cell* cell : cells_in_layers[level]){
-                IdString new_name = this->next_level_name(cell->name, level);
-                std::cout << "pridesiu cell pavadinimu: " << new_name.str() << " ir tipu: " << cell->type.str() << std::endl;
-                Cell* new_cell = predictor_module->addCell(new_name, cell);
-                cells_in_layers.back().push_back(new_cell);
-            }
-            std::map<PredWire*, PredWire*> wire_in_next_layer;
-
-            for(Cell *cell : cells_in_layers.back()){
-                for(auto [name, sigSpec] : cell->connections()){
-                    for(auto chunk : sigSpec.chunks()){
-                        if((chunk.wire != NULL) && (wire_in_next_layer.find(chunk.wire) == wire_in_next_layer.end())){
-                            IdString new_name = this->next_level_name(chunk.wire->name, level);
-                            Wire* new_wire = predictor_module->addWire(new_name, chunk.wire);
-                            new_wire->port_input = false;
-                            new_wire->port_output = false;
-                            wire_in_next_layer[chunk.wire] = new_wire;
-                        }
-                    }
-                }
-            }
-
-
-            for(Cell *cell : cells_in_layers.back()){
-                vector<std::pair<IdString, SigSpec> > new_connections;
-                for(auto [name, sigSpec] : cell->connections()){
-                    vector<RTLIL::SigChunk> sigChunks;
-                    for(auto chunk : sigSpec.chunks()){
-                        SigChunk newChunk = SigChunk(chunk);
-                        if(chunk.wire != NULL){
-                            std::cout << "(konstruojant lygius) vietoje wire: " << newChunk.wire->name.str() << " naudosiu: " << wire_in_next_layer[chunk.wire]->name.str() << std::endl;
-                            newChunk.wire = wire_in_next_layer[chunk.wire];
-                        }
-                        sigChunks.push_back(newChunk);
-                    }
-
-                    SigSpec sig_before_ff = SigSpec(sigChunks);
-                    new_connections.push_back({name, sig_before_ff});
-                }
-                for(auto [name, sigSpec] : new_connections){
-                    cell->setPort(name, sigSpec);
-                }
-            }
-        }
-
-        std::cout << "uzeinu i ff taisymo vieta" << std::endl;
-        for(int level = 0; level < conf.prediction_bound; level++){
-            std::cout << "dabar level = " << level << std::endl;
-            std::map<SigBit, SigBit> replace_bit_with_past;
-            for(size_t i = 0; i < cells_in_layers[level + 1].size(); i++){
-                Cell *cell = cells_in_layers[level + 1][i];
-                Cell *prev_cell = cells_in_layers[level][i];
-                std::cout << "lyginsiu cellus: " << cell->name.str() << " su praeitu: " << prev_cell->name.str() << std::endl;
-                if(cell->type == IdString("$dff")){
-                    // ff outputs on current level
-                    vector<SigBit> outBits = cell->connections().at(IdString("\\Q")).bits();
-
-                    // inputs on the previous layer
-                    vector<SigBit> inpBits = prev_cell->connections().at(IdString("\\D")).bits();
-                    assert(inpBits.size() == outBits.size());
-                    for(size_t index = 0; index < inpBits.size(); index++){
-                        if(outBits[index].is_wire()){
-                            replace_bit_with_past[outBits[index]] = inpBits[index];
-                            
-                            // debuginimui
-                            std::cout << "nutariu pakesti: " << outBits[index].wire->name.str() << " with: ";
-                            if(inpBits[index].is_wire()){
-                                std::cout << inpBits[index].wire->name.str() << std::endl;
-                            }
-                            else{
-                                std::cout << " kazkokia reiksme" << std::endl;
-                            }
-
-                        }
-                    }
-                }
-            }
-
-            for(Cell *cell : cells_in_layers[level + 1]){
-                vector<std::pair<IdString, SigSpec> > new_connections;
-                for(auto [name, sigSpec] : cell->connections()){
-                    vector<SigBit> sig_bits = sigSpec.bits();
-                    for(size_t i = 0; i < sig_bits.size(); i++){
-                        if(replace_bit_with_past.find(sig_bits[i]) != replace_bit_with_past.end()){
-                            sig_bits[i] = replace_bit_with_past[sig_bits[i]];
-                        }
-                    }
-
-                    SigSpec sig_after_ff = SigSpec(sig_bits);
-                    new_connections.push_back({name, sig_after_ff});
-                }
-                for(auto [name, sigSpec] : new_connections){
-                    cell->setPort(name, sigSpec);
-                }
-            }
-
-        }
-
-        predictor_module->fixup_ports();
-	}
+    }
 
     IdString next_level_name(IdString name, int next_level){
         if(next_level == 0){
@@ -444,6 +404,9 @@ struct ExtractDependencies : public Pass {
         }
     }
 
+    IdString rename_to_input_wire(IdString wire_name){
+        return IdString(RTLIL::escape_id("inp_" + RTLIL::unescape_id(wire_name)));
+    }
 
 } ExtractDependencies;
 
