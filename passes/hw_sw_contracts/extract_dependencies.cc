@@ -95,6 +95,7 @@ struct ExtractDependencies : public Pass {
             cells_in_layers.push_back(new_cells);
         }
 
+        add_ff_data_as_module_inputs(predictor_module, cells_in_layers[0]);
 
         // rewire ff wires
         assert(conf.prediction_bound == ((int) cells_in_layers.size()));
@@ -103,7 +104,6 @@ struct ExtractDependencies : public Pass {
             rewire_ff_to_previous_level(cells_in_layers[level - 1], cells_in_layers[level]);
         }
 
-        // add_ff_data_as_module_inputs(predictor_module, cells_in_layers[0]);
 
         add_predictor_module_to_main_module(design, mod, predictor_module);
 	}
@@ -297,25 +297,20 @@ struct ExtractDependencies : public Pass {
 
     void add_ff_data_as_module_inputs(Module *predictor_module, vector<Cell*> first_layer){
         // rewire input wires to use the main input wire
-        // for(int level = 0; level < conf.prediction_bound; level++){
-        //     for(Cell *cell : cells_in_layers[level + 1]){
-        //         vector<std::pair<IdString, SigSpec> > new_connections;
-        //         for(auto [name, sigSpec] : cell->connections()){
-        //             vector<SigBit> sig_bits = sigSpec.bits();
-        //             for(size_t i = 0; i < sig_bits.size(); i++){
-        //                 if(main_input_wire.find(sig_bits[i].wire) != main_input_wire.end()){
-        //                     sig_bits[i].wire = main_input_wire[sig_bits[i].wire];
-        //                 }
-        //             }
+        for(Cell *cell : first_layer){
+            if(cell->type != IdString("$dff")){
+                continue;
+            }
 
-        //             SigSpec sig_after_ff = SigSpec(sig_bits);
-        //             new_connections.push_back({name, sig_after_ff});
-        //         }
-        //         for(auto [name, sigSpec] : new_connections){
-        //             cell->setPort(name, sigSpec);
-        //         }
-        //     }
-        // }
+            vector<SigChunk> outChunks = cell->connections().at(IdString("\\Q")).chunks();
+            assert(outChunks.size() == 1); // TODO: implement some handling when this doesn't hold
+            assert(outChunks[0].wire);
+            IdString new_name = rename_to_input_wire(name_without_level(outChunks[0].wire->name));
+            Wire *new_wire = predictor_module->addWire(new_name, outChunks[0].wire->width);
+            new_wire->port_input = true;
+
+            cell->setPort(IdString("\\D"), new_wire);
+        }
 
     }
 
@@ -389,6 +384,20 @@ struct ExtractDependencies : public Pass {
 
         // mod->fixup_ports();
 
+    }
+
+    IdString name_without_level(IdString name){
+        std::string cur_name = name.str();
+        while(std::isdigit(cur_name.back())){
+            cur_name.pop_back();
+            assert(!cur_name.empty());
+        }
+        std::string lvl = "_level_";
+        for(size_t i = 0; i < lvl.size(); i++){
+            cur_name.pop_back();
+        }
+
+        return IdString(cur_name);
     }
 
     IdString next_level_name(IdString name, int next_level){
