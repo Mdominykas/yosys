@@ -75,11 +75,12 @@ struct ExtractDependencies : public Pass {
             log_error("ERROR: Final wire not found");
         }
 
+        ModWire *retirement_wire = mod->wire(RTLIL::escape_id(conf.retirement_register));
 
         Module *predictor_module = new Module();
 		predictor_module->name = IdString(RTLIL::escape_id("predictor_" + RTLIL::unescape_id(mod->name.str())));
 
-        vector<Cell*> cells_to_add_to_pred = this->find_reverse_reachable_cells(mod, final_wire, clock_wire, hist_len);
+        vector<Cell*> cells_to_add_to_pred = this->find_reverse_reachable_cells(mod, final_wire, clock_wire, retirement_wire, hist_len);
 
 
         std::set<Wire*> input_wires;
@@ -113,7 +114,7 @@ struct ExtractDependencies : public Pass {
 
 
 
-    vector<Cell*> find_reverse_reachable_cells(Module* mod, Wire *final_wire, Wire *clock_wire, int hist_len){
+    vector<Cell*> find_reverse_reachable_cells(Module* mod, Wire *final_wire, Wire *clock_wire, Wire *retirement_wire, int hist_len){
         std::vector<RTLIL::IdString> cell_names;
         std::map<RTLIL::IdString, int> cell_names_to_indices;
         std::vector<std::vector<int> > previous_cells;
@@ -175,7 +176,6 @@ struct ExtractDependencies : public Pass {
         }
 
         
-        int last_id = wire_to_index[final_wire];
 
         for(size_t i = 0; i < wire_to_index.size(); i++){
 
@@ -194,10 +194,12 @@ struct ExtractDependencies : public Pass {
         // Now we run bfs on the dependency tree
         std::deque<int> q;
 
-
-        for(int final_cell : wire_used_as_output_for[last_id]){
-            q.push_back(final_cell);
-            dist[final_cell] = 0;
+        for(Wire *last_wire : {final_wire, retirement_wire}){
+            int last_id = wire_to_index[last_wire];
+            for(int final_cell : wire_used_as_output_for[last_id]){
+                q.push_back(final_cell);
+                dist[final_cell] = 0;
+            }
         }
 
         while(!q.empty()){
