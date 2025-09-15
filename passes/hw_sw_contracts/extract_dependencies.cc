@@ -105,7 +105,7 @@ struct ExtractDependencies : public Pass {
         }
 
 
-        add_predictor_module_to_main_module(design, mod, predictor_module);
+        add_predictor_module_to_main_module(design, mod, wire_name, predictor_module);
 	}
 
 
@@ -361,28 +361,32 @@ struct ExtractDependencies : public Pass {
 
     }
 
-    void add_predictor_module_to_main_module(Design *design, Module *mod, Module *predictor_module){
+    void add_predictor_module_to_main_module(Design *design, Module *mod, std::string final_wire_name, Module *predictor_module){
         predictor_module->fixup_ports();
         design->add(predictor_module);
 
         // TODO: write this part
-        // Cell* predictor_cell = mod->addCell(RTLIL::escape_id(wire_name + "_predictor"), predictor_module->name);
-        // for(Wire *wire : wires_for_inputs){
-        //     IdString input_name = IdString(RTLIL::escape_id("inp_" + RTLIL::unescape_id(wire->name.str())));
+        Cell* predictor_cell = mod->addCell(RTLIL::escape_id(final_wire_name + "_predictor"), predictor_module->name);
+        vector<Wire*> input_wires;
+        for(Wire *wire : predictor_module->wires()){
+            if(wire->port_input){
+                input_wires.push_back(wire);
+            }
+        }
 
-        //     predictor_cell->setPort(input_name, SigSpec(wire));
-        // }
 
-        // for(Wire *wire : relevant_ff_wires_in_predictor){
-        //     IdString input_name = IdString(RTLIL::escape_id("inp_" + RTLIL::unescape_id(wire->name.str())));
+        for(Wire *wire : input_wires){
+            IdString pred_input_name = wire->name;
+            IdString input_name = remove_input_from_wire_name(pred_input_name);
 
-        //     predictor_cell->setPort(input_name, SigSpec(predictor_wire_to_module_wire[wire]));
-        // }
+            predictor_cell->setPort(pred_input_name, SigSpec(mod->wire(input_name)));
+        }
 
-        // Wire *pred_out = mod->addWire(RTLIL::escape_id(wire_name + "_pred"), final_wire);
+        // TODO: outputs
+        // Wire *pred_out = mod->addWire(RTLIL::escape_id(final_wire_name + "_pred"), final_wire);
         // predictor_cell->setPort(module_wire_to_predictor_wire[final_wire]->name, SigSpec(pred_out));
 
-        // mod->fixup_ports();
+        mod->fixup_ports();
 
     }
 
@@ -419,6 +423,12 @@ struct ExtractDependencies : public Pass {
 
     IdString rename_to_input_wire(IdString wire_name){
         return IdString(RTLIL::escape_id("inp_" + RTLIL::unescape_id(wire_name)));
+    }
+
+    IdString remove_input_from_wire_name(IdString wire_name){
+        std::string inp_pref = "inp_";
+        std::string name_without_inp = RTLIL::unescape_id(wire_name).substr(inp_pref.size());
+        return IdString(RTLIL::escape_id(name_without_inp));
     }
 
 } ExtractDependencies;
