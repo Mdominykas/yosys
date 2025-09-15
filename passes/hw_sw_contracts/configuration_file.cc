@@ -18,13 +18,16 @@ PRIVATE_NAMESPACE_BEGIN
 
 struct ConfigurationFile {
     std::string clock_name;
+    std::string retirement_register;
     int prediction_bound;
+
+    int default_prediction;
 
     ConfigurationFile() { }
 
     ConfigurationFile(std::string filename){
         std::ifstream input(filename);
-        
+
         // check if file exists
         if(!input.good()){
             log_error("ERROR: invalid configuration file");
@@ -48,13 +51,16 @@ struct ConfigurationFile {
 
         auto json_items = json.object_items();
 
+
         if(json_items.find("clock_name") == json_items.end()){
             log_error("ERROR: configuration files does not contain a name for the clock");
         }
         if(!json_items["clock_name"].is_string()){
             log_error("ERROR: name for a clock must be of a string type");
         }
+
         clock_name = json_items["clock_name"].string_value();
+
 
         if(json_items.find("prediction_bound") == json_items.end()){
             log_error("ERROR: configuration files does not contain a number for the prediction bound");
@@ -65,6 +71,26 @@ struct ConfigurationFile {
 
         prediction_bound = json_items["prediction_bound"].int_value();
 
+
+        // TODO: rewrite all of this with some nice functions (no more copy pasting)
+        if(json_items.find("default_prediction") == json_items.end()){
+            log_error("ERROR: configuration files does not contain a number for the default prediction");
+        }
+        if(!json_items["default_prediction"].is_number()){
+            log_error("ERROR: default prediction must be a number");
+        }
+
+        default_prediction = json_items["default_prediction"].int_value();
+
+
+        if(json_items.find("retirement_register") == json_items.end()){
+            log_error("ERROR: configuration files does not contain a name for the retirement register");
+        }
+        if(!json_items["retirement_register"].is_string()){
+            log_error("ERROR: name for a retirement register must be of a string type");
+        }
+
+        retirement_register = json_items["retirement_register"].string_value();
     }
 };
 
