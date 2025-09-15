@@ -97,10 +97,11 @@ struct ExtractDependencies : public Pass {
 
 
         // rewire ff wires
-        // assert(conf.prediction_bound == ((int) cells_in_layers.size()));
+        assert(conf.prediction_bound == ((int) cells_in_layers.size()));
         // for(int level = 1; level < conf.prediction_bound; level++){
-        //     rewire_ff_to_previous_level(cells_in_layers[level - 1], cells_in_layers[level]);
-        // }
+        for(int level = 1; level < conf.prediction_bound; level++){
+            rewire_ff_to_previous_level(cells_in_layers[level - 1], cells_in_layers[level]);
+        }
 
         // add_ff_data_as_module_inputs(predictor_module, cells_in_layers[0]);
 
@@ -335,7 +336,6 @@ struct ExtractDependencies : public Pass {
                 for(size_t index = 0; index < inpBits.size(); index++){
                     if(outBits[index].is_wire()){
                         replace_bit_with_past[outBits[index]] = inpBits[index];
-
                     }
                 }
             }
@@ -345,9 +345,13 @@ struct ExtractDependencies : public Pass {
         for(Cell *cell : current_level){
             vector<std::pair<IdString, SigSpec> > new_connections;
             for(auto [name, sigSpec] : cell->connections()){
+                if((cell->type == IdString("$dff")) && (cell->output(name))){
+                    continue;
+                }
                 vector<SigBit> sig_bits = sigSpec.bits();
                 for(size_t i = 0; i < sig_bits.size(); i++){
                     if(replace_bit_with_past.find(sig_bits[i]) != replace_bit_with_past.end()){
+                        
                         sig_bits[i] = replace_bit_with_past[sig_bits[i]];
                     }
                 }
