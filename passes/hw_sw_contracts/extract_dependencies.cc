@@ -17,6 +17,7 @@ PRIVATE_NAMESPACE_BEGIN
 
 struct ExtractDependencies : public Pass {
 	ConfigurationFile conf;
+    PredictorConfiguration pred_conf;
     
     ExtractDependencies() : Pass("extract_dependencies", "Finds all the cells that are influencing that wire and puts them in a separate module") { }
 	void help() override
@@ -56,6 +57,7 @@ struct ExtractDependencies : public Pass {
 		}
 
         conf = ConfigurationFile(args[3]);
+        pred_conf = conf.predictors[0];
 
         Module *mod = design->selected_modules()[0];
 
@@ -82,7 +84,7 @@ struct ExtractDependencies : public Pass {
             log_error("ERROR: Final wire not found\n");
         }
 
-        ModWire *retirement_wire = mod->wire(RTLIL::escape_id(conf.retirement_register));
+        ModWire *retirement_wire = mod->wire(RTLIL::escape_id(pred_conf.exit_wires[0]));
 
         Module *predictor_module = new Module();
 		predictor_module->name = IdString(RTLIL::escape_id("predictor_" + RTLIL::unescape_id(mod->name.str())));
@@ -98,7 +100,7 @@ struct ExtractDependencies : public Pass {
         cells_in_layers.push_back(first_layer);
 
         // construction of all the layers
-        for(int level = 1; level < conf.prediction_bound; level++){
+        for(int level = 1; level < pred_conf.prediction_bound; level++){
             vector<Cell*> new_cells = this->add_layer_of_cells(predictor_module, cells_in_layers.back(), input_wires, level);
             cells_in_layers.push_back(new_cells);
         }
@@ -106,13 +108,13 @@ struct ExtractDependencies : public Pass {
         add_ff_data_as_module_inputs(predictor_module, cells_in_layers[0]);
 
         // rewire ff wires
-        assert(conf.prediction_bound == ((int) cells_in_layers.size()));
+        assert(pred_conf.prediction_bound == ((int) cells_in_layers.size()));
         // for(int level = 1; level < conf.prediction_bound; level++){
-        for(int level = 1; level < conf.prediction_bound; level++){
+        for(int level = 1; level < pred_conf.prediction_bound; level++){
             rewire_ff_to_previous_level(cells_in_layers[level - 1], cells_in_layers[level]);
         }
 
-        add_output(predictor_module, final_wire->name, retirement_wire->name, conf.default_prediction);
+        add_output(predictor_module, final_wire->name, retirement_wire->name, pred_conf.default_prediction);
 
         add_predictor_module_to_main_module(design, mod, wire_name, predictor_module);
 	}
@@ -414,8 +416,8 @@ struct ExtractDependencies : public Pass {
     }
 
     void add_output(Module *predictor_module, IdString final_wire_name_in_mod, IdString retirement_wire_name, int default_prediction){
-        vector<Wire*> final_wires = get_wires_across_layers(predictor_module, final_wire_name_in_mod, conf.prediction_bound);
-        vector<Wire*> retirement_wires = get_wires_across_layers(predictor_module, retirement_wire_name, conf.prediction_bound);
+        vector<Wire*> final_wires = get_wires_across_layers(predictor_module, final_wire_name_in_mod, pred_conf.prediction_bound);
+        vector<Wire*> retirement_wires = get_wires_across_layers(predictor_module, retirement_wire_name, pred_conf.prediction_bound);
         
         assert(!final_wires.empty());
         assert(final_wires.size() == retirement_wires.size());
@@ -502,7 +504,7 @@ struct ExtractDependencies : public Pass {
     }
 
     IdString final_output_name(IdString wire_name_in_mod){
-        IdString ans = wire_name_in_mod.str() + "_pred_wire" + std::to_string(conf.prediction_bound);
+        IdString ans = wire_name_in_mod.str() + "_pred_wire" + std::to_string(pred_conf.prediction_bound);
         std::cout << "ans = " << ans.str() << std::endl;
         return ans;
     }
