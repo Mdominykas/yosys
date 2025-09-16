@@ -68,6 +68,9 @@ struct ExtractDependencies : public Pass {
 
         log_assert(!mod->has_memories());
 	    log_assert(!mod->has_processes());
+        
+        deal_with_connections(mod);
+        log_assert(mod->connections().empty());
 
 
         // if(!mod->connections().empty()){
@@ -89,7 +92,15 @@ struct ExtractDependencies : public Pass {
         Module *predictor_module = new Module();
 		predictor_module->name = IdString(RTLIL::escape_id("predictor_" + RTLIL::unescape_id(mod->name.str())));
 
-        vector<Cell*> cells_to_add_to_pred = this->find_reverse_reachable_cells(mod, final_wire, clock_wire, retirement_wire, hist_len);
+        vector<Wire*> relevant_wires;
+        for(auto name_vec : {pred_conf.enter_wires, pred_conf.busy_wires, pred_conf.exit_wires}){
+            for(std::string name : name_vec){
+                Wire *wire = mod->wire(RTLIL::escape_id(name));
+                assert(wire != nullptr);
+                relevant_wires.push_back(wire);
+            }
+        }
+        vector<Cell*> cells_to_add_to_pred = this->find_reverse_reachable_cells(mod, final_wire, clock_wire, relevant_wires, hist_len);
 
 
         std::set<Wire*> input_wires;
@@ -124,7 +135,7 @@ struct ExtractDependencies : public Pass {
 
 
 
-    vector<Cell*> find_reverse_reachable_cells(Module* mod, Wire *final_wire, Wire *clock_wire, Wire *retirement_wire, int hist_len){
+    vector<Cell*> find_reverse_reachable_cells(Module* mod, Wire *final_wire, Wire *clock_wire, vector<Wire*> relevant_wires, int hist_len){
         std::vector<RTLIL::IdString> cell_names;
         std::map<RTLIL::IdString, int> cell_names_to_indices;
         std::vector<std::vector<int> > previous_cells;
@@ -188,8 +199,7 @@ struct ExtractDependencies : public Pass {
         
 
         for(size_t i = 0; i < wire_to_index.size(); i++){
-
-        for(int inp_cell : wire_used_as_input_for[i]){
+            for(int inp_cell : wire_used_as_input_for[i]){
                 for(int out_cell : wire_used_as_output_for[i]){
                     previous_cells[inp_cell].push_back(out_cell);
                 }
@@ -205,7 +215,9 @@ struct ExtractDependencies : public Pass {
         std::deque<int> q;
 
         // this is done in case retirement wire doesn't influence anything later on
-        for(Wire *last_wire : {final_wire, retirement_wire}){
+        relevant_wires.push_back(final_wire);
+        for(Wire *last_wire : relevant_wires){
+            assert(wire_to_index.find(last_wire) != wire_to_index.end());
             int last_id = wire_to_index[last_wire];
             for(int final_cell : wire_used_as_output_for[last_id]){
                 q.push_back(final_cell);
@@ -213,9 +225,14 @@ struct ExtractDependencies : public Pass {
             }
         }
 
+        std::set<int> visited;
         while(!q.empty()){
             int cur = q.front();
             q.pop_front();
+            if(visited.find(cur) != visited.end()){
+                continue;
+            }
+            visited.insert(cur);
 
             int time_here = is_flip_flop[cur] ? 1 : 0;
             for(int pr : previous_cells[cur]){
@@ -403,11 +420,12 @@ struct ExtractDependencies : public Pass {
 
     }
 
-    vector<Wire*> get_wires_across_layers(Module *predictor_module,  IdString wire_name_in_mod, int number_of_layers){
+    vector<Wire*> get_wires_across_layers(Module *predictor_module, IdString wire_name_in_mod, int number_of_layers){
         vector<Wire*> ans;
         IdString current_name = wire_name_in_mod;
         for(int level = 0; level < number_of_layers; level++){
             current_name = next_level_name(current_name, level);
+            std::cout << "current_name = " << current_name.str() << std::endl;
             Wire *wire = predictor_module->wire(current_name);
             assert(wire != nullptr);
             ans.push_back(wire);
@@ -460,6 +478,24 @@ struct ExtractDependencies : public Pass {
         prev_val.chunks()[0].wire->port_output = true;
         assert(prev_val.chunks()[0].wire->name == final_output_name(final_wire_name_in_mod));
 
+    }
+
+    void deal_with_connections(Module *mod){
+        int cnt = 0;
+        // TODO: yosys' manual says "$buf" is an experimental feature and and it shouldn't be used.
+        // so if something serious breaks I might need to change something
+        for(auto [s1, s2] : mod->connections()){
+            assert(s1.is_wire()); // output should be a wire
+            Cell *buf_cell = mod->addCell("$my_buf_cell_" + std::to_string(cnt), "$buf");
+            buf_cell->setParam(ID::WIDTH, s1.size());
+            buf_cell->setPort(ID::A, s2);
+            buf_cell->setPort(ID::Y, s1); // Y is the output
+
+            cnt++;
+        }
+
+        mod->new_connections({});
+        mod->fixup_ports();
     }
 
     IdString name_without_level(IdString name){
