@@ -16,7 +16,9 @@ USING_YOSYS_NAMESPACE
 PRIVATE_NAMESPACE_BEGIN
 
 struct ExtractDependencies : public Pass {
-	ExtractDependencies() : Pass("extract_dependencies", "Finds all the cells that are influencing that wire and puts them in a separate module") { }
+	ConfigurationFile conf;
+    
+    ExtractDependencies() : Pass("extract_dependencies", "Finds all the cells that are influencing that wire and puts them in a separate module") { }
 	void help() override
 	{
 		log("\n");
@@ -53,7 +55,7 @@ struct ExtractDependencies : public Pass {
 			log_error("ERROR: more that one module selected");
 		}
 
-        ConfigurationFile conf = ConfigurationFile(args[3]);
+        conf = ConfigurationFile(args[3]);
 
         Module *mod = design->selected_modules()[0];
 
@@ -105,10 +107,7 @@ struct ExtractDependencies : public Pass {
             rewire_ff_to_previous_level(cells_in_layers[level - 1], cells_in_layers[level]);
         }
 
-        vector<Wire*> final_wires = get_wires_across_layers(predictor_module, final_wire->name, conf.prediction_bound);
-        vector<Wire*> retirement_wires = get_wires_across_layers(predictor_module, retirement_wire->name, conf.prediction_bound);
-
-        add_output(predictor_module, final_wires, retirement_wires, conf.default_prediction);
+        add_output(predictor_module, final_wire->name, retirement_wire->name, conf.default_prediction);
 
         add_predictor_module_to_main_module(design, mod, wire_name, predictor_module);
 	}
@@ -372,7 +371,8 @@ struct ExtractDependencies : public Pass {
         predictor_module->fixup_ports();
         design->add(predictor_module);
 
-        // TODO: write this part
+        Wire *final_wire = mod->wire(RTLIL::escape_id(final_wire_name));
+
         Cell* predictor_cell = mod->addCell(RTLIL::escape_id(final_wire_name + "_predictor"), predictor_module->name);
         vector<Wire*> input_wires;
         for(Wire *wire : predictor_module->wires()){
@@ -389,9 +389,8 @@ struct ExtractDependencies : public Pass {
             predictor_cell->setPort(pred_input_name, SigSpec(mod->wire(input_name)));
         }
 
-        // TODO: outputs
-        // Wire *pred_out = mod->addWire(RTLIL::escape_id(final_wire_name + "_pred"), final_wire);
-        // predictor_cell->setPort(module_wire_to_predictor_wire[final_wire]->name, SigSpec(pred_out));
+        Wire *pred_out = mod->addWire(RTLIL::escape_id(final_wire_name + "_pred"), final_wire);
+        predictor_cell->setPort(final_output_name(final_wire->name), SigSpec(pred_out));
 
         mod->fixup_ports();
 
@@ -409,7 +408,10 @@ struct ExtractDependencies : public Pass {
         return ans;
     }
 
-    void add_output(Module *predictor_module, vector<Wire*> final_wires, vector<Wire*> retirement_wires, int default_prediction){
+    void add_output(Module *predictor_module, IdString final_wire_name_in_mod, IdString retirement_wire_name, int default_prediction){
+        vector<Wire*> final_wires = get_wires_across_layers(predictor_module, final_wire_name_in_mod, conf.prediction_bound);
+        vector<Wire*> retirement_wires = get_wires_across_layers(predictor_module, retirement_wire_name, conf.prediction_bound);
+        
         assert(!final_wires.empty());
         assert(final_wires.size() == retirement_wires.size());
         
@@ -448,7 +450,8 @@ struct ExtractDependencies : public Pass {
             prev_val = out_val;
         }
 
-        // prev_val.chunks()[0].wire->port_output = true;
+        prev_val.chunks()[0].wire->port_output = true;
+        assert(prev_val.chunks()[0].wire->name == final_output_name(final_wire_name_in_mod));
 
     }
 
@@ -491,6 +494,12 @@ struct ExtractDependencies : public Pass {
         std::string inp_pref = "inp_";
         std::string name_without_inp = RTLIL::unescape_id(wire_name).substr(inp_pref.size());
         return IdString(RTLIL::escape_id(name_without_inp));
+    }
+
+    IdString final_output_name(IdString wire_name_in_mod){
+        IdString ans = wire_name_in_mod.str() + "_pred_wire" + std::to_string(conf.prediction_bound);
+        std::cout << "ans = " << ans.str() << std::endl;
+        return ans;
     }
 } ExtractDependencies;
 
