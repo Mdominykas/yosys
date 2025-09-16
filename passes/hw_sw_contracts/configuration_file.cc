@@ -30,7 +30,7 @@ struct ConfigurationFile {
 
         // check if file exists
         if(!input.good()){
-            log_error("ERROR: invalid configuration file");
+            log_error("ERROR: invalid configuration file\n");
         }
 
         std::ostringstream buffer;
@@ -42,31 +42,31 @@ struct ConfigurationFile {
         json11::Json json = Json::parse(contents, err);
 
         if(err != ""){
-            log_error("ERROR: failure when reading a json file");
+            log_error("ERROR: failure when reading a json file\n");
         }
 
         if(!json.is_object()){
-            log_error("ERROR: expected object in configuration file");
+            log_error("ERROR: expected object in configuration file\n");
         }
 
         auto json_items = json.object_items();
 
 
         if(json_items.find("clock_name") == json_items.end()){
-            log_error("ERROR: configuration files does not contain a name for the clock");
+            log_error("ERROR: configuration files does not contain a name for the clock\n");
         }
         if(!json_items["clock_name"].is_string()){
-            log_error("ERROR: name for a clock must be of a string type");
+            log_error("ERROR: name for a clock must be of a string type\n");
         }
 
         clock_name = json_items["clock_name"].string_value();
 
 
         if(json_items.find("prediction_bound") == json_items.end()){
-            log_error("ERROR: configuration files does not contain a number for the prediction bound");
+            log_error("ERROR: configuration files does not contain a number for the prediction bound\n");
         }
         if(!json_items["prediction_bound"].is_number()){
-            log_error("ERROR: prediction_bound must be a number");
+            log_error("ERROR: prediction_bound must be a number\n");
         }
 
         prediction_bound = json_items["prediction_bound"].int_value();
@@ -74,20 +74,20 @@ struct ConfigurationFile {
 
         // TODO: rewrite all of this with some nice functions (no more copy pasting)
         if(json_items.find("default_prediction") == json_items.end()){
-            log_error("ERROR: configuration files does not contain a number for the default prediction");
+            log_error("ERROR: configuration files does not contain a number for the default prediction\n");
         }
         if(!json_items["default_prediction"].is_number()){
-            log_error("ERROR: default prediction must be a number");
+            log_error("ERROR: default prediction must be a number\n");
         }
 
         default_prediction = json_items["default_prediction"].int_value();
 
 
         if(json_items.find("retirement_register") == json_items.end()){
-            log_error("ERROR: configuration files does not contain a name for the retirement register");
+            log_error("ERROR: configuration files does not contain a name for the retirement register\n");
         }
         if(!json_items["retirement_register"].is_string()){
-            log_error("ERROR: name for a retirement register must be of a string type");
+            log_error("ERROR: name for a retirement register must be of a string type\n");
         }
 
         retirement_register = json_items["retirement_register"].string_value();
