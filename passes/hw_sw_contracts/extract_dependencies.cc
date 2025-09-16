@@ -105,6 +105,10 @@ struct ExtractDependencies : public Pass {
             rewire_ff_to_previous_level(cells_in_layers[level - 1], cells_in_layers[level]);
         }
 
+        vector<Wire*> final_wires = get_wires_across_layers(predictor_module, final_wire->name, conf.prediction_bound);
+        vector<Wire*> retirement_wires = get_wires_across_layers(predictor_module, retirement_wire->name, conf.prediction_bound);
+
+        add_output(predictor_module, final_wires, retirement_wires, conf.default_prediction);
 
         add_predictor_module_to_main_module(design, mod, wire_name, predictor_module);
 	}
@@ -194,6 +198,7 @@ struct ExtractDependencies : public Pass {
         // Now we run bfs on the dependency tree
         std::deque<int> q;
 
+        // this is done in case retirement wire doesn't influence anything later on
         for(Wire *last_wire : {final_wire, retirement_wire}){
             int last_id = wire_to_index[last_wire];
             for(int final_cell : wire_used_as_output_for[last_id]){
@@ -392,6 +397,61 @@ struct ExtractDependencies : public Pass {
 
     }
 
+    vector<Wire*> get_wires_across_layers(Module *predictor_module,  IdString wire_name_in_mod, int number_of_layers){
+        vector<Wire*> ans;
+        IdString current_name = wire_name_in_mod;
+        for(int level = 0; level < number_of_layers; level++){
+            current_name = next_level_name(current_name, level);
+            Wire *wire = predictor_module->wire(current_name);
+            assert(wire != nullptr);
+            ans.push_back(wire);
+        }
+        return ans;
+    }
+
+    void add_output(Module *predictor_module, vector<Wire*> final_wires, vector<Wire*> retirement_wires, int default_prediction){
+        assert(!final_wires.empty());
+        assert(final_wires.size() == retirement_wires.size());
+        
+        IdString pred_name = IdString(name_without_level(final_wires[0]->name).str() + "_pred");
+        IdString redux_retirement_name = IdString(name_without_level(retirement_wires[0]->name).str() + "_redux");
+        // TODO: will crash when processor are above 32 bits
+        assert(final_wires[0]->width <= 32);
+        SigSpec prev_val = SigSpec(default_prediction, final_wires[0]->width);
+        
+        for(int layer = ((int)final_wires.size()) - 1; layer >= 0; layer--){
+            // reduce_or
+            Cell *reduce_or_cell = predictor_module->addCell(redux_retirement_name.str() + "_cell" + std::to_string(final_wires.size() - layer), "$reduce_or");
+
+            SigSpec ret_spec = SigSpec(retirement_wires[layer]);
+            reduce_or_cell->setPort("\\A", ret_spec);
+            reduce_or_cell->setParam(ID::A_SIGNED, false);
+            reduce_or_cell->setParam(ID::A_WIDTH, retirement_wires[layer]->width);
+            reduce_or_cell->setParam(ID::Y_WIDTH, 1);
+            Wire *reduced_retirement = predictor_module->addWire(redux_retirement_name.str() + "_wire" + std::to_string(final_wires.size() - layer), 1);
+            reduce_or_cell->setPort("\\Y", reduced_retirement);
+
+            // mux
+            Cell *mux_cell = predictor_module->addCell(pred_name.str() + "_cell" + std::to_string(final_wires.size() - layer), "$mux");
+            
+            SigSpec cur_val = SigSpec(final_wires[layer]);
+            assert(cur_val.bits().size() == prev_val.bits().size());
+            mux_cell->setParam(ID::WIDTH, final_wires[layer]->width);
+            mux_cell->setPort(ID::A, prev_val);
+            // if S is true, then mux selects ID::B
+            mux_cell->setPort(ID::B, cur_val);
+            mux_cell->setPort(ID::S, reduced_retirement);
+            Wire *pred_out = predictor_module->addWire(pred_name.str() + "_wire" + std::to_string(final_wires.size() - layer), final_wires[layer]->width);
+            SigSpec out_val = SigSpec(pred_out);
+            mux_cell->setPort(ID::Y, out_val);
+
+            prev_val = out_val;
+        }
+
+        // prev_val.chunks()[0].wire->port_output = true;
+
+    }
+
     IdString name_without_level(IdString name){
         std::string cur_name = name.str();
         while(std::isdigit(cur_name.back())){
@@ -432,7 +492,6 @@ struct ExtractDependencies : public Pass {
         std::string name_without_inp = RTLIL::unescape_id(wire_name).substr(inp_pref.size());
         return IdString(RTLIL::escape_id(name_without_inp));
     }
-
 } ExtractDependencies;
 
 PRIVATE_NAMESPACE_END
