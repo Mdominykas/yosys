@@ -92,16 +92,16 @@ struct AddEqualityCheck : public Pass {
 
 
 			if(l_wire == nullptr){
-				log_error("ERROR: wire with left name not found");
+				log_error("Wire with left name not found");
 				return;
 			}
 			if(r_wire == nullptr){
-				log_error("ERROR: wire with right name not found");
+				log_error("Wire with right name not found");
 				return;
 			}
 
 			if(mod->wire(out_name) != nullptr){
-				log_error("ERROR: found wire with out_wirename");
+				log_error("Found wire with out_wirename");
 				return;
 			}
 
@@ -110,7 +110,7 @@ struct AddEqualityCheck : public Pass {
 			std::string eq_cell_name = RTLIL::escape_id(out_name + "_eq_constraint");
 			RTLIL::IdString eq_id = IdString(eq_cell_name);
 			if(mod->cell(eq_cell_name) != nullptr){
-				log_error("ERROR: due to name duplication can't create an equality cell");
+				log_error("Due to name duplication can't create an equality cell");
 				return;
 			}
 

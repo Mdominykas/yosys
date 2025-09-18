@@ -53,7 +53,7 @@ struct CreateProductCircuit : public Pass {
 		std::string left_suffix = "_" + left_name, right_suffix = "_" + right_name;
 
         if(design->selected_modules().size() > 1){
-			log_error("ERROR: more that one module selected");
+			log_error("More that one module selected");
 		}
 
         Module *mod = design->selected_modules()[0];

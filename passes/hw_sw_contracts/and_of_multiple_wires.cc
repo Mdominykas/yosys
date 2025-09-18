@@ -30,14 +30,14 @@ struct AndOfMultipleWires : public Pass {
 		log_header(design, "Executing AND_OF_MULTIPLE_WIRES pass.\n");
 
         if(args.size() != 3){
-			log_error("ERROR: Incorrect number of arguments");
+			log_error("Incorrect number of arguments");
 		}
 
         std::string wire_file = args[1];
         std::string output_wire = args[2];
 
         if(design->selected_modules().size() > 1){
-			log_error("ERROR: more that one module selected");
+			log_error("More that one module selected");
 		}
 
         Module *mod = design->selected_modules()[0];
@@ -49,7 +49,7 @@ struct AndOfMultipleWires : public Pass {
         readFile >> wire_cnt;
 
         if(wire_cnt <= 1){
-            log_error("ERROR: file doesn't contain the required wires");
+            log_error("File doesn't contain the required wires");
         }
 
         for(int i = 0; i < wire_cnt; i++){

@@ -59,7 +59,7 @@ struct PreservePastValues : public Pass {
         int number_of_cycles = strtol(args[2].c_str(), &endptr, 10);
         
         if((endptr == args[2].c_str()) || (*endptr != '\0') || (errno == ERANGE)){
-            log_error("ERROR: incorrectly parsed number of cycles");
+            log_error("Incorrectly parsed number of cycles");
         }
 
 		if(design->selected_modules().size() > 1){
@@ -81,7 +81,7 @@ struct PreservePastValues : public Pass {
 				RTLIL::IdString ff_cell_id = IdString(flip_flop_cell_name);
 
 				if(mod->cell(ff_cell_id) != nullptr){
-					log_error("ERROR: due to name duplication can't create a cell for delay");
+					log_error("Due to name duplication can't create a cell for delay");
 					return;
 				}
 
@@ -93,7 +93,7 @@ struct PreservePastValues : public Pass {
 				std::string flip_flop_out_wire_name = RTLIL::escape_id(component_name + "_delayed_for_" + std::to_string(i + 1));
 				RTLIL::IdString ff_out_id = IdString(flip_flop_out_wire_name);
 				if(mod->wire(ff_out_id) != nullptr){
-					log_error("ERROR: due to name duplication couldn't create a wire");
+					log_error("Due to name duplication couldn't create a wire");
 					return;
 				}
 				RTLIL::Wire *ff_out_wire = mod->addWire(ff_out_id, wire_width);

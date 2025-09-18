@@ -37,7 +37,7 @@ struct ExtractDependencies : public Pass {
 		log_header(design, "Executing EXTRACT_DEPENDENCIES pass.\n");
 
         if(args.size() != 4){
-			log_error("ERROR: Incorrect number of arguments\n");
+			log_error("Incorrect number of arguments\n");
 		}
 
         std::string wire_name = args[1];
@@ -47,13 +47,13 @@ struct ExtractDependencies : public Pass {
         int hist_len = strtol(args[2].c_str(), &endptr, 10);
         
         if((endptr == args[2].c_str()) || (*endptr != '\0') || (errno == ERANGE)){
-            log_error("ERROR: incorrectly parsed numbers\n");
+            log_error("Incorrectly parsed numbers\n");
         }
 
         hist_len = 100;
 
         if(design->selected_modules().size() > 1){
-			log_error("ERROR: more that one module selected\n");
+			log_error("More that one module selected\n");
 		}
 
         conf = ConfigurationFile(args[3]);
@@ -63,7 +63,7 @@ struct ExtractDependencies : public Pass {
 
         Wire *clock_wire = mod->wire(IdString(RTLIL::escape_id(conf.clock_name)));
         if(clock_wire == nullptr){
-            log_error("ERROR: clock wire not found\n");
+            log_error("Clock wire not found\n");
         }
 
         log_assert(!mod->has_memories());
@@ -72,19 +72,9 @@ struct ExtractDependencies : public Pass {
         deal_with_connections(mod);
         log_assert(mod->connections().empty());
 
-
-        // if(!mod->connections().empty()){
-        //     for(auto [sigspec1, sigspec2] : mod->connections()){
-        //         std::cout << "Pirmas signalas: " << sigspec1.bits()[0].wire->name.str() << std::endl;
-        //         std::cout << "Antras signalas: " << sigspec2.bits()[0].wire->name.str() << std::endl;
-        //         std::cout << std::endl;
-        //     }
-        //     log_error("ERROR: module's connections are not empty. Run opt_clean pass before\n");
-        // }
-
         ModWire *final_wire = mod->wire(RTLIL::escape_id(wire_name));
         if(final_wire == NULL){
-            log_error("ERROR: Final wire not found\n");
+            log_error("Final wire not found\n");
         }
 
         ModWire *retirement_wire = mod->wire(RTLIL::escape_id(pred_conf.exit_wires[0]));
@@ -152,7 +142,7 @@ struct ExtractDependencies : public Pass {
             if(RTLIL::builtin_ff_cell_types().count(cell->type) > 0){
                 auto con = cell->connections();
                 if(cell->type != IdString("$dff")){
-                    log_error("ERROR: all flip flops should have been converted to the '$dff' type");
+                    log_error("All flip flops should have been converted to the '$dff' type");
                 }
 
                 auto c_name = IdString("\\CLK");
@@ -249,7 +239,7 @@ struct ExtractDependencies : public Pass {
         }
 
         if(wire_to_index.find(final_wire) == wire_to_index.end()){
-            log_error("ERROR: final wire was not processed during the dependency analysis");
+            log_error("Final wire was not processed during the dependency analysis");
         }
 
         vector<Cell*> ans;

@@ -46,7 +46,7 @@ struct ConfigurationFile {
 
         // check if file exists
         if(!input.good()){
-            log_error("ERROR: invalid configuration file\n");
+            log_error("Invalid configuration file\n");
         }
 
         std::ostringstream buffer;
@@ -58,12 +58,12 @@ struct ConfigurationFile {
         json11::Json json = Json::parse(contents, err);
 
         if(err != ""){
-            log_error("ERROR: failure when reading a json file\n");
+            log_error("Failure when reading a json file\n");
         }
 
         // parse predictor configuration
         if(!json.is_object()){
-            log_error("ERROR: expected object in configuration file\n");
+            log_error("Expected object in configuration file\n");
         }
 
         auto json_items = json.object_items();
@@ -79,11 +79,11 @@ struct ConfigurationFile {
 
     Json::object parse_object_from_object(Json::object obj, std::string name){
         if(obj.find(name) == obj.end()){
-            const std::string error_msg = "ERROR: value for the " + name + " not found\n";
+            const std::string error_msg = "Value for the " + name + " not found\n";
             log_error("%s", error_msg.c_str());
         }
         if(!obj[name].is_object()){
-            const std::string error_msg = "ERROR: " + name + " must be of an object type\n";
+            const std::string error_msg = "Value of " + name + " must be of an object type\n";
             log_error("%s", error_msg.c_str());
         }
 
@@ -92,11 +92,11 @@ struct ConfigurationFile {
 
     Json::array parse_array_from_object(Json::object obj, std::string name){
         if(obj.find(name) == obj.end()){
-            const std::string error_msg = "ERROR: value for the " + name + " not found\n";
+            const std::string error_msg = "Value for the " + name + " not found\n";
             log_error("%s", error_msg.c_str());
         }
         if(!obj[name].is_array()){
-            const std::string error_msg = "ERROR: " + name + " must be of an array type\n";
+            const std::string error_msg = "Value of " + name + " must be of an array type\n";
             log_error("%s", error_msg.c_str());
         }
 
@@ -105,7 +105,7 @@ struct ConfigurationFile {
 
     std::string cast_to_string(Json::object obj, std::string name){
         if(!obj[name].is_string()){
-            const std::string error_msg = "ERROR: " + name + " must be of a string type\n";
+            const std::string error_msg = "Value of  " + name + " must be of a string type\n";
             log_error("%s", error_msg.c_str());
         }
 
@@ -114,7 +114,7 @@ struct ConfigurationFile {
 
     std::string parse_string_from_object(Json::object obj, std::string name){
         if(obj.find(name) == obj.end()){
-            const std::string error_msg = "ERROR: value for the " + name + " not found\n";
+            const std::string error_msg = "Value for the " + name + " not found\n";
             log_error("%s", error_msg.c_str());
         }
         return cast_to_string(obj, name);
@@ -122,11 +122,11 @@ struct ConfigurationFile {
 
     int parse_int_from_object(Json::object obj, std::string name){
         if(obj.find(name) == obj.end()){
-            const std::string error_msg = "ERROR: value for the " + name + " not found\n";
+            const std::string error_msg = "Value for the " + name + " not found\n";
             log_error("%s", error_msg.c_str());
         }
         if(!obj[name].is_number()){
-            const std::string error_msg = "ERROR: " + name + " must be of a int type\n";
+            const std::string error_msg = "Value of  " + name + " must be of a int type\n";
             log_error("%s", error_msg.c_str());
         }
 
@@ -135,7 +135,7 @@ struct ConfigurationFile {
 
     PredictorConfiguration parse_predictor_from_json(Json predictor_json){
         if(!predictor_json.is_object()){
-            log_error("ERROR: expected object in configuration file\n");
+            log_error("Expected object in configuration file\n");
         }
 
         auto json_items = predictor_json.object_items();

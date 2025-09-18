@@ -67,11 +67,11 @@ struct AddBitwiseNegation : public Pass {
 
 			RTLIL::Wire *in_wire = mod->wire(in_id);
 			if(in_wire == nullptr){
-				log_error("ERROR: wire with input wire name not found");
+				log_error("Wire with input wire name not found");
 				return;
 			}
 			if(mod->wire(out_name) != nullptr){
-				log_error("ERROR: found wire with out_wirename");
+				log_error("Found wire with out_wirename");
 				return;
 			}
 
@@ -80,7 +80,7 @@ struct AddBitwiseNegation : public Pass {
 
 			std::string not_cell_name = RTLIL::escape_id(in_name + "_negation_to_" + out_name);
 			if(mod->cell(not_cell_name) != nullptr){
-				log_error("ERROR: due to name duplication can't create an equality cell");
+				log_error("Due to name duplication can't create an equality cell");
 				return;
 			}
 
