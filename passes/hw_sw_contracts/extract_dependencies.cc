@@ -23,7 +23,7 @@ struct ExtractDependencies : public Pass {
 	void help() override
 	{
 		log("\n");
-		log("    extract_dependencies <important_wire> <hist_len> <configuration_file>\n");
+		log("    extract_dependencies <configuration_file>\n");
 		log("\n");
 	}
 
@@ -36,27 +36,28 @@ struct ExtractDependencies : public Pass {
 	{
 		log_header(design, "Executing EXTRACT_DEPENDENCIES pass.\n");
 
-        if(args.size() != 4){
+        if(args.size() != 2){
 			log_error("Incorrect number of arguments\n");
 		}
 
-        std::string wire_name = args[1];
+        // std::string wire_name = args[1];
 
-        char *endptr;
-        errno = 0;
-        int hist_len = strtol(args[2].c_str(), &endptr, 10);
+        // char *endptr;
+        // errno = 0;
+        // int hist_len = strtol(args[2].c_str(), &endptr, 10);
         
-        if((endptr == args[2].c_str()) || (*endptr != '\0') || (errno == ERANGE)){
-            log_error("Incorrectly parsed numbers\n");
-        }
+        // if((endptr == args[2].c_str()) || (*endptr != '\0') || (errno == ERANGE)){
+        //     log_error("Incorrectly parsed numbers\n");
+        // }
 
-        hist_len = 100;
+        // TODO: make it more 
+        int hist_len = 100;
 
         if(design->selected_modules().size() > 1){
 			log_error("More that one module selected\n");
 		}
 
-        conf = ConfigurationFile(args[3]);
+        conf = ConfigurationFile(args[1]);
         pred_conf = conf.predictors[0];
 
         Module *mod = design->selected_modules()[0];
@@ -72,6 +73,7 @@ struct ExtractDependencies : public Pass {
         deal_with_connections(mod);
         log_assert(mod->connections().empty());
 
+        std::string wire_name = pred_conf.output_wire;
         ModWire *final_wire = mod->wire(RTLIL::escape_id(wire_name));
         if(final_wire == NULL){
             log_error("Final wire not found\n");
