@@ -79,8 +79,6 @@ struct ExtractDependencies : public Pass {
             log_error("Final wire not found\n");
         }
 
-        ModWire *retirement_wire = mod->wire(RTLIL::escape_id(pred_conf.exit_wires[0]));
-
         Module *predictor_module = new Module();
 		predictor_module->name = IdString(RTLIL::escape_id("predictor_" + RTLIL::unescape_id(mod->name.str())));
 
@@ -117,14 +115,20 @@ struct ExtractDependencies : public Pass {
             rewire_ff_to_previous_level(cells_in_layers[level - 1], cells_in_layers[level]);
         }
 
-        add_output(predictor_module, final_wire->name, retirement_wire->name, pred_conf.default_prediction);
+        vector<IdString> stage_retirement_wires;
+        for(auto name : pred_conf.exit_wires){
+            Wire *wire = mod->wire(RTLIL::escape_id(name));
+
+            if(wire == nullptr){
+                log_error("Retirement wire named %s not found in the module", name.c_str());
+            }
+
+            stage_retirement_wires.push_back(wire->name);
+        }
+        add_output(predictor_module, final_wire->name, stage_retirement_wires, pred_conf.default_prediction);
 
         add_predictor_module_to_main_module(design, mod, wire_name, predictor_module);
 	}
-
-
-
-
 
 
     vector<Cell*> find_reverse_reachable_cells(Module* mod, Wire *final_wire, Wire *clock_wire, vector<Wire*> relevant_wires, int hist_len){
@@ -425,10 +429,67 @@ struct ExtractDependencies : public Pass {
         return ans;
     }
 
-    void add_output(Module *predictor_module, IdString final_wire_name_in_mod, IdString retirement_wire_name, int default_prediction){
-        vector<Wire*> retirement_wires = get_wires_across_layers(predictor_module, retirement_wire_name, pred_conf.prediction_bound);
+    void add_output(Module *predictor_module, IdString final_wire_name_in_mod, vector<IdString> retirement_wire_names, int default_prediction){
+        vector<Wire*> retirement_wires = get_first_satisfying_path(predictor_module, retirement_wire_names);
         
         set_output_to_first_matching(predictor_module, final_wire_name_in_mod, retirement_wires, default_prediction);
+    }
+
+    vector<Wire*> get_first_satisfying_path(Module *predictor_module, vector<IdString> retirement_wire_names){
+        vector<vector<Wire*> > preprocessed_retirements;
+        for(size_t retirement_id = 0; retirement_id < retirement_wire_names.size(); retirement_id++){
+            IdString retirement = retirement_wire_names[retirement_id];
+            vector<Wire*> retirement_wires = get_wires_across_layers(predictor_module, retirement, pred_conf.prediction_bound);
+            
+            vector<Wire*> preprocessed_layer;
+
+            IdString redux_retirement_name = IdString(name_without_level(retirement_wires[0]->name).str() + "_redux");
+            for(size_t layer = 0; layer < retirement_wires.size(); layer++){
+                // TODO: this will crash if I use the same retirement twice
+                Cell *reduce_or_cell = predictor_module->addCell(redux_retirement_name.str() + "_cell_" + std::to_string(layer), "$reduce_or");
+
+                // reduction to one bit
+                SigSpec ret_spec = SigSpec(retirement_wires[layer]);
+                reduce_or_cell->setPort("\\A", ret_spec);
+                reduce_or_cell->setParam(ID::A_SIGNED, false);
+                reduce_or_cell->setParam(ID::A_WIDTH, retirement_wires[layer]->width);
+                reduce_or_cell->setParam(ID::Y_WIDTH, 1);
+                Wire *reduced_retirement = predictor_module->addWire(redux_retirement_name.str() + "_wire" + std::to_string(layer), 1);
+                reduce_or_cell->setPort("\\Y", reduced_retirement);
+
+
+                Wire *preprocessed_wire = reduced_retirement;
+                // or of previous layer
+                if(layer > 0){
+                    Cell *or_cell = predictor_module->addCell(predictor_module->uniquify(RTLIL::escape_id("or_cell")), "$_OR_");
+                    or_cell->setPort(ID::A, preprocessed_wire);
+                    or_cell->setPort(ID::B, preprocessed_layer.back());
+                    
+                    Wire *or_output = predictor_module->addWire(predictor_module->uniquify(RTLIL::escape_id("or_output")));
+                    or_cell->setPort(ID::Y, or_output);
+
+                    preprocessed_wire = or_output;
+                }
+
+                // and of previous retirement
+                if(retirement_id > 0){
+                    Cell *and_cell = predictor_module->addCell(predictor_module->uniquify(RTLIL::escape_id("and_cell")), "$_AND_");
+                    and_cell->setPort(ID::A, preprocessed_wire);
+                    and_cell->setPort(ID::B, preprocessed_retirements.back()[layer]);
+                    
+                    Wire *and_output = predictor_module->addWire(predictor_module->uniquify(RTLIL::escape_id("and_output")));
+                    and_cell->setPort(ID::Y, and_output);
+
+                    preprocessed_wire = and_output;
+                }
+
+                preprocessed_layer.push_back(preprocessed_wire);
+
+            }
+            preprocessed_retirements.push_back(preprocessed_layer);
+        }
+        
+        return preprocessed_retirements.back();
     }
 
     void set_output_to_first_matching(Module *predictor_module, IdString final_wire_name_in_mod, vector<Wire*> retirement_wires, int default_prediction){
@@ -438,23 +499,11 @@ struct ExtractDependencies : public Pass {
         assert(final_wires.size() == retirement_wires.size());
         
         IdString pred_name = IdString(name_without_level(final_wires[0]->name).str() + "_pred");
-        IdString redux_retirement_name = IdString(name_without_level(retirement_wires[0]->name).str() + "_redux");
         // TODO: will crash when processor are above 32 bits
         assert(final_wires[0]->width <= 32);
         SigSpec prev_val = SigSpec(default_prediction, final_wires[0]->width);
         
         for(int layer = ((int)final_wires.size()) - 1; layer >= 0; layer--){
-            // reduce_or
-            Cell *reduce_or_cell = predictor_module->addCell(redux_retirement_name.str() + "_cell" + std::to_string(final_wires.size() - layer), "$reduce_or");
-
-            SigSpec ret_spec = SigSpec(retirement_wires[layer]);
-            reduce_or_cell->setPort("\\A", ret_spec);
-            reduce_or_cell->setParam(ID::A_SIGNED, false);
-            reduce_or_cell->setParam(ID::A_WIDTH, retirement_wires[layer]->width);
-            reduce_or_cell->setParam(ID::Y_WIDTH, 1);
-            Wire *reduced_retirement = predictor_module->addWire(redux_retirement_name.str() + "_wire" + std::to_string(final_wires.size() - layer), 1);
-            reduce_or_cell->setPort("\\Y", reduced_retirement);
-
             // mux
             Cell *mux_cell = predictor_module->addCell(pred_name.str() + "_cell" + std::to_string(final_wires.size() - layer), "$mux");
             
@@ -464,7 +513,7 @@ struct ExtractDependencies : public Pass {
             mux_cell->setPort(ID::A, prev_val);
             // if S is true, then mux selects ID::B
             mux_cell->setPort(ID::B, cur_val);
-            mux_cell->setPort(ID::S, reduced_retirement);
+            mux_cell->setPort(ID::S, retirement_wires[layer]);
             Wire *pred_out = predictor_module->addWire(pred_name.str() + "_wire" + std::to_string(final_wires.size() - layer), final_wires[layer]->width);
             SigSpec out_val = SigSpec(pred_out);
             mux_cell->setPort(ID::Y, out_val);
