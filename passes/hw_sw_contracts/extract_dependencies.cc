@@ -426,8 +426,13 @@ struct ExtractDependencies : public Pass {
     }
 
     void add_output(Module *predictor_module, IdString final_wire_name_in_mod, IdString retirement_wire_name, int default_prediction){
-        vector<Wire*> final_wires = get_wires_across_layers(predictor_module, final_wire_name_in_mod, pred_conf.prediction_bound);
         vector<Wire*> retirement_wires = get_wires_across_layers(predictor_module, retirement_wire_name, pred_conf.prediction_bound);
+        
+        set_output_to_first_matching(predictor_module, final_wire_name_in_mod, retirement_wires, default_prediction);
+    }
+
+    void set_output_to_first_matching(Module *predictor_module, IdString final_wire_name_in_mod, vector<Wire*> retirement_wires, int default_prediction){
+        vector<Wire*> final_wires = get_wires_across_layers(predictor_module, final_wire_name_in_mod, pred_conf.prediction_bound);
         
         assert(!final_wires.empty());
         assert(final_wires.size() == retirement_wires.size());
@@ -533,7 +538,6 @@ struct ExtractDependencies : public Pass {
 
     IdString final_output_name(IdString wire_name_in_mod){
         IdString ans = wire_name_in_mod.str() + "_pred_wire" + std::to_string(pred_conf.prediction_bound);
-        std::cout << "ans = " << ans.str() << std::endl;
         return ans;
     }
 } ExtractDependencies;
