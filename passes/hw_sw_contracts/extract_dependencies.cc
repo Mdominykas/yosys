@@ -75,7 +75,7 @@ struct ExtractDependencies : public Pass {
             }
 
             Module *predictor_module = new Module();
-            predictor_module->name = IdString(RTLIL::escape_id("predictor_" + RTLIL::unescape_id(final_wire->name.str())));
+            predictor_module->name = IdString(RTLIL::escape_id(pred_conf.output_prefix + "_predictor_" + RTLIL::unescape_id(final_wire->name.str())));
 
             // we also want to add all the wires that influence the retirements
             vector<Wire*> relevant_wires;
@@ -389,7 +389,7 @@ struct ExtractDependencies : public Pass {
 
         Wire *final_wire = mod->wire(RTLIL::escape_id(final_wire_name));
 
-        Cell* predictor_cell = mod->addCell(RTLIL::escape_id(final_wire_name + "_predictor"), predictor_module->name);
+        Cell* predictor_cell = mod->addCell(RTLIL::escape_id(pred_conf.output_prefix + "_" + final_wire_name + "_predictor"), predictor_module->name);
         vector<Wire*> input_wires;
         for(Wire *wire : predictor_module->wires()){
             if(wire->port_input){
@@ -405,7 +405,7 @@ struct ExtractDependencies : public Pass {
             predictor_cell->setPort(pred_input_name, SigSpec(mod->wire(input_name)));
         }
 
-        Wire *pred_out = mod->addWire(RTLIL::escape_id(final_wire_name + "_pred"), final_wire);
+        Wire *pred_out = mod->addWire(RTLIL::escape_id(pred_conf.output_prefix + "_pred"), final_wire);
         predictor_cell->setPort(final_output_name(final_wire->name, pred_conf), SigSpec(pred_out));
 
         pred_out->port_output = true;

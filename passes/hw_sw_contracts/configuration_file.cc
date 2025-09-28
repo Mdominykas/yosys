@@ -18,13 +18,14 @@ PRIVATE_NAMESPACE_BEGIN
 
 
 struct PredictorConfiguration{
+    std::string output_prefix;
     std::string output_wire;
     vector<std::string> enter_wires, busy_wires, exit_wires;
     // some incorrect value for default constructor
     int prediction_bound = -1;
     int default_prediction = -1;
-    PredictorConfiguration(std::string output_wire, vector<std::string> enter_wires, vector<std::string> busy_wires,
-            vector<std::string> exit_wires, int prediction_bound, int default_prediction) : output_wire(output_wire), enter_wires(enter_wires), busy_wires(busy_wires), exit_wires(exit_wires),
+    PredictorConfiguration(std::string output_prefix, std::string output_wire, vector<std::string> enter_wires, vector<std::string> busy_wires,
+            vector<std::string> exit_wires, int prediction_bound, int default_prediction) : output_prefix(output_prefix), output_wire(output_wire), enter_wires(enter_wires), busy_wires(busy_wires), exit_wires(exit_wires),
             prediction_bound(prediction_bound), default_prediction(default_prediction){
         assert(prediction_bound >= 0);
         assert(!enter_wires.empty());
@@ -164,7 +165,9 @@ struct ConfigurationFile {
             exit_wires.push_back(val.string_value());
         }
 
-        return PredictorConfiguration(output_wire, enter_wires, busy_wires, exit_wires, prediction_bound, default_prediction);
+        std::string output_prefix = parse_string_from_object(json_items, "output_prefix");
+
+        return PredictorConfiguration(output_prefix, output_wire, enter_wires, busy_wires, exit_wires, prediction_bound, default_prediction);
     }
 };
 
