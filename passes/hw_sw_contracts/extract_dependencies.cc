@@ -17,7 +17,6 @@ PRIVATE_NAMESPACE_BEGIN
 
 struct ExtractDependencies : public Pass {
 	ConfigurationFile conf;
-    PredictorConfiguration pred_conf;
     
     ExtractDependencies() : Pass("extract_dependencies", "Finds all the cells that are influencing that wire and puts them in a separate module") { }
 	void help() override
@@ -40,17 +39,7 @@ struct ExtractDependencies : public Pass {
 			log_error("Incorrect number of arguments\n");
 		}
 
-        // std::string wire_name = args[1];
-
-        // char *endptr;
-        // errno = 0;
-        // int hist_len = strtol(args[2].c_str(), &endptr, 10);
-        
-        // if((endptr == args[2].c_str()) || (*endptr != '\0') || (errno == ERANGE)){
-        //     log_error("Incorrectly parsed numbers\n");
-        // }
-
-        // TODO: make it more 
+        // TODO: make it exact
         int hist_len = 100;
 
         if(design->selected_modules().size() > 1){
@@ -58,7 +47,6 @@ struct ExtractDependencies : public Pass {
 		}
 
         conf = ConfigurationFile(args[1]);
-        pred_conf = conf.predictors[0];
 
         Module *mod = design->selected_modules()[0];
 
@@ -73,62 +61,70 @@ struct ExtractDependencies : public Pass {
         deal_with_connections(mod);
         log_assert(mod->connections().empty());
 
-        std::string wire_name = pred_conf.output_wire;
-        ModWire *final_wire = mod->wire(RTLIL::escape_id(wire_name));
-        if(final_wire == NULL){
-            log_error("Final wire not found\n");
+        for(PredictorConfiguration pred_conf : conf.predictors){
+            construct_predictor(design, mod, clock_wire, pred_conf, hist_len);
         }
 
-        Module *predictor_module = new Module();
-		predictor_module->name = IdString(RTLIL::escape_id("predictor_" + RTLIL::unescape_id(mod->name.str())));
-
-        vector<Wire*> relevant_wires;
-        for(auto name_vec : {pred_conf.enter_wires, pred_conf.busy_wires, pred_conf.exit_wires}){
-            for(std::string name : name_vec){
-                Wire *wire = mod->wire(RTLIL::escape_id(name));
-                assert(wire != nullptr);
-                relevant_wires.push_back(wire);
-            }
-        }
-        vector<Cell*> cells_to_add_to_pred = this->find_reverse_reachable_cells(mod, final_wire, clock_wire, relevant_wires, hist_len);
-
-
-        std::set<Wire*> input_wires;
-
-        vector<vector<Cell*> > cells_in_layers;
-    
-        vector<Cell*> first_layer = add_layer_of_cells(predictor_module, cells_to_add_to_pred, input_wires, 0);
-        cells_in_layers.push_back(first_layer);
-
-        // construction of all the layers
-        for(int level = 1; level < pred_conf.prediction_bound; level++){
-            vector<Cell*> new_cells = this->add_layer_of_cells(predictor_module, cells_in_layers.back(), input_wires, level);
-            cells_in_layers.push_back(new_cells);
-        }
-
-        add_ff_data_as_module_inputs(predictor_module, cells_in_layers[0]);
-
-        // rewire ff wires
-        assert(pred_conf.prediction_bound == ((int) cells_in_layers.size()));
-        // for(int level = 1; level < conf.prediction_bound; level++){
-        for(int level = 1; level < pred_conf.prediction_bound; level++){
-            rewire_ff_to_previous_level(cells_in_layers[level - 1], cells_in_layers[level]);
-        }
-
-        vector<IdString> stage_retirement_wires;
-        for(auto name : pred_conf.exit_wires){
-            Wire *wire = mod->wire(RTLIL::escape_id(name));
-
-            if(wire == nullptr){
-                log_error("Retirement wire named %s not found in the module", name.c_str());
-            }
-
-            stage_retirement_wires.push_back(wire->name);
-        }
-        add_output(predictor_module, final_wire->name, stage_retirement_wires, pred_conf.default_prediction);
-
-        add_predictor_module_to_main_module(design, mod, wire_name, predictor_module);
 	}
+
+    void construct_predictor(Design *design, Module *mod, Wire *clock_wire, PredictorConfiguration pred_conf, int hist_len){
+            std::string wire_name = pred_conf.output_wire;
+            ModWire *final_wire = mod->wire(RTLIL::escape_id(wire_name));
+            if(final_wire == NULL){
+                log_error("Final wire not found\n");
+            }
+
+            Module *predictor_module = new Module();
+            predictor_module->name = IdString(RTLIL::escape_id("predictor_" + RTLIL::unescape_id(final_wire->name.str())));
+
+            // we also want to add all the wires that influence the retirements
+            vector<Wire*> relevant_wires;
+            for(auto name_vec : {pred_conf.enter_wires, pred_conf.busy_wires, pred_conf.exit_wires}){
+                for(std::string name : name_vec){
+                    Wire *wire = mod->wire(RTLIL::escape_id(name));
+                    assert(wire != nullptr);
+                    relevant_wires.push_back(wire);
+                }
+            }
+            vector<Cell*> cells_to_add_to_pred = this->find_reverse_reachable_cells(mod, final_wire, clock_wire, relevant_wires, hist_len);
+
+
+            std::set<Wire*> input_wires;
+
+            vector<vector<Cell*> > cells_in_layers;
+        
+            vector<Cell*> first_layer = add_layer_of_cells(predictor_module, cells_to_add_to_pred, input_wires, 0);
+            cells_in_layers.push_back(first_layer);
+
+            // construction of all the layers
+            for(int level = 1; level < pred_conf.prediction_bound; level++){
+                vector<Cell*> new_cells = this->add_layer_of_cells(predictor_module, cells_in_layers.back(), input_wires, level);
+                cells_in_layers.push_back(new_cells);
+            }
+
+            add_ff_data_as_module_inputs(predictor_module, cells_in_layers[0]);
+
+            // rewire ff wires
+            assert(pred_conf.prediction_bound == ((int) cells_in_layers.size()));
+            // for(int level = 1; level < conf.prediction_bound; level++){
+            for(int level = 1; level < pred_conf.prediction_bound; level++){
+                rewire_ff_to_previous_level(cells_in_layers[level - 1], cells_in_layers[level]);
+            }
+
+            vector<IdString> stage_retirement_wires;
+            for(auto name : pred_conf.exit_wires){
+                Wire *wire = mod->wire(RTLIL::escape_id(name));
+
+                if(wire == nullptr){
+                    log_error("Retirement wire named %s not found in the module", name.c_str());
+                }
+
+                stage_retirement_wires.push_back(wire->name);
+            }
+            add_output(predictor_module, final_wire->name, stage_retirement_wires, pred_conf);
+
+            add_predictor_module_to_main_module(design, mod, wire_name, predictor_module, pred_conf);
+    }
 
 
     vector<Cell*> find_reverse_reachable_cells(Module* mod, Wire *final_wire, Wire *clock_wire, vector<Wire*> relevant_wires, int hist_len){
@@ -387,7 +383,7 @@ struct ExtractDependencies : public Pass {
 
     }
 
-    void add_predictor_module_to_main_module(Design *design, Module *mod, std::string final_wire_name, Module *predictor_module){
+    void add_predictor_module_to_main_module(Design *design, Module *mod, std::string final_wire_name, Module *predictor_module, PredictorConfiguration pred_conf){
         predictor_module->fixup_ports();
         design->add(predictor_module);
 
@@ -410,8 +406,9 @@ struct ExtractDependencies : public Pass {
         }
 
         Wire *pred_out = mod->addWire(RTLIL::escape_id(final_wire_name + "_pred"), final_wire);
-        predictor_cell->setPort(final_output_name(final_wire->name), SigSpec(pred_out));
+        predictor_cell->setPort(final_output_name(final_wire->name, pred_conf), SigSpec(pred_out));
 
+        pred_out->port_output = true;
         mod->fixup_ports();
 
     }
@@ -429,13 +426,13 @@ struct ExtractDependencies : public Pass {
         return ans;
     }
 
-    void add_output(Module *predictor_module, IdString final_wire_name_in_mod, vector<IdString> retirement_wire_names, int default_prediction){
-        vector<Wire*> retirement_wires = get_first_satisfying_path(predictor_module, retirement_wire_names);
+    void add_output(Module *predictor_module, IdString final_wire_name_in_mod, vector<IdString> retirement_wire_names, PredictorConfiguration pred_conf){
+        vector<Wire*> retirement_wires = get_first_satisfying_path(predictor_module, retirement_wire_names, pred_conf);
         
-        set_output_to_first_matching(predictor_module, final_wire_name_in_mod, retirement_wires, default_prediction);
+        set_output_to_first_matching(predictor_module, final_wire_name_in_mod, retirement_wires, pred_conf);
     }
 
-    vector<Wire*> get_first_satisfying_path(Module *predictor_module, vector<IdString> retirement_wire_names){
+    vector<Wire*> get_first_satisfying_path(Module *predictor_module, vector<IdString> retirement_wire_names, PredictorConfiguration pred_conf){
         vector<vector<Wire*> > preprocessed_retirements;
         for(size_t retirement_id = 0; retirement_id < retirement_wire_names.size(); retirement_id++){
             IdString retirement = retirement_wire_names[retirement_id];
@@ -492,7 +489,7 @@ struct ExtractDependencies : public Pass {
         return preprocessed_retirements.back();
     }
 
-    void set_output_to_first_matching(Module *predictor_module, IdString final_wire_name_in_mod, vector<Wire*> retirement_wires, int default_prediction){
+    void set_output_to_first_matching(Module *predictor_module, IdString final_wire_name_in_mod, vector<Wire*> retirement_wires, PredictorConfiguration pred_conf){
         vector<Wire*> final_wires = get_wires_across_layers(predictor_module, final_wire_name_in_mod, pred_conf.prediction_bound);
         
         assert(!final_wires.empty());
@@ -501,7 +498,7 @@ struct ExtractDependencies : public Pass {
         IdString pred_name = IdString(name_without_level(final_wires[0]->name).str() + "_pred");
         // TODO: will crash when processor are above 32 bits
         assert(final_wires[0]->width <= 32);
-        SigSpec prev_val = SigSpec(default_prediction, final_wires[0]->width);
+        SigSpec prev_val = SigSpec(pred_conf.default_prediction, final_wires[0]->width);
         
         for(int layer = ((int)final_wires.size()) - 1; layer >= 0; layer--){
             // mux
@@ -522,7 +519,7 @@ struct ExtractDependencies : public Pass {
         }
 
         prev_val.chunks()[0].wire->port_output = true;
-        assert(prev_val.chunks()[0].wire->name == final_output_name(final_wire_name_in_mod));
+        assert(prev_val.chunks()[0].wire->name == final_output_name(final_wire_name_in_mod, pred_conf));
 
     }
 
@@ -585,7 +582,7 @@ struct ExtractDependencies : public Pass {
         return IdString(RTLIL::escape_id(name_without_inp));
     }
 
-    IdString final_output_name(IdString wire_name_in_mod){
+    IdString final_output_name(IdString wire_name_in_mod, PredictorConfiguration pred_conf){
         IdString ans = wire_name_in_mod.str() + "_pred_wire" + std::to_string(pred_conf.prediction_bound);
         return ans;
     }
