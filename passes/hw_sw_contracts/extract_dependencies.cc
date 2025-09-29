@@ -123,9 +123,10 @@ struct ExtractDependencies : public Pass {
             }
             add_output(predictor_module, final_wire->name, stage_retirement_wires, pred_conf);
 
+            remove_ff_cells(predictor_module);
+
             add_predictor_module_to_main_module(design, mod, wire_name, predictor_module, pred_conf);
     }
-
 
     vector<Cell*> find_reverse_reachable_cells(Module* mod, Wire *final_wire, Wire *clock_wire, vector<Wire*> relevant_wires, int hist_len){
         std::vector<RTLIL::IdString> cell_names;
@@ -579,6 +580,18 @@ struct ExtractDependencies : public Pass {
         std::string inp_pref = "inp_";
         std::string name_without_inp = RTLIL::unescape_id(wire_name).substr(inp_pref.size());
         return IdString(RTLIL::escape_id(name_without_inp));
+    }
+
+    void remove_ff_cells(Module *predictor_module){
+        vector<Cell*> ff_cells;
+        for(auto cell : predictor_module->cells()){
+            if(cell->type == IdString("$dff")){
+                ff_cells.push_back(cell);
+            }
+        }
+        for(auto cell : ff_cells){
+            predictor_module->remove(cell);
+        }
     }
 
     IdString final_output_in_pred_name(PredictorConfiguration pred_conf){
