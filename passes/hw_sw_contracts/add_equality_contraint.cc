@@ -85,7 +85,17 @@ struct AddEqualityCheck : public Pass {
 			RTLIL::Wire *l_wire = mod->wire(l_id);
 			RTLIL::Wire *r_wire = mod->wire(r_id);
 
+			if(l_wire == nullptr){
+				std::string error_msg = "Left wire (" + l_name + ") does not exist";
+				log_error("%s", error_msg.c_str());
+			}
+			if(r_wire == nullptr){
+				std::string error_msg = "Right wire (" + r_name + ") does not exist";
+				log_error("%s", error_msg.c_str());
+			}
+
 			if(l_wire->width !=r_wire->width){
+				std::cout << "The lengths of wires: " << l_wire->name.str() << " and " << r_wire->name.str() << " are different" << std::endl;
 				log_error("FAILURE: The two compared wires have different width");
 			}
 			int wire_width = l_wire->width;
