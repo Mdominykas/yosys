@@ -75,7 +75,7 @@ struct ExtractDependencies : public Pass {
             }
 
             Module *predictor_module = new Module();
-            predictor_module->name = IdString(RTLIL::escape_id(pred_conf.output_prefix + "_predictor_" + RTLIL::unescape_id(final_wire->name.str())));
+            predictor_module->name = IdString(RTLIL::escape_id(pred_conf.output_name_in_pred + "_predictor_"));
 
             // we also want to add all the wires that influence the retirements
             vector<Wire*> relevant_wires;
@@ -389,7 +389,7 @@ struct ExtractDependencies : public Pass {
 
         Wire *final_wire = mod->wire(RTLIL::escape_id(final_wire_name));
 
-        Cell* predictor_cell = mod->addCell(RTLIL::escape_id(pred_conf.output_prefix + "_" + final_wire_name + "_predictor"), predictor_module->name);
+        Cell* predictor_cell = mod->addCell(RTLIL::escape_id(pred_conf.output_name_in_mod + "_cell"), predictor_module->name);
         vector<Wire*> input_wires;
         for(Wire *wire : predictor_module->wires()){
             if(wire->port_input){
@@ -405,8 +405,8 @@ struct ExtractDependencies : public Pass {
             predictor_cell->setPort(pred_input_name, SigSpec(mod->wire(input_name)));
         }
 
-        Wire *pred_out = mod->addWire(RTLIL::escape_id(pred_conf.output_prefix + "_pred"), final_wire);
-        predictor_cell->setPort(final_output_name(final_wire->name, pred_conf), SigSpec(pred_out));
+        Wire *pred_out = mod->addWire(RTLIL::escape_id(pred_conf.output_name_in_mod), final_wire);
+        predictor_cell->setPort(final_output_in_pred_name(pred_conf), SigSpec(pred_out));
 
         pred_out->port_output = true;
         mod->fixup_ports();
@@ -418,7 +418,6 @@ struct ExtractDependencies : public Pass {
         IdString current_name = wire_name_in_mod;
         for(int level = 0; level < number_of_layers; level++){
             current_name = next_level_name(current_name, level);
-            std::cout << "current_name = " << current_name.str() << std::endl;
             Wire *wire = predictor_module->wire(current_name);
             assert(wire != nullptr);
             ans.push_back(wire);
@@ -518,9 +517,9 @@ struct ExtractDependencies : public Pass {
             prev_val = out_val;
         }
 
-        prev_val.chunks()[0].wire->port_output = true;
-        assert(prev_val.chunks()[0].wire->name == final_output_name(final_wire_name_in_mod, pred_conf));
-
+        Wire *final_predictor_wire = predictor_module->addWire(final_output_in_pred_name(pred_conf), prev_val.chunks()[0].wire);
+        predictor_module->connect(final_predictor_wire, prev_val);
+        final_predictor_wire->port_output = true;
     }
 
     void deal_with_connections(Module *mod){
@@ -582,9 +581,8 @@ struct ExtractDependencies : public Pass {
         return IdString(RTLIL::escape_id(name_without_inp));
     }
 
-    IdString final_output_name(IdString wire_name_in_mod, PredictorConfiguration pred_conf){
-        IdString ans = wire_name_in_mod.str() + "_pred_wire" + std::to_string(pred_conf.prediction_bound);
-        return ans;
+    IdString final_output_in_pred_name(PredictorConfiguration pred_conf){
+        return RTLIL::escape_id(pred_conf.output_name_in_pred);
     }
 } ExtractDependencies;
 

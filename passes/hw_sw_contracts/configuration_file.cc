@@ -18,15 +18,18 @@ PRIVATE_NAMESPACE_BEGIN
 
 
 struct PredictorConfiguration{
-    std::string output_prefix;
     std::string output_wire;
     vector<std::string> enter_wires, busy_wires, exit_wires;
     // some incorrect value for default constructor
     int prediction_bound = -1;
     int default_prediction = -1;
-    PredictorConfiguration(std::string output_prefix, std::string output_wire, vector<std::string> enter_wires, vector<std::string> busy_wires,
-            vector<std::string> exit_wires, int prediction_bound, int default_prediction) : output_prefix(output_prefix), output_wire(output_wire), enter_wires(enter_wires), busy_wires(busy_wires), exit_wires(exit_wires),
-            prediction_bound(prediction_bound), default_prediction(default_prediction){
+    std::string output_name_in_mod;
+    std::string retirement_name_in_mod;
+    std::string output_name_in_pred;
+    std::string retirement_name_in_pred;
+    PredictorConfiguration(std::string output_wire, vector<std::string> enter_wires, vector<std::string> busy_wires,
+            vector<std::string> exit_wires, int prediction_bound, int default_prediction, std::string output_name_in_mod, std::string retirement_name_in_mod, std::string output_name_in_pred, std::string retirement_name_in_pred) :  output_wire(output_wire), enter_wires(enter_wires), busy_wires(busy_wires), exit_wires(exit_wires),
+            prediction_bound(prediction_bound), default_prediction(default_prediction), output_name_in_mod(output_name_in_mod), retirement_name_in_mod(retirement_name_in_mod), output_name_in_pred(output_name_in_pred), retirement_name_in_pred(retirement_name_in_pred){
         assert(prediction_bound >= 0);
         assert(!enter_wires.empty());
         assert(enter_wires.size() == busy_wires.size());
@@ -34,6 +37,18 @@ struct PredictorConfiguration{
     }
     PredictorConfiguration() { }
 };
+
+bool all_new_wires_have_different_names(vector<PredictorConfiguration> configurations){
+    std::set<std::string> wire_names;
+    int expected_cnt = 0;
+    for(auto pred_conf : configurations){
+        for(std::string wire_name : {pred_conf.output_name_in_mod, pred_conf.retirement_name_in_mod, pred_conf.output_name_in_pred, pred_conf.retirement_name_in_pred}){
+            wire_names.insert(wire_name);
+            expected_cnt++;
+        }
+    }
+    return expected_cnt == ((int) wire_names.size());
+}
 
 struct ConfigurationFile {
     std::string clock_name;
@@ -74,6 +89,7 @@ struct ConfigurationFile {
             predictors.push_back(parse_predictor_from_json(json_pred));
         }
 
+        assert(all_new_wires_have_different_names(predictors));
 
         clock_name = parse_string_from_object(json_items, "clock_name");
     }
@@ -165,9 +181,12 @@ struct ConfigurationFile {
             exit_wires.push_back(val.string_value());
         }
 
-        std::string output_prefix = parse_string_from_object(json_items, "output_prefix");
+        std::string output_name_in_mod = parse_string_from_object(json_items, "output_name_in_mod");
+        std::string retirement_name_in_mod = parse_string_from_object(json_items, "retirement_name_in_mod");
+        std::string output_name_in_pred = parse_string_from_object(json_items, "output_name_in_pred");
+        std::string retirement_name_in_pred = parse_string_from_object(json_items, "retirement_name_in_pred");
 
-        return PredictorConfiguration(output_prefix, output_wire, enter_wires, busy_wires, exit_wires, prediction_bound, default_prediction);
+        return PredictorConfiguration(output_wire, enter_wires, busy_wires, exit_wires, prediction_bound, default_prediction, output_name_in_mod, retirement_name_in_mod, output_name_in_pred, retirement_name_in_pred);
     }
 };
 
