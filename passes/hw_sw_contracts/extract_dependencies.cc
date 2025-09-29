@@ -160,7 +160,11 @@ struct ExtractDependencies : public Pass {
         for(Cell *cell : mod->cells()){
             int cell_id = cell_names_to_indices[cell->name];
             for(auto [sigName, sig] : cell->connections()){
-                assert((cell->input(sigName)) || (cell->output(sigName)));
+                bool is_input_or_output = ((cell->input(sigName)) || (cell->output(sigName)));
+                if(!is_input_or_output){
+                    std::cout << "Cell " << cell->name.str() << " has connection named: " << sigName.str() << ", that is neither input nor output" << std::endl;
+                    assert(is_input_or_output);
+                }
                 assert((!cell->input(sigName)) || (!cell->output(sigName)));
 
 
@@ -408,10 +412,13 @@ struct ExtractDependencies : public Pass {
 
         Wire *pred_out = mod->addWire(RTLIL::escape_id(pred_conf.output_name_in_mod), final_wire);
         predictor_cell->setPort(final_output_in_pred_name(pred_conf), SigSpec(pred_out));
-
         pred_out->port_output = true;
-        mod->fixup_ports();
 
+        Wire *pred_ret = mod->addWire(RTLIL::escape_id(pred_conf.retirement_name_in_mod));
+        predictor_cell->setPort(RTLIL::escape_id(pred_conf.retirement_name_in_pred), pred_ret);
+        pred_ret->port_output = true;
+
+        mod->fixup_ports();
     }
 
     vector<Wire*> get_wires_across_layers(Module *predictor_module, IdString wire_name_in_mod, int number_of_layers){
@@ -430,6 +437,7 @@ struct ExtractDependencies : public Pass {
         vector<Wire*> retirement_wires = get_first_satisfying_path(predictor_module, retirement_wire_names, pred_conf);
         
         set_output_to_first_matching(predictor_module, final_wire_name_in_mod, retirement_wires, pred_conf);
+        set_predictor_retired_wire(predictor_module, retirement_wires, pred_conf);
     }
 
     vector<Wire*> get_first_satisfying_path(Module *predictor_module, vector<IdString> retirement_wire_names, PredictorConfiguration pred_conf){
@@ -521,6 +529,26 @@ struct ExtractDependencies : public Pass {
         Wire *final_predictor_wire = predictor_module->addWire(final_output_in_pred_name(pred_conf), prev_val.chunks()[0].wire);
         predictor_module->connect(final_predictor_wire, prev_val);
         final_predictor_wire->port_output = true;
+    }
+
+    void set_predictor_retired_wire(Module *predictor_module, vector<Wire*> retirement_wires, PredictorConfiguration pred_conf){
+        assert(!retirement_wires.empty());
+
+        Wire* last_or_result = retirement_wires[0];
+        for(size_t i = 1; i < retirement_wires.size(); i++){
+            Cell *or_cell = predictor_module->addCell(predictor_module->uniquify(RTLIL::escape_id("or_cell_for_final_retirement")), "$_OR_");
+            or_cell->setPort(ID::A, last_or_result);
+            or_cell->setPort(ID::B, retirement_wires[i]);
+            
+            Wire *or_output = predictor_module->addWire(predictor_module->uniquify(RTLIL::escape_id("or_output_for_final_retirement")));
+            or_cell->setPort(ID::Y, or_output);
+
+            last_or_result = or_output;
+        }
+
+        Wire *retirement_in_pred = predictor_module->addWire(RTLIL::escape_id(pred_conf.retirement_name_in_pred));
+        predictor_module->connect(retirement_in_pred, last_or_result);
+        retirement_in_pred->port_output = true;
     }
 
     void deal_with_connections(Module *mod){
