@@ -441,6 +441,8 @@ struct ExtractDependencies : public Pass {
     }
 
     vector<Wire*> get_first_satisfying_path(Module *predictor_module, vector<IdString> retirement_wire_names, PredictorConfiguration pred_conf){
+        // path condition - a strictly increasing sequence of indices so that for i-th of them the i-th retirement holds
+        // returns vector of wires where each wire corresponds to whether path condition holds for the that index
         vector<vector<Wire*> > preprocessed_retirements;
         for(size_t retirement_id = 0; retirement_id < retirement_wire_names.size(); retirement_id++){
             IdString retirement = retirement_wire_names[retirement_id];
@@ -450,8 +452,7 @@ struct ExtractDependencies : public Pass {
 
             IdString redux_retirement_name = IdString(name_without_level(retirement_wires[0]->name).str() + "_redux");
             for(size_t layer = 0; layer < retirement_wires.size(); layer++){
-                // TODO: this will crash if I use the same retirement twice
-                Cell *reduce_or_cell = predictor_module->addCell(redux_retirement_name.str() + "_cell_" + std::to_string(layer), "$reduce_or");
+                Cell *reduce_or_cell = predictor_module->addCell(predictor_module->uniquify(redux_retirement_name.str() + "_cell_" + std::to_string(layer)), "$reduce_or");
 
                 // reduction to one bit
                 SigSpec ret_spec = SigSpec(retirement_wires[layer]);
@@ -464,17 +465,6 @@ struct ExtractDependencies : public Pass {
 
 
                 Wire *preprocessed_wire = reduced_retirement;
-                // or of previous layer
-                if(layer > 0){
-                    Cell *or_cell = predictor_module->addCell(predictor_module->uniquify(RTLIL::escape_id("or_cell")), "$_OR_");
-                    or_cell->setPort(ID::A, preprocessed_wire);
-                    or_cell->setPort(ID::B, preprocessed_layer.back());
-                    
-                    Wire *or_output = predictor_module->addWire(predictor_module->uniquify(RTLIL::escape_id("or_output")));
-                    or_cell->setPort(ID::Y, or_output);
-
-                    preprocessed_wire = or_output;
-                }
 
                 // and of previous retirement
                 if(retirement_id > 0){
@@ -487,6 +477,20 @@ struct ExtractDependencies : public Pass {
 
                     preprocessed_wire = and_output;
                 }
+
+                // or of previous layer
+                if(layer > 0){
+                    Cell *or_cell = predictor_module->addCell(predictor_module->uniquify(RTLIL::escape_id("or_cell")), "$_OR_");
+                    or_cell->setPort(ID::A, preprocessed_wire);
+                    or_cell->setPort(ID::B, preprocessed_layer.back());
+                    
+                    Wire *or_output = predictor_module->addWire(predictor_module->uniquify(RTLIL::escape_id("or_output")));
+                    or_cell->setPort(ID::Y, or_output);
+
+                    preprocessed_wire = or_output;
+                }
+
+                // after this an invariant that retirements are 1 from the first index that satisfies the path condition holds
 
                 preprocessed_layer.push_back(preprocessed_wire);
 
