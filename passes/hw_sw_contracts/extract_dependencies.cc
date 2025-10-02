@@ -111,6 +111,16 @@ struct ExtractDependencies : public Pass {
                 rewire_ff_to_previous_level(cells_in_layers[level - 1], cells_in_layers[level]);
             }
 
+            // we remove ff cells and first layer (first layer is after 0 cycles, so it is useless) here as layer 
+            for(int layer = 1; layer < pred_conf.prediction_bound; layer++){
+                remove_layer_ff_cells(predictor_module, cells_in_layers[layer]);
+            }
+
+            for(auto cell : cells_in_layers[0]){
+                predictor_module->remove(cell);
+            }
+
+
             vector<IdString> stage_retirement_wires;
             for(auto name : pred_conf.exit_wires){
                 Wire *wire = mod->wire(RTLIL::escape_id(name));
@@ -123,7 +133,7 @@ struct ExtractDependencies : public Pass {
             }
             add_output(predictor_module, final_wire->name, stage_retirement_wires, pred_conf);
 
-            remove_ff_cells(predictor_module);
+
 
             add_predictor_module_to_main_module(design, mod, wire_name, predictor_module, pred_conf);
     }
@@ -530,7 +540,7 @@ struct ExtractDependencies : public Pass {
             prev_val = out_val;
         }
 
-        Wire *final_predictor_wire = predictor_module->addWire(final_output_in_pred_name(pred_conf), prev_val.chunks()[0].wire);
+        Wire *final_predictor_wire = predictor_module->addWire(final_output_in_pred_name(pred_conf), prev_val.chunks()[0].wire->width);
         predictor_module->connect(final_predictor_wire, prev_val);
         final_predictor_wire->port_output = true;
     }
@@ -614,9 +624,9 @@ struct ExtractDependencies : public Pass {
         return IdString(RTLIL::escape_id(name_without_inp));
     }
 
-    void remove_ff_cells(Module *predictor_module){
+    void remove_layer_ff_cells(Module *predictor_module, vector<Cell*> layer_cells){
         vector<Cell*> ff_cells;
-        for(auto cell : predictor_module->cells()){
+        for(auto cell : layer_cells){
             if(cell->type == IdString("$dff")){
                 ff_cells.push_back(cell);
             }
