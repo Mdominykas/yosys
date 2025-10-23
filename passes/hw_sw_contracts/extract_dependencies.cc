@@ -69,74 +69,74 @@ struct ExtractDependencies : public Pass {
 
     // TOOD: there is an extra identation layer, fix after doing important stuff
     void construct_predictor(Design *design, Module *mod, Wire *clock_wire, PredictorConfiguration pred_conf, int hist_len){
-            std::string wire_name = pred_conf.output_wire;
-            ModWire *final_wire = mod->wire(RTLIL::escape_id(wire_name));
-            if(final_wire == NULL){
-                log_error("Final wire not found\n");
-            }
+        std::string wire_name = pred_conf.output_wire;
+        ModWire *final_wire = mod->wire(RTLIL::escape_id(wire_name));
+        if(final_wire == NULL){
+            log_error("Final wire not found\n");
+        }
 
-            Module *predictor_module = new Module();
-            predictor_module->name = IdString(RTLIL::escape_id(pred_conf.output_name_in_pred + "_predictor_"));
+        Module *predictor_module = new Module();
+        predictor_module->name = IdString(RTLIL::escape_id(pred_conf.output_name_in_pred + "_predictor_"));
 
-            // we also want to add all the wires that influence the retirements
-            vector<Wire*> relevant_wires;
-            for(auto name_vec : {pred_conf.enter_wires, pred_conf.busy_wires, pred_conf.exit_wires}){
-                for(std::string name : name_vec){
-                    Wire *wire = mod->wire(RTLIL::escape_id(name));
-                    assert(wire != nullptr);
-                    relevant_wires.push_back(wire);
-                }
-            }
-            vector<Cell*> cells_to_add_to_pred = this->find_reverse_reachable_cells(mod, final_wire, clock_wire, relevant_wires, hist_len);
-
-
-            std::set<Wire*> input_wires;
-
-            vector<vector<Cell*> > cells_in_layers;
-        
-            vector<Cell*> first_layer = add_layer_of_cells(predictor_module, cells_to_add_to_pred, input_wires, 0);
-            cells_in_layers.push_back(first_layer);
-
-            // construction of all the layers
-            for(int level = 1; level < pred_conf.prediction_bound; level++){
-                vector<Cell*> new_cells = this->add_layer_of_cells(predictor_module, cells_in_layers.back(), input_wires, level);
-                cells_in_layers.push_back(new_cells);
-            }
-
-            add_ff_data_as_module_inputs(predictor_module, cells_in_layers[0]);
-
-            // rewire ff wires
-            assert(pred_conf.prediction_bound == ((int) cells_in_layers.size()));
-            // for(int level = 1; level < conf.prediction_bound; level++){
-            for(int level = 1; level < pred_conf.prediction_bound; level++){
-                rewire_ff_to_previous_level(cells_in_layers[level - 1], cells_in_layers[level]);
-            }
-
-            // we remove ff cells and first layer (first layer is after 0 cycles, so it is useless) here as layer 
-            for(int layer = 1; layer < pred_conf.prediction_bound; layer++){
-                remove_layer_ff_cells(predictor_module, cells_in_layers[layer]);
-            }
-
-            for(auto cell : cells_in_layers[0]){
-                predictor_module->remove(cell);
-            }
-
-
-            vector<IdString> stage_retirement_wires;
-            for(auto name : pred_conf.exit_wires){
+        // we also want to add all the wires that influence the retirements
+        vector<Wire*> relevant_wires;
+        for(auto name_vec : {pred_conf.enter_wires, pred_conf.busy_wires, pred_conf.exit_wires}){
+            for(std::string name : name_vec){
                 Wire *wire = mod->wire(RTLIL::escape_id(name));
-
-                if(wire == nullptr){
-                    log_error("Retirement wire named %s not found in the module", name.c_str());
-                }
-
-                stage_retirement_wires.push_back(wire->name);
+                assert(wire != nullptr);
+                relevant_wires.push_back(wire);
             }
-            add_output(predictor_module, final_wire->name, stage_retirement_wires, pred_conf);
+        }
+        vector<Cell*> cells_to_add_to_pred = this->find_reverse_reachable_cells(mod, final_wire, clock_wire, relevant_wires, hist_len);
+
+
+        std::set<Wire*> input_wires;
+
+        vector<vector<Cell*> > cells_in_layers;
+    
+        vector<Cell*> first_layer = add_layer_of_cells(predictor_module, cells_to_add_to_pred, input_wires, 0);
+        cells_in_layers.push_back(first_layer);
+
+        // construction of all the layers
+        for(int level = 1; level < pred_conf.prediction_bound; level++){
+            vector<Cell*> new_cells = this->add_layer_of_cells(predictor_module, cells_in_layers.back(), input_wires, level);
+            cells_in_layers.push_back(new_cells);
+        }
+
+        add_ff_data_as_module_inputs(predictor_module, cells_in_layers[0]);
+
+        // rewire ff wires
+        assert(pred_conf.prediction_bound == ((int) cells_in_layers.size()));
+        // for(int level = 1; level < conf.prediction_bound; level++){
+        for(int level = 1; level < pred_conf.prediction_bound; level++){
+            rewire_ff_to_previous_level(cells_in_layers[level - 1], cells_in_layers[level]);
+        }
+
+        // we remove ff cells and first layer (first layer is after 0 cycles, so it is useless) here as layer 
+        for(int layer = 1; layer < pred_conf.prediction_bound; layer++){
+            remove_layer_ff_cells(predictor_module, cells_in_layers[layer]);
+        }
+
+        for(auto cell : cells_in_layers[0]){
+            predictor_module->remove(cell);
+        }
+
+
+        vector<IdString> stage_retirement_wires;
+        for(auto name : pred_conf.exit_wires){
+            Wire *wire = mod->wire(RTLIL::escape_id(name));
+
+            if(wire == nullptr){
+                log_error("Retirement wire named %s not found in the module", name.c_str());
+            }
+
+            stage_retirement_wires.push_back(wire->name);
+        }
+        add_output(predictor_module, final_wire->name, stage_retirement_wires, pred_conf);
 
 
 
-            add_predictor_module_to_main_module(design, mod, wire_name, predictor_module, pred_conf);
+        add_predictor_module_to_main_module(design, mod, wire_name, predictor_module, pred_conf);
     }
 
     vector<Cell*> find_reverse_reachable_cells(Module* mod, Wire *final_wire, Wire *clock_wire, vector<Wire*> relevant_wires, int hist_len){
