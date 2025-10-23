@@ -67,6 +67,7 @@ struct ExtractDependencies : public Pass {
 
 	}
 
+    // TOOD: there is an extra identation layer, fix after doing important stuff
     void construct_predictor(Design *design, Module *mod, Wire *clock_wire, PredictorConfiguration pred_conf, int hist_len){
             std::string wire_name = pred_conf.output_wire;
             ModWire *final_wire = mod->wire(RTLIL::escape_id(wire_name));

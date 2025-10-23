@@ -6,3 +6,7 @@ OBJS += passes/hw_sw_contracts/preserve_past_values.o
 OBJS += passes/hw_sw_contracts/add_bitwise_negation.o
 OBJS += passes/hw_sw_contracts/create_product_circuit.o
 OBJS += passes/hw_sw_contracts/configuration_file.o
+OBJS += passes/hw_sw_contracts/contract_predictor_simplification.o
+OBJS += passes/hw_sw_contracts/simplification_parameters.o
+OBJS += passes/hw_sw_contracts/generatable_expressions/basic_expressions.o
+OBJS += passes/hw_sw_contracts/add_predictor_to_mod.o
