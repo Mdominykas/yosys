@@ -22,7 +22,7 @@ struct ExtractDependencies : public Pass {
 	void help() override
 	{
 		log("\n");
-		log("    extract_dependencies <configuration_file>\n");
+		log("    extract_dependencies <configuration_file> [--include_in_mod] \n");
 		log("\n");
 	}
 
@@ -35,16 +35,24 @@ struct ExtractDependencies : public Pass {
 	{
 		log_header(design, "Executing EXTRACT_DEPENDENCIES pass.\n");
 
-        if(args.size() != 2){
+        if(args.size() < 2){
 			log_error("Incorrect number of arguments\n");
 		}
 
         // TODO: make it exact
         int hist_len = 100;
 
+
         if(design->selected_modules().size() > 1){
 			log_error("More that one module selected\n");
 		}
+
+        bool include_predictor = false;
+        for(auto arg : args){
+            if(arg == "--include_in_mod"){
+                include_predictor = true;
+            }
+        }
 
         conf = ConfigurationFile(args[1]);
 
@@ -62,13 +70,12 @@ struct ExtractDependencies : public Pass {
         log_assert(mod->connections().empty());
 
         for(PredictorConfiguration pred_conf : conf.predictors){
-            construct_predictor(design, mod, clock_wire, pred_conf, hist_len);
+            construct_predictor(design, mod, clock_wire, pred_conf, hist_len, include_predictor);
         }
 
 	}
 
-    // TOOD: there is an extra identation layer, fix after doing important stuff
-    void construct_predictor(Design *design, Module *mod, Wire *clock_wire, PredictorConfiguration pred_conf, int hist_len){
+    void construct_predictor(Design *design, Module *mod, Wire *clock_wire, PredictorConfiguration pred_conf, int hist_len, bool include_predictor){
         std::string wire_name = pred_conf.output_wire;
         ModWire *final_wire = mod->wire(RTLIL::escape_id(wire_name));
         if(final_wire == NULL){
@@ -135,8 +142,10 @@ struct ExtractDependencies : public Pass {
         add_output(predictor_module, final_wire->name, stage_retirement_wires, pred_conf);
 
 
-
-        add_predictor_module_to_main_module(design, mod, wire_name, predictor_module, pred_conf);
+        predictor_module->fixup_ports();
+        if(include_predictor){
+            add_predictor_module_to_main_module(design, mod, wire_name, predictor_module, pred_conf);
+        }
     }
 
     vector<Cell*> find_reverse_reachable_cells(Module* mod, Wire *final_wire, Wire *clock_wire, vector<Wire*> relevant_wires, int hist_len){
@@ -400,7 +409,6 @@ struct ExtractDependencies : public Pass {
     }
 
     void add_predictor_module_to_main_module(Design *design, Module *mod, std::string final_wire_name, Module *predictor_module, PredictorConfiguration pred_conf){
-        predictor_module->fixup_ports();
         design->add(predictor_module);
 
         Wire *final_wire = mod->wire(RTLIL::escape_id(final_wire_name));
