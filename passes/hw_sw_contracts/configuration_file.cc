@@ -23,13 +23,21 @@ struct PredictorConfiguration{
     // some incorrect value for default constructor
     int prediction_bound = -1;
     int default_prediction = -1;
+
     std::string output_name_in_mod;
     std::string retirement_name_in_mod;
+    std::string applicability_name_in_mod;
+
     std::string output_name_in_pred;
     std::string retirement_name_in_pred;
+    std::string applicability_name_in_pred;
+
+
+    // TODO: this is an awful construction (each change is super complicated and error prone). Rewrite it in a nice way
     PredictorConfiguration(std::string output_wire, vector<std::string> enter_wires, vector<std::string> busy_wires,
-            vector<std::string> exit_wires, int prediction_bound, int default_prediction, std::string output_name_in_mod, std::string retirement_name_in_mod, std::string output_name_in_pred, std::string retirement_name_in_pred) :  output_wire(output_wire), enter_wires(enter_wires), busy_wires(busy_wires), exit_wires(exit_wires),
-            prediction_bound(prediction_bound), default_prediction(default_prediction), output_name_in_mod(output_name_in_mod), retirement_name_in_mod(retirement_name_in_mod), output_name_in_pred(output_name_in_pred), retirement_name_in_pred(retirement_name_in_pred){
+            vector<std::string> exit_wires, int prediction_bound, int default_prediction, std::string output_name_in_mod, std::string retirement_name_in_mod, std::string applicability_name_in_mod, std::string output_name_in_pred, std::string retirement_name_in_pred, std::string applicability_name_in_pred) :  output_wire(output_wire), enter_wires(enter_wires), busy_wires(busy_wires), exit_wires(exit_wires),
+            prediction_bound(prediction_bound), default_prediction(default_prediction), output_name_in_mod(output_name_in_mod), retirement_name_in_mod(retirement_name_in_mod),
+            applicability_name_in_mod(applicability_name_in_mod), output_name_in_pred(output_name_in_pred), retirement_name_in_pred(retirement_name_in_pred), applicability_name_in_pred(applicability_name_in_pred) {
         assert(prediction_bound >= 0);
         assert(!enter_wires.empty());
         assert(enter_wires.size() == busy_wires.size());
@@ -183,10 +191,13 @@ struct ConfigurationFile {
 
         std::string output_name_in_mod = parse_string_from_object(json_items, "output_name_in_mod");
         std::string retirement_name_in_mod = parse_string_from_object(json_items, "retirement_name_in_mod");
+        std::string applicability_name_in_mod = parse_string_from_object(json_items, "applicability_in_mod");
+        
         std::string output_name_in_pred = parse_string_from_object(json_items, "output_name_in_pred");
         std::string retirement_name_in_pred = parse_string_from_object(json_items, "retirement_name_in_pred");
+        std::string applicability_name_in_pred = parse_string_from_object(json_items, "applicability_in_pred");
 
-        return PredictorConfiguration(output_wire, enter_wires, busy_wires, exit_wires, prediction_bound, default_prediction, output_name_in_mod, retirement_name_in_mod, output_name_in_pred, retirement_name_in_pred);
+        return PredictorConfiguration(output_wire, enter_wires, busy_wires, exit_wires, prediction_bound, default_prediction, output_name_in_mod, retirement_name_in_mod, applicability_name_in_mod, output_name_in_pred, retirement_name_in_pred, applicability_name_in_pred);
     }
 };
 

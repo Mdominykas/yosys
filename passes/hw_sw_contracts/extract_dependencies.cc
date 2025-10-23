@@ -82,11 +82,17 @@ struct ExtractDependencies : public Pass {
             log_error("Final wire not found\n");
         }
 
+        Wire *applicability_wire = mod->wire(RTLIL::escape_id(pred_conf.applicability_name_in_mod));
+        if(applicability_wire == nullptr){
+            log_error("Applicability wire not found");
+        }
+
+
         Module *predictor_module = new Module();
         predictor_module->name = IdString(RTLIL::escape_id(pred_conf.output_name_in_pred + "_predictor_"));
 
         // we also want to add all the wires that influence the retirements
-        vector<Wire*> relevant_wires;
+        vector<Wire*> relevant_wires = {final_wire, applicability_wire};
         for(auto name_vec : {pred_conf.enter_wires, pred_conf.busy_wires, pred_conf.exit_wires}){
             for(std::string name : name_vec){
                 Wire *wire = mod->wire(RTLIL::escape_id(name));
@@ -139,7 +145,9 @@ struct ExtractDependencies : public Pass {
 
             stage_retirement_wires.push_back(wire->name);
         }
+
         add_output(predictor_module, final_wire->name, stage_retirement_wires, pred_conf);
+        add_output(predictor_module, applicability_wire->name, stage_retirement_wires, pred_conf);
 
 
         predictor_module->fixup_ports();
