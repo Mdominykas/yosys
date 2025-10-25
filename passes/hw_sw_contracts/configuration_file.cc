@@ -82,7 +82,7 @@ struct ConfigurationFile {
         json11::Json json = Json::parse(contents, err);
 
         if(err != ""){
-            log_error("Failure when reading a json file\n");
+            log_error("Failure when reading a json file\nThe error is: %s", err.c_str());
         }
 
         // parse predictor configuration

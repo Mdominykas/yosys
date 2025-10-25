@@ -146,8 +146,13 @@ struct ExtractDependencies : public Pass {
             stage_retirement_wires.push_back(wire->name);
         }
 
-        add_output(predictor_module, final_wire->name, stage_retirement_wires, pred_conf);
-        add_output(predictor_module, applicability_wire->name, stage_retirement_wires, pred_conf);
+        vector<Wire*> retirement_wires = get_first_satisfying_path(predictor_module, stage_retirement_wires, pred_conf);
+
+        add_output(predictor_module, final_wire->name, retirement_wires, pred_conf, RTLIL::escape_id(pred_conf.output_name_in_pred));
+        add_output(predictor_module, applicability_wire->name, retirement_wires, pred_conf, RTLIL::escape_id(pred_conf.applicability_name_in_pred));
+
+        set_predictor_retired_wire(predictor_module, retirement_wires, pred_conf);
+
 
 
         predictor_module->fixup_ports();
@@ -460,11 +465,11 @@ struct ExtractDependencies : public Pass {
         return ans;
     }
 
-    void add_output(Module *predictor_module, IdString final_wire_name_in_mod, vector<IdString> retirement_wire_names, PredictorConfiguration pred_conf){
-        vector<Wire*> retirement_wires = get_first_satisfying_path(predictor_module, retirement_wire_names, pred_conf);
+    // TODO: this function seems useless as it is now only a wrapper
+    void add_output(Module *predictor_module, IdString final_wire_name_in_mod, vector<Wire*> retirement_wires, PredictorConfiguration pred_conf, IdString final_wire_name_in_pred){
+        std::cout << "kvieciu add_output su " << final_wire_name_in_mod.str() << std::endl;
         
-        set_output_to_first_matching(predictor_module, final_wire_name_in_mod, retirement_wires, pred_conf);
-        set_predictor_retired_wire(predictor_module, retirement_wires, pred_conf);
+        set_output_to_first_matching(predictor_module, final_wire_name_in_mod, retirement_wires, pred_conf, final_wire_name_in_pred);
     }
 
     vector<Wire*> get_first_satisfying_path(Module *predictor_module, vector<IdString> retirement_wire_names, PredictorConfiguration pred_conf){
@@ -528,13 +533,16 @@ struct ExtractDependencies : public Pass {
         return preprocessed_retirements.back();
     }
 
-    void set_output_to_first_matching(Module *predictor_module, IdString final_wire_name_in_mod, vector<Wire*> retirement_wires, PredictorConfiguration pred_conf){
+    void set_output_to_first_matching(Module *predictor_module, IdString final_wire_name_in_mod, vector<Wire*> retirement_wires, PredictorConfiguration pred_conf, IdString final_wire_name_in_pred){
         vector<Wire*> final_wires = get_wires_across_layers(predictor_module, final_wire_name_in_mod, pred_conf.prediction_bound);
         
         assert(!final_wires.empty());
         assert(final_wires.size() == retirement_wires.size());
         
         IdString pred_name = IdString(name_without_level(final_wires[0]->name).str() + "_pred");
+
+        std::cout << "pred_name is: " << pred_name.str() << std::endl;
+
         // TODO: will crash when processor are above 32 bits
         assert(final_wires[0]->width <= 32);
         SigSpec prev_val = SigSpec(pred_conf.default_prediction, final_wires[0]->width);
@@ -557,7 +565,7 @@ struct ExtractDependencies : public Pass {
             prev_val = out_val;
         }
 
-        Wire *final_predictor_wire = predictor_module->addWire(final_output_in_pred_name(pred_conf), prev_val.chunks()[0].wire->width);
+        Wire *final_predictor_wire = predictor_module->addWire(final_wire_name_in_pred, prev_val.chunks()[0].wire->width);
         predictor_module->connect(final_predictor_wire, prev_val);
         final_predictor_wire->port_output = true;
     }
