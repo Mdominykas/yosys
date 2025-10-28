@@ -7,6 +7,8 @@
 #include "libs/sha1/sha1.h"
 #include "libs/json11/json11.hpp"
 
+#include "passes/hw_sw_contracts/add_predictor_to_mod.cc"
+
 #include <stdlib.h>
 #include <stdio.h>
 #include <set>
@@ -116,18 +118,55 @@ struct SimplificationParameters{
         return obj[name].int_value();
     }
 
-
-    void check_validity(RTLIL::Module *mod){
-        assert(parsed);
+    vector<Wire*> extract_control_wires(RTLIL::Module *predictor_mod){
+        vector<Wire*> control_wires;
 
         for(std::string ctr_input : control_inputs){
-            Wire *wire = mod->wire(RTLIL::escape_id(ctr_input));
+            IdString input_wire_name = RTLIL::escape_id("inp_" + ctr_input);
+            Wire *wire = predictor_mod->wire(input_wire_name);
+            std::cout << "ieskau wire su pavadinimu: " << input_wire_name.str() << std::endl;
+            if(wire == nullptr){
+                IdString wire_name_in_level = RTLIL::escape_id(ctr_input + "_level_0");
+                wire = predictor_mod->wire(wire_name_in_level);
+                std::cout << "ieskau wire su levelio pavadinimu: " << input_wire_name.str() << std::endl;
+                if(wire == nullptr){
+                    std::cout << "No wire named something like: " << ctr_input << std::endl;
+                }
+                make_wire_input(predictor_mod, wire, RTLIL::escape_id(ctr_input));
+                std::cout << "vel ieskau wire su pavadinimu: " << input_wire_name.str() << std::endl;
+                wire = predictor_mod->wire(input_wire_name);
+            }
             assert(wire != nullptr);
             assert(wire->port_input);
+            control_wires.push_back(wire);
         }
+        return control_wires;
+    }
+
+    void check_validity(RTLIL::Module *predictor_mod){
+        assert(parsed);
+
+        // for(Wire *wire : predictor_mod->wires()){
+        //     std::cout << "Predictor has wire: " << wire->name.str() << std::endl;
+        // }
+
+        // std::cout << "Predictor has inputs: " << std::endl;
+        // for(Wire *wire : predictor_mod->wires()){
+        //     if(wire->port_input){
+        //         std::cout << "wire: " << wire->name.str() << std::endl;
+        //     }
+        // }
+
+        auto extracted = extract_control_wires(predictor_mod);
+        // some random check to not have warning about unused element
+        assert(extracted.size() == control_inputs.size());
+
 
         for(std::string output_wire : {applicability, observation}){
-            Wire *wire = mod->wire(RTLIL::escape_id(output_wire));
+            Wire *wire = predictor_mod->wire(RTLIL::escape_id(output_wire));
+            if(wire == nullptr){
+                std::cout << "No wire named: " << output_wire << " found" << std::endl;
+            }
             assert(wire != nullptr);
             assert(wire->port_output);
         }

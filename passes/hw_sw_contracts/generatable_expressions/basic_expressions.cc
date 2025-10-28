@@ -14,8 +14,28 @@
 USING_YOSYS_NAMESPACE
 PRIVATE_NAMESPACE_BEGIN
 
+Wire *extend_wire(Module *mod, Wire *wire, int target_width, bool is_signed){
+    assert(!is_signed); // I do not support wires being signed
+    assert(wire->width <= target_width);
+    if(wire->width == target_width){
+        return wire;
+    }
+    Wire *extended_wire = mod->addWire(wire->name.str() + "_extended", target_width);
+    
+    int sign_bit_cnt = target_width - wire->width;
+
+    vector<SigSpec> sign_bits(sign_bit_cnt, SigSpec(is_signed)); // this is incorrect for the signed case
+    SigSpec extended_sig_spec;
+    for(SigSpec sig_spec : sign_bits){
+        extended_sig_spec.append(sig_spec);
+    }
+    extended_sig_spec.append(wire);
+    mod->connect(extended_sig_spec, extended_wire);
+    return extended_wire;
+}
+
 Wire* addBinaryOperationCell(Module *mod, Wire *lhs, Wire *rhs, IdString cellType, string typeWord){
-    Cell *cell = mod->addCell(mod->uniquify(RTLIL::escape_id(typeWord + "_cell")), ID($add));
+    Cell *cell = mod->addCell(mod->uniquify(RTLIL::escape_id(typeWord + "_cell")), cellType);
     cell->setParam(ID::A_SIGNED, false);
     cell->setParam(ID::B_SIGNED, false);
 
@@ -27,7 +47,7 @@ Wire* addBinaryOperationCell(Module *mod, Wire *lhs, Wire *rhs, IdString cellTyp
     cell->setPort(ID::A, lhs);
     cell->setPort(ID::B, rhs);
 
-    Wire *out_wire = mod->addWire(mod->uniquify(RTLIL::escape_id(typeWord + "_output")), max_width);
+    Wire *out_wire = mod->addWire(mod->uniquify(RTLIL::escape_id(typeWord + "_result")), max_width);
     return out_wire;
 
 }
@@ -39,6 +59,7 @@ public:
     virtual double evaluate(vector<unsigned int> values) const = 0;
     virtual int size() const = 0;
     virtual Wire* convert_to_rtlil(Module *mod, vector<Wire*> variables) const = 0;
+    virtual string to_string(vector<Wire*> variables) const = 0;
 };
 
 class Variable : public BasicExpression {
@@ -59,7 +80,11 @@ public:
         assert(index < variables.size());
         Wire* var_wire = mod->addWire(mod->uniquify(RTLIL::escape_id("expression_wire")), variables[index]);
         mod->connect(var_wire, variables[index]);
-        return var_wire;
+        return extend_wire(mod, var_wire, 32, false);
+    }
+
+    string to_string(vector<Wire*> variables) const {
+        return variables[index]->name.str();
     }
 };
 
@@ -83,6 +108,10 @@ public:
         Wire* rhs = right->convert_to_rtlil(mod, variables);
         return addBinaryOperationCell(mod, lhs, rhs, ID($add), "addition");
     }
+
+    string to_string(vector<Wire*> variables) const {
+        return "( " + left->to_string(variables) + " ) + ( " + right->to_string(variables) + " )";
+    }
 };
 
 // Subtraction expression
@@ -105,6 +134,10 @@ public:
         Wire* rhs = right->convert_to_rtlil(mod, variables);
         return addBinaryOperationCell(mod, lhs, rhs, ID($sub), "subtraction");
     }
+
+    string to_string(vector<Wire*> variables) const {
+        return "( " + left->to_string(variables) + " ) - ( " + right->to_string(variables) + " )";
+    }
 };
 
 // Multiplication expression
@@ -126,6 +159,10 @@ public:
         Wire* lhs = left->convert_to_rtlil(mod, variables);
         Wire* rhs = right->convert_to_rtlil(mod, variables);
         return addBinaryOperationCell(mod, lhs, rhs, ID($mul), "multiplication");
+    }
+
+    string to_string(vector<Wire*> variables) const {
+        return "( " + left->to_string(variables) + " ) * ( " + right->to_string(variables) + " )";
     }
 };
 

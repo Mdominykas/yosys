@@ -8,7 +8,6 @@
 #include "libs/sha1/sha1.h"
 #include "passes/hw_sw_contracts/simplification_parameters.cc"
 #include "passes/hw_sw_contracts/generatable_expressions/basic_expressions.cc"
-#include "passes/hw_sw_contracts/add_predictor_to_mod.cc"
 #include <stdlib.h>
 #include <stdio.h>
 #include <set>
@@ -51,13 +50,23 @@ void set_values_randomly(std::map<Wire*, int> &values, vector<Wire*> wires, std:
 RunResult run_module(Module *mod, std::map<Wire*, int> values, SimplificationParameters &param){
     ConstEval ce(mod);
     for(auto [wire, val] : values){
-        ce.set(wire, val);  // IN1 = 1 (1-bit)
+        vector<bool> val_bits;
+        for(int i = 0; i < wire->width; i++){
+            val_bits.push_back(((1<<i) & val) > 0);
+        }
+        RTLIL::Const const_val(val_bits);
+        std::cout << "GetSize(const_val) = " << GetSize(const_val) << std::endl;
+        std::cout << "GetSize(wire) = " << GetSize(wire) << std::endl;
+        std::cout << "val = " << val << std::endl;
+        std::cout << "const_val = " << const_val.as_int() << std::endl;
+        ce.set(wire, const_val);  // IN1 = 1 (1-bit)
     }
 
     SigSpec app_sig = mod->wire(RTLIL::escape_id(param.applicability)); 
     SigSpec obs_sig = mod->wire(RTLIL::escape_id(param.observation));
     SigSpec app_pending, obs_pending;  
-    bool success = ce.eval(app_sig, app_pending) && ce.eval(obs_sig, obs_pending);
+    bool success = ce.eval(app_sig, app_pending);
+    success = success && ce.eval(obs_sig, obs_pending);
     if (success) {
         // out_sig is now replaced with the computed constant value(s)
         return RunResult(app_sig.as_int(), obs_sig.as_int());
@@ -83,13 +92,13 @@ struct ContractPredictorSimplification : public Pass {
 	{
         const unsigned int rng_seed = 123456789;
         std::mt19937 gen(rng_seed);
-		log_header(design, "Executing EXTRACT_DEPENDENCIES pass.\n");
+		log_header(design, "Executing SIMPLIFY_PREDICTOR pass.\n");
 
-        if(args.size() != 3){
+        if(args.size() != 4){
 			log_error("Incorrect number of arguments\n");
 		}
 
-        std::string main_module_name = args[2];
+        std::string main_module_name = args[1];
         IdString main_module_id = RTLIL::escape_id(main_module_name);
         Module *main_mod = design->module(main_module_id);
         assert(main_mod != nullptr);
@@ -103,10 +112,7 @@ struct ContractPredictorSimplification : public Pass {
         param.parse_parameters(parameter_file);
         param.check_validity(predictor_mod);
 
-        vector<Wire*> control_inputs;
-        for(std::string input_name : param.control_inputs){
-            control_inputs.push_back(predictor_mod->wire(RTLIL::escape_id(input_name)));
-        }
+        vector<Wire*> control_inputs = param.extract_control_wires(predictor_mod);
 
         std::set<Wire*> control_input_set(control_inputs.begin(), control_inputs.end());
 
@@ -187,10 +193,6 @@ struct ContractPredictorSimplification : public Pass {
         design->addModule(simplified_module->name);
         add_predictor_to_mod(main_mod, simplified_module, RTLIL::escape_id(param.observation), RTLIL::escape_id("main_" + param.observation), RTLIL::escape_id(param.applicability), RTLIL::escape_id("main_" +param.applicability));
 	}
-    
-    void add_simplified_module_to_main(){
-
-    }
 
     vector<int> initial_control_values(vector<int> widths){
         vector<int> ans;
@@ -269,7 +271,7 @@ struct ContractPredictorSimplification : public Pass {
         Module *simplified_module = new Module();
         simplified_module->name = IdString(RTLIL::escape_id(param.simplified_module_name));
         for(Wire *wire : mod->wires()){
-            if(wire->port_input){
+            if((wire->port_input) || (wire->port_output)) {
                 simplified_module->addWire(wire->name, wire);
             }
         }
@@ -294,76 +296,58 @@ struct ContractPredictorSimplification : public Pass {
             expression_applicability.push_back(take_and_of_wires(simplified_module, condition_parts));
         }
 
-        // TODO: this is copied two times, maybe write a function?
-        {
-            Wire *applicability = simplified_module->wire(RTLIL::escape_id(param.applicability));
-            assert(applicability != nullptr);
-
-            Cell *pmux = mod->addCell(mod->uniquify("applicability_pmux"), ID($pmux));
-
-            pmux->setParam(ID::WIDTH, 1);
-            pmux->setParam(ID::S_WIDTH, expression_applicability.size());
-
-            
-            SigSpec default_false = false;
-            pmux->setPort(ID::A, default_false);
-
-
-            SigSpec applicable_then_true;
-            for(SigSpec sig_spec : expression_applicability){
-                applicable_then_true.append(true);
-            }
-            pmux->setPort(ID::B, applicable_then_true);
-
-
-            SigSpec applicabilities = SigSpec();
-            for(SigSpec sig_spec: expression_applicability){
-                applicabilities.append(sig_spec);
-            }
-            pmux->setPort(ID::S, applicabilities);
-
-            pmux->setPort(ID::Y, applicability);
+        std::cout << "viso expressionu yra: " << expressions.size() << std::endl;
+        for(auto expression : expressions){
+            std::cout << "expression: " << expression->to_string(data_inputs) << std::endl;
         }
 
+        vector<SigSpec> applicability_results(expression_applicability.size(), SigSpec(false));
+        create_simplification_pmux(simplified_module, RTLIL::escape_id(param.applicability), SigSpec(false), expression_applicability, applicability_results, "applicability");
 
-        vector<Wire*> expression_values;
-        for(BasicExpression *exp : expressions){
-            expression_values.push_back(exp->convert_to_rtlil(mod, data_inputs));
-        }
 
         // TODO: I think this will fail as data variables can have different sizes and then the final result can be of different size
-        {
-            Wire *observation = simplified_module->wire(RTLIL::escape_id(param.observation));
-            assert(observation != nullptr);
-
-            Cell *pmux = mod->addCell(mod->uniquify("observation_pmux"), ID($pmux));
-
-            pmux->setParam(ID::WIDTH, observation->width);
-            pmux->setParam(ID::S_WIDTH, expressions.size());
-
-            
-            SigSpec default_false = false;
-            pmux->setPort(ID::A, default_false);
-
-
-            SigSpec applicable_then_true;
-            for(SigSpec sig_spec : expression_values){
-                applicable_then_true.append(sig_spec);
-            }
-            pmux->setPort(ID::B, applicable_then_true);
-
-
-            SigSpec applicabilities = SigSpec();
-            for(SigSpec sig_spec: expression_applicability){
-                applicabilities.append(sig_spec);
-            }
-            pmux->setPort(ID::S, applicabilities);
-
-            pmux->setPort(ID::Y, observation);
+        vector<SigSpec> expression_sigspecs;
+        for(BasicExpression *exp : expressions){
+            expression_sigspecs.push_back(exp->convert_to_rtlil(mod, data_inputs));
         }
+
+        create_simplification_pmux(simplified_module, RTLIL::escape_id(param.observation), 0, expression_applicability, expression_sigspecs, "observation");
+
 
         simplified_module->fixup_ports();
         return simplified_module;
+    }
+
+    // specific_name - some word that is used in naming cells
+    void create_simplification_pmux(Module *simplified_module, IdString result_name, SigSpec default_value, vector<SigSpec> applicabilities, vector<SigSpec> expressions, std::string specific_name){
+        std::cout << "specific_name = " << specific_name << std::endl;
+        Wire *result_wire = simplified_module->wire(result_name);
+        assert(result_wire != nullptr);
+
+        Cell *pmux = simplified_module->addCell(simplified_module->uniquify(RTLIL::escape_id(specific_name + "_pmux")), ID($pmux));
+
+        std::cout << "GetSize(default_value) = " << GetSize(default_value) << ", GetSize(result_wire) = " << GetSize(result_wire) << std::endl;
+        assert(GetSize(default_value) == GetSize(result_wire));
+        pmux->setPort(ID::A, default_value);
+
+        pmux->setParam(ID::WIDTH, result_wire->width);
+        SigSpec concatenated_selection;
+        for(SigSpec sig_spec : expressions){
+            std::cout << "GetSize(sig_spec) = " << GetSize(sig_spec) << std::endl;
+            assert(GetSize(sig_spec) == GetSize(result_wire));
+            concatenated_selection.append(sig_spec);
+        }
+        pmux->setPort(ID::B, concatenated_selection);
+
+        SigSpec concatenated_applicabilities = SigSpec();
+        for(SigSpec sig_spec: applicabilities){
+            assert(GetSize(sig_spec) == 1);
+            concatenated_applicabilities.append(sig_spec);
+        }
+        pmux->setParam(ID::S_WIDTH, applicabilities.size());
+        pmux->setPort(ID::S, concatenated_applicabilities);
+
+        pmux->setPort(ID::Y, result_wire);
     }
 
 } ContractPredictorSimplification;

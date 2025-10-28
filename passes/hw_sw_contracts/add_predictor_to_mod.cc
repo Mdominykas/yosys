@@ -33,11 +33,18 @@
 USING_YOSYS_NAMESPACE
 PRIVATE_NAMESPACE_BEGIN
 
+// TODO: rename this file to something like utils and add a lot of useful utils
+
 // here the convention is that inputs to the predictor have a prefix inp
 IdString remove_input_from_wire_name(IdString wire_name){
 	std::string inp_pref = "inp_";
 	std::string name_without_inp = RTLIL::unescape_id(wire_name).substr(inp_pref.size());
 	return IdString(RTLIL::escape_id(name_without_inp));
+}
+
+IdString add_input_to_wire_name(IdString wire_name){
+	std::string inp_pref = "inp_";
+	return RTLIL::escape_id(inp_pref + RTLIL::unescape_id(wire_name.str()));
 }
 
 // All IdString must have already escaped with '\\'
@@ -71,6 +78,45 @@ void add_predictor_to_mod(Module *mod, Module *predictor, IdString observation_i
 	applicability->port_output = true;
 
 	mod->fixup_ports();
+}
+
+void make_wire_input(Module *predictor, Wire *wire, IdString new_wire_name){
+	assert(wire != nullptr);
+	IdString input_wire_name = add_input_to_wire_name(new_wire_name);
+	Wire *input_wire = predictor->addWire(input_wire_name, wire);
+	std::cout << "pridedu nauja wire su pavadinimu: " << input_wire_name.str() << std::endl;
+	input_wire->port_input = true;
+
+	// these are difficult to deal with, but may give some optimizations
+	assert((predictor->processes.empty()) && (predictor->memories.empty()));
+
+	for(Cell *cell : predictor->cells()){
+		for(auto [name, sigSpec] : cell->connections()){
+			vector<SigChunk> new_chunks;
+			for(auto chunk : sigSpec.chunks()){
+				if((chunk.is_wire()) && (chunk.wire->name == wire->name) && (cell->input(name))){
+					std::cout << "previous chunk wire was: " << chunk.wire->name.str() << std::endl;
+					chunk.wire = input_wire;
+				}
+				new_chunks.push_back(chunk);
+			}
+			cell->setPort(name, new_chunks);
+		}
+	}
+
+	// a check that the wires were really changed
+	for(Cell *cell : predictor->cells()){
+		for(auto [name, sigSpec] : cell->connections()){
+			for(auto chunk : sigSpec.chunks()){
+				if((chunk.is_wire()) && (chunk.wire->name == wire->name) && (cell->input(name))){
+					std::cout << "now chunk is called: " << chunk.wire->name.str() << std::endl;
+					assert(false);
+				}
+			}
+		}
+	}
+
+	predictor->fixup_ports();
 }
 
 PRIVATE_NAMESPACE_END

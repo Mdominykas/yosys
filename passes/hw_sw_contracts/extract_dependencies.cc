@@ -89,7 +89,7 @@ struct ExtractDependencies : public Pass {
 
 
         Module *predictor_module = new Module();
-        predictor_module->name = IdString(RTLIL::escape_id(pred_conf.output_name_in_pred + "_predictor_"));
+        predictor_module->name = IdString(RTLIL::escape_id(pred_conf.output_wire + "_predictor"));
 
         // we also want to add all the wires that influence the retirements
         vector<Wire*> relevant_wires = {final_wire, applicability_wire};
@@ -98,6 +98,7 @@ struct ExtractDependencies : public Pass {
                 Wire *wire = mod->wire(RTLIL::escape_id(name));
                 assert(wire != nullptr);
                 relevant_wires.push_back(wire);
+                std::cout << "prie relevant wire pridedu: " << name << std::endl;
             }
         }
         vector<Cell*> cells_to_add_to_pred = this->find_reverse_reachable_cells(mod, final_wire, clock_wire, relevant_wires, hist_len);
@@ -125,14 +126,15 @@ struct ExtractDependencies : public Pass {
             rewire_ff_to_previous_level(cells_in_layers[level - 1], cells_in_layers[level]);
         }
 
-        // we remove ff cells and first layer (first layer is after 0 cycles, so it is useless) here as layer 
-        for(int layer = 1; layer < pred_conf.prediction_bound; layer++){
+        // previous comment was: we remove ff cells and first layer (first layer is after 0 cycles, so it is useless) here as layer 
+        // now let's try leaving layer zero cause we can and figure out if it works later on
+        for(int layer = 0; layer < pred_conf.prediction_bound; layer++){
             remove_layer_ff_cells(predictor_module, cells_in_layers[layer]);
         }
 
-        for(auto cell : cells_in_layers[0]){
-            predictor_module->remove(cell);
-        }
+        // for(auto cell : cells_in_layers[0]){
+        //     predictor_module->remove(cell);
+        // }
 
 
         vector<IdString> stage_retirement_wires;
@@ -153,11 +155,11 @@ struct ExtractDependencies : public Pass {
 
         set_predictor_retired_wire(predictor_module, retirement_wires, pred_conf);
 
-
-
         predictor_module->fixup_ports();
+        design->add(predictor_module);
+
         if(include_predictor){
-            add_predictor_module_to_main_module(design, mod, wire_name, predictor_module, pred_conf);
+            add_predictor_module_to_main_module(mod, wire_name, predictor_module, pred_conf);
         }
     }
 
@@ -170,6 +172,7 @@ struct ExtractDependencies : public Pass {
         std::map<ModWire*, size_t> wire_to_index;
         std::vector<std::vector<int> > wire_used_as_input_for, wire_used_as_output_for;
 
+        // TODO: this part could be simplified a lot by using Wire* as a unique identifier (instead of an index)
         for(Cell *cell : mod->cells()){
             cell_names_to_indices[cell->name] = ((int) cell_names.size());
             cell_names.push_back(cell->name);
@@ -201,9 +204,9 @@ struct ExtractDependencies : public Pass {
                 assert((!cell->input(sigName)) || (!cell->output(sigName)));
 
 
-                for(SigBit bit : sig.bits()){
-                    if(bit.is_wire()){
-                        Wire* wire = bit.wire;
+                for(SigChunk chunk : sig.chunks()){
+                    if(chunk.is_wire()){
+                        Wire* wire = chunk.wire;
                         if(wire_to_index.find(wire) == wire_to_index.end()){
                             wire_to_index[wire] = wire_to_index.size();
                             wire_used_as_input_for.push_back(std::vector<int>());
@@ -215,6 +218,10 @@ struct ExtractDependencies : public Pass {
                             wire_used_as_input_for[wire_id].push_back(cell_id);
                         }
                         else if(cell->output(sigName)){
+                            std::cout << "cell outputas yra wire pavadinimu: " << wire->name.str() << std::endl;
+                            if(wire->name.str() == RTLIL::escape_id("retire")){
+                                std::cout << "retire nusetina: " << cell->name.str() << std::endl;
+                            }
                             wire_used_as_output_for[wire_id].push_back(cell_id);
                         }
                         else{
@@ -244,8 +251,8 @@ struct ExtractDependencies : public Pass {
         // Now we run bfs on the dependency tree
         std::deque<int> q;
 
-        // this is done in case retirement wire doesn't influence anything later on
-        relevant_wires.push_back(final_wire);
+        assert(find(relevant_wires.begin(), relevant_wires.end(), final_wire) != relevant_wires.end());
+        // relevant_wires.push_back(final_wire);
         for(Wire *last_wire : relevant_wires){
             assert(wire_to_index.find(last_wire) != wire_to_index.end());
             int last_id = wire_to_index[last_wire];
@@ -286,6 +293,7 @@ struct ExtractDependencies : public Pass {
         for(size_t index = 0; index < cell_names.size(); index++){
             if(dist[index] <= hist_len){
                 ans.push_back(mod->cell(cell_names[index]));
+                std::cout << "cell su pavadinimu: " << cell_names[index].str() << " yra reverse reachable" << std::endl;
             }
         }
         return ans;
@@ -296,9 +304,13 @@ struct ExtractDependencies : public Pass {
         
         // create new cells
         for(Cell* cell : layer){
-            IdString new_name = this->next_level_name(cell->name, level);
+            IdString new_name = next_level_name(cell->name, level);
             Cell* new_cell = predictor_module->addCell(new_name, cell);
             new_layer.push_back(new_cell);
+            if(level == 0){
+                std::cout << "nulinis lygis sukuria cell su pavadinimu: " << new_cell->name.str() << std::endl;
+
+            }
         }
         std::map<Wire*, PredWire*> wire_in_next_layer;
 
@@ -307,7 +319,7 @@ struct ExtractDependencies : public Pass {
             for(auto [name, sigSpec] : cell->connections()){
                 for(auto chunk : sigSpec.chunks()){
                     if((chunk.wire != NULL) && (wire_in_next_layer.find(chunk.wire) == wire_in_next_layer.end())){
-                        IdString new_name = this->next_level_name(chunk.wire->name, level);
+                        IdString new_name = next_level_name(chunk.wire->name, level);
                         Wire* new_wire;
                         if((chunk.wire->module != predictor_module) && (chunk.wire->port_input)){
                             IdString input_wire_name = rename_to_input_wire(chunk.wire->name);
@@ -362,12 +374,17 @@ struct ExtractDependencies : public Pass {
                 continue;
             }
 
+            std::cout << "cell su pavadinimu: " << cell->name.str() << " yra dff tipo cell" << std::endl;
+
             vector<SigChunk> outChunks = cell->connections().at(IdString("\\Q")).chunks();
             assert(outChunks.size() == 1); // TODO: implement some handling when this doesn't hold
             assert(outChunks[0].wire);
             IdString new_name = rename_to_input_wire(name_without_level(outChunks[0].wire->name));
             Wire *new_wire = predictor_module->addWire(new_name, outChunks[0].wire->width);
             new_wire->port_input = true;
+
+            std::cout << "tas cell gauna nauja input wire su pavadinimu: " << new_wire->name.str() << std::endl;
+            std::cout << std::endl;
 
             cell->setPort(IdString("\\D"), new_wire);
         }
@@ -421,9 +438,7 @@ struct ExtractDependencies : public Pass {
 
     }
 
-    void add_predictor_module_to_main_module(Design *design, Module *mod, std::string final_wire_name, Module *predictor_module, PredictorConfiguration pred_conf){
-        design->add(predictor_module);
-
+    void add_predictor_module_to_main_module(Module *mod, std::string final_wire_name, Module *predictor_module, PredictorConfiguration pred_conf){
         Wire *final_wire = mod->wire(RTLIL::escape_id(final_wire_name));
 
         Cell* predictor_cell = mod->addCell(RTLIL::escape_id(pred_conf.output_name_in_mod + "_cell"), predictor_module->name);
@@ -467,8 +482,6 @@ struct ExtractDependencies : public Pass {
 
     // TODO: this function seems useless as it is now only a wrapper
     void add_output(Module *predictor_module, IdString final_wire_name_in_mod, vector<Wire*> retirement_wires, PredictorConfiguration pred_conf, IdString final_wire_name_in_pred){
-        std::cout << "kvieciu add_output su " << final_wire_name_in_mod.str() << std::endl;
-        
         set_output_to_first_matching(predictor_module, final_wire_name_in_mod, retirement_wires, pred_conf, final_wire_name_in_pred);
     }
 
@@ -504,7 +517,7 @@ struct ExtractDependencies : public Pass {
                     and_cell->setPort(ID::A, preprocessed_wire);
                     and_cell->setPort(ID::B, preprocessed_retirements.back()[layer]);
                     
-                    Wire *and_output = predictor_module->addWire(predictor_module->uniquify(RTLIL::escape_id("and_output")));
+                    Wire *and_output = predictor_module->addWire(predictor_module->uniquify(RTLIL::escape_id("and_result")));
                     and_cell->setPort(ID::Y, and_output);
 
                     preprocessed_wire = and_output;
@@ -516,7 +529,7 @@ struct ExtractDependencies : public Pass {
                     or_cell->setPort(ID::A, preprocessed_wire);
                     or_cell->setPort(ID::B, preprocessed_layer.back());
                     
-                    Wire *or_output = predictor_module->addWire(predictor_module->uniquify(RTLIL::escape_id("or_output")));
+                    Wire *or_output = predictor_module->addWire(predictor_module->uniquify(RTLIL::escape_id("or_result")));
                     or_cell->setPort(ID::Y, or_output);
 
                     preprocessed_wire = or_output;
@@ -540,8 +553,6 @@ struct ExtractDependencies : public Pass {
         assert(final_wires.size() == retirement_wires.size());
         
         IdString pred_name = IdString(name_without_level(final_wires[0]->name).str() + "_pred");
-
-        std::cout << "pred_name is: " << pred_name.str() << std::endl;
 
         // TODO: will crash when processor are above 32 bits
         assert(final_wires[0]->width <= 32);
@@ -579,7 +590,7 @@ struct ExtractDependencies : public Pass {
             or_cell->setPort(ID::A, last_or_result);
             or_cell->setPort(ID::B, retirement_wires[i]);
             
-            Wire *or_output = predictor_module->addWire(predictor_module->uniquify(RTLIL::escape_id("or_output_for_final_retirement")));
+            Wire *or_output = predictor_module->addWire(predictor_module->uniquify(RTLIL::escape_id("or_result_for_final_retirement")));
             or_cell->setPort(ID::Y, or_output);
 
             last_or_result = or_output;
@@ -657,6 +668,9 @@ struct ExtractDependencies : public Pass {
             }
         }
         for(auto cell : ff_cells){
+            SigSpec ff_input = cell->getPort("\\D");
+            SigSpec ff_output = cell->getPort("\\Q");
+            predictor_module->connect(ff_output, ff_input);
             predictor_module->remove(cell);
         }
     }
