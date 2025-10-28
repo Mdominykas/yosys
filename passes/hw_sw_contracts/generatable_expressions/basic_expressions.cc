@@ -48,6 +48,9 @@ Wire* addBinaryOperationCell(Module *mod, Wire *lhs, Wire *rhs, IdString cellTyp
     cell->setPort(ID::B, rhs);
 
     Wire *out_wire = mod->addWire(mod->uniquify(RTLIL::escape_id(typeWord + "_result")), max_width);
+
+    cell->setPort(ID::Y, out_wire);
+
     return out_wire;
 
 }
@@ -79,6 +82,9 @@ public:
     Wire* convert_to_rtlil(Module *mod, vector<Wire*> variables) const {
         assert(index < variables.size());
         Wire* var_wire = mod->addWire(mod->uniquify(RTLIL::escape_id("expression_wire")), variables[index]);
+        var_wire->port_input = var_wire->port_output = false;
+        var_wire->port_id = 0;
+        // assert((!var_wire->port_input) && (!var_wire->port_output));
         mod->connect(var_wire, variables[index]);
         return extend_wire(mod, var_wire, 32, false);
     }

@@ -308,7 +308,7 @@ struct ContractPredictorSimplification : public Pass {
         // TODO: I think this will fail as data variables can have different sizes and then the final result can be of different size
         vector<SigSpec> expression_sigspecs;
         for(BasicExpression *exp : expressions){
-            expression_sigspecs.push_back(exp->convert_to_rtlil(mod, data_inputs));
+            expression_sigspecs.push_back(exp->convert_to_rtlil(simplified_module, data_inputs));
         }
 
         create_simplification_pmux(simplified_module, RTLIL::escape_id(param.observation), 0, expression_applicability, expression_sigspecs, "observation");
@@ -320,20 +320,17 @@ struct ContractPredictorSimplification : public Pass {
 
     // specific_name - some word that is used in naming cells
     void create_simplification_pmux(Module *simplified_module, IdString result_name, SigSpec default_value, vector<SigSpec> applicabilities, vector<SigSpec> expressions, std::string specific_name){
-        std::cout << "specific_name = " << specific_name << std::endl;
         Wire *result_wire = simplified_module->wire(result_name);
         assert(result_wire != nullptr);
 
         Cell *pmux = simplified_module->addCell(simplified_module->uniquify(RTLIL::escape_id(specific_name + "_pmux")), ID($pmux));
 
-        std::cout << "GetSize(default_value) = " << GetSize(default_value) << ", GetSize(result_wire) = " << GetSize(result_wire) << std::endl;
         assert(GetSize(default_value) == GetSize(result_wire));
         pmux->setPort(ID::A, default_value);
 
         pmux->setParam(ID::WIDTH, result_wire->width);
         SigSpec concatenated_selection;
         for(SigSpec sig_spec : expressions){
-            std::cout << "GetSize(sig_spec) = " << GetSize(sig_spec) << std::endl;
             assert(GetSize(sig_spec) == GetSize(result_wire));
             concatenated_selection.append(sig_spec);
         }
