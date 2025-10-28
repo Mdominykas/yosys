@@ -9,4 +9,4 @@ OBJS += passes/hw_sw_contracts/configuration_file.o
 OBJS += passes/hw_sw_contracts/contract_predictor_simplification.o
 OBJS += passes/hw_sw_contracts/simplification_parameters.o
 OBJS += passes/hw_sw_contracts/generatable_expressions/basic_expressions.o
-OBJS += passes/hw_sw_contracts/add_predictor_to_mod.o
+OBJS += passes/hw_sw_contracts/utils.o

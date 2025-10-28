@@ -7,7 +7,7 @@
 #include "libs/sha1/sha1.h"
 #include "libs/json11/json11.hpp"
 
-#include "passes/hw_sw_contracts/add_predictor_to_mod.cc"
+#include "passes/hw_sw_contracts/utils.h"
 
 #include <stdlib.h>
 #include <stdio.h>
@@ -17,6 +17,9 @@
 
 USING_YOSYS_NAMESPACE
 PRIVATE_NAMESPACE_BEGIN
+
+using namespace hardware_software_contracts;
+
 
 // TODO: make a common class for parsing json
 struct SimplificationParameters{

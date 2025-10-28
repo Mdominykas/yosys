@@ -29,26 +29,25 @@
 #include <set>
 #include <cassert>
 
+#include "passes/hw_sw_contracts/utils.h"
+
 
 USING_YOSYS_NAMESPACE
-PRIVATE_NAMESPACE_BEGIN
-
-// TODO: rename this file to something like utils and add a lot of useful utils
 
 // here the convention is that inputs to the predictor have a prefix inp
-IdString remove_input_from_wire_name(IdString wire_name){
+IdString hardware_software_contracts::remove_input_from_wire_name(IdString wire_name){
 	std::string inp_pref = "inp_";
 	std::string name_without_inp = RTLIL::unescape_id(wire_name).substr(inp_pref.size());
 	return IdString(RTLIL::escape_id(name_without_inp));
 }
 
-IdString add_input_to_wire_name(IdString wire_name){
+IdString hardware_software_contracts::add_input_to_wire_name(IdString wire_name){
 	std::string inp_pref = "inp_";
 	return RTLIL::escape_id(inp_pref + RTLIL::unescape_id(wire_name.str()));
 }
 
 // All IdString must have already escaped with '\\'
-void add_predictor_to_mod(Module *mod, Module *predictor, IdString observation_in_predictor, IdString observation_in_mod, IdString applicability_in_predictor, IdString applicability_in_mod){
+void hardware_software_contracts::add_predictor_to_mod(Module *mod, Module *predictor, IdString observation_in_predictor, IdString observation_in_mod, IdString applicability_in_predictor, IdString applicability_in_mod){
 	predictor->fixup_ports();
 
 	Cell* predictor_cell = mod->addCell(mod->uniquify(RTLIL::escape_id("predictor_cell")), predictor->name);
@@ -62,7 +61,7 @@ void add_predictor_to_mod(Module *mod, Module *predictor, IdString observation_i
 	// set the input wires
 	for(Wire *wire : input_wires){
 		IdString pred_input_name = wire->name;
-		IdString input_name = remove_input_from_wire_name(pred_input_name);
+		IdString input_name = hardware_software_contracts::remove_input_from_wire_name(pred_input_name);
 
 		predictor_cell->setPort(pred_input_name, SigSpec(mod->wire(input_name)));
 	}
@@ -80,7 +79,7 @@ void add_predictor_to_mod(Module *mod, Module *predictor, IdString observation_i
 	mod->fixup_ports();
 }
 
-void make_wire_input(Module *predictor, Wire *wire, IdString new_wire_name){
+void hardware_software_contracts::make_wire_input(Module *predictor, Wire *wire, IdString new_wire_name){
 	assert(wire != nullptr);
 	IdString input_wire_name = add_input_to_wire_name(new_wire_name);
 	Wire *input_wire = predictor->addWire(input_wire_name, wire);
@@ -118,5 +117,3 @@ void make_wire_input(Module *predictor, Wire *wire, IdString new_wire_name){
 
 	predictor->fixup_ports();
 }
-
-PRIVATE_NAMESPACE_END
