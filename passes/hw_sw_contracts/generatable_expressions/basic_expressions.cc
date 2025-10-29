@@ -59,7 +59,7 @@ class BasicExpression {
 
 public:
     virtual ~BasicExpression() = default;
-    virtual double evaluate(vector<unsigned int> values) const = 0;
+    virtual unsigned int evaluate(vector<unsigned int> values) const = 0;
     virtual int size() const = 0;
     virtual Wire* convert_to_rtlil(Module *mod, vector<Wire*> variables) const = 0;
     virtual string to_string(vector<Wire*> variables) const = 0;
@@ -70,7 +70,7 @@ class Variable : public BasicExpression {
 public:
     explicit Variable(unsigned int index) :index(index) {}
 
-    double evaluate(vector<unsigned int> values) const override {
+    unsigned int evaluate(vector<unsigned int> values) const override {
         assert(index < ((unsigned int) values.size()));
         return values[index];
     }
@@ -101,7 +101,7 @@ public:
     Addition(BasicExpression *left, BasicExpression *right)
         : left(left), right(right) {}
 
-    double evaluate(vector<unsigned int> values) const override {
+    unsigned int evaluate(vector<unsigned int> values) const override {
         return left->evaluate(values) + right->evaluate(values);
     }
 
@@ -127,7 +127,7 @@ public:
     Subtraction(BasicExpression *left, BasicExpression *right)
         : left(left), right(right) {}
 
-    double evaluate(vector<unsigned int> values) const override {
+    unsigned int evaluate(vector<unsigned int> values) const override {
         return left->evaluate(values) - right->evaluate(values);
     }
 
@@ -153,7 +153,7 @@ public:
     Multiplication(BasicExpression *left, BasicExpression *right)
         : left(left), right(right) {}
 
-    double evaluate(vector<unsigned int> values) const override {
+    unsigned int evaluate(vector<unsigned int> values) const override {
         return left->evaluate(values) * right->evaluate(values);
     }
 

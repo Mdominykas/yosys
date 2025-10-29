@@ -20,16 +20,16 @@ USING_YOSYS_NAMESPACE
 PRIVATE_NAMESPACE_BEGIN
 
 struct RunResult{
-    int applicability, observation;
-    RunResult(int applicability, int observation) : applicability(applicability), observation(observation) { }
+    unsigned int applicability, observation;
+    RunResult(unsigned int applicability, unsigned int observation) : applicability(applicability), observation(observation) { }
 };
 
 vector<unsigned int> generate_random_values(vector<Wire*> wires, std::mt19937 &gen){
-    std::uniform_int_distribution<int> dist(std::numeric_limits<int>::min(), std::numeric_limits<int>::max());
+    std::uniform_int_distribution<unsigned int> dist(std::numeric_limits<unsigned int>::min(), std::numeric_limits<unsigned int>::max());
     
     vector<unsigned int> ans;
     for(Wire *wire : wires){
-        int random_value = dist(gen);
+        unsigned int random_value = dist(gen);
         assert(wire->width <= 32);
         if(wire->width < 32){
             random_value = ((1U<<wire->width) - 1) & random_value;
@@ -39,7 +39,7 @@ vector<unsigned int> generate_random_values(vector<Wire*> wires, std::mt19937 &g
    return ans;
 }
 
-void set_values_randomly(std::map<Wire*, int> &values, vector<Wire*> wires, std::mt19937 &gen){
+void set_values_randomly(std::map<Wire*, unsigned int> &values, vector<Wire*> wires, std::mt19937 &gen){
     vector<unsigned int> vals = generate_random_values(wires, gen);
     for(size_t id = 0; id < wires.size(); id++){
         Wire *wire = wires[id];
@@ -47,7 +47,7 @@ void set_values_randomly(std::map<Wire*, int> &values, vector<Wire*> wires, std:
     }
 }
 
-RunResult run_module(Module *mod, std::map<Wire*, int> values, SimplificationParameters &param){
+RunResult run_module(Module *mod, std::map<Wire*, unsigned int> values, SimplificationParameters &param){
     ConstEval ce(mod);
     for(auto [wire, val] : values){
         vector<bool> val_bits;
@@ -55,10 +55,10 @@ RunResult run_module(Module *mod, std::map<Wire*, int> values, SimplificationPar
             val_bits.push_back(((1<<i) & val) > 0);
         }
         RTLIL::Const const_val(val_bits);
-        std::cout << "GetSize(const_val) = " << GetSize(const_val) << std::endl;
-        std::cout << "GetSize(wire) = " << GetSize(wire) << std::endl;
-        std::cout << "val = " << val << std::endl;
-        std::cout << "const_val = " << const_val.as_int() << std::endl;
+        // std::cout << "GetSize(const_val) = " << GetSize(const_val) << std::endl;
+        // std::cout << "GetSize(wire) = " << GetSize(wire) << std::endl;
+        // std::cout << "val = " << val << std::endl;
+        // std::cout << "const_val = " << const_val.as_int() << std::endl;
         ce.set(wire, const_val);  // IN1 = 1 (1-bit)
     }
 
@@ -128,18 +128,23 @@ struct ContractPredictorSimplification : public Pass {
             control_input_widths.push_back(wire->width);
         }
 
-        vector<int> control_values = initial_control_values(control_input_widths);
+        vector<unsigned int> control_values = initial_control_values(control_input_widths);
 
-        vector<vector<int>> expression_conditions;
+        vector<vector<unsigned int>> expression_conditions;
         vector<BasicExpression*> expressions;
         do{
             control_values = next_control_values(control_values, control_input_widths);
+            std::cout << "control values are: " << std::endl;
+            for(auto ctrl : control_values){
+                std::cout << ctrl << ", ";
+            }
+            std::cout << std::endl;
 
-            std::map<Wire*, int> values;
+            std::map<Wire*, unsigned int> values;
             
             for(size_t i = 0; i < control_inputs.size(); i++){
                 Wire *wire = control_inputs[i];
-                int val = control_values[i];
+                unsigned int val = control_values[i];
                 values[wire] = val;
             }
 
@@ -193,35 +198,34 @@ struct ContractPredictorSimplification : public Pass {
         add_predictor_to_mod(main_mod, simplified_module, RTLIL::escape_id(param.observation), RTLIL::escape_id("main_" + param.observation), RTLIL::escape_id(param.applicability), RTLIL::escape_id("main_" +param.applicability));
 	}
 
-    vector<int> initial_control_values(vector<int> widths){
-        vector<int> ans;
-        for(auto wd : widths){
-            ans.push_back(wd);
-        }
-        return ans;
+    vector<unsigned int> initial_control_values(vector<int> widths){
+        return vector<unsigned int>(widths.size(), 0);
     }
 
-    vector<int> next_control_values(vector<int> values, vector<int> widths){
+    vector<unsigned int> next_control_values(vector<unsigned int> values, vector<int> widths){
         reverse(values.begin(), values.end());
         reverse(widths.begin(), widths.end());
-        vector<int> next_values = values;
+        vector<unsigned int> next_values = values;
 
         int carry = 1;
         for(size_t i = 0; i < widths.size(); i++){
+            unsigned int next_carry = (next_values[i] > 0) ? 1 : 0;
+            
             next_values[i] += carry;
-            if(next_values[i] == (1<<widths[i])){
-                carry = 1;
+            if(next_values[i] == (1u<<widths[i])){
                 next_values[i] = 0;
             }
-            else{
-                carry = 0;
+
+            if(next_values[i] != 0){
+                next_carry = 0;
             }
+            carry = next_carry;
         }
         reverse(next_values.begin(), next_values.end());
         return next_values;
     }
 
-    Wire* compare_wire_to_constant(Module* mod, Wire *wire, int value){
+    Wire* compare_wire_to_constant(Module* mod, Wire *wire, unsigned int value){
         Cell *andCell = mod->addCell(mod->uniquify(RTLIL::escape_id("and_cell")), ID($eq));
 
         andCell->setPort(ID::A, wire);
@@ -267,11 +271,11 @@ struct ContractPredictorSimplification : public Pass {
     }
 
     // this function assumes that expression conditions are disjoint
-    Module* make_simplified_module(Design *design, Module *predictor_mod, vector<Wire*> mod_control_inputs, vector<Wire*> mod_data_inputs, vector<vector<int>> expression_conditions, vector<BasicExpression*> expressions){
+    Module* make_simplified_module(Design *design, Module *predictor_mod, vector<Wire*> mod_control_inputs, vector<Wire*> mod_data_inputs, vector<vector<unsigned int>> expression_conditions, vector<BasicExpression*> expressions){
         Module *simplified_module = design->addModule(RTLIL::escape_id(param.simplified_module_name));
         for(Wire *wire : predictor_mod->wires()){
             if((wire->port_input) || (wire->port_output)) {
-                Wire* added_wire = simplified_module->addWire(wire->name, wire);
+                simplified_module->addWire(wire->name, wire);
             }
         }
 
@@ -287,7 +291,7 @@ struct ContractPredictorSimplification : public Pass {
 
         vector<SigSpec> expression_applicability;
         for(size_t id = 0; id < expressions.size(); id++){
-            vector<int> conds = expression_conditions[id];
+            vector<unsigned int> conds = expression_conditions[id];
             vector<Wire*> condition_parts;
             for(size_t i = 0; i < conds.size(); i++){
                 condition_parts.push_back(compare_wire_to_constant(simplified_module, control_inputs[i], conds[i]));
