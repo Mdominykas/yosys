@@ -189,8 +189,7 @@ struct ContractPredictorSimplification : public Pass {
 
         } while(control_values != initial_control_values(control_input_widths));
 
-        Module *simplified_module = make_simplified_module(predictor_mod, control_inputs, data_inputs, expression_conditions, expressions);
-        design->addModule(simplified_module->name);
+        Module *simplified_module = make_simplified_module(design, predictor_mod, control_inputs, data_inputs, expression_conditions, expressions);
         add_predictor_to_mod(main_mod, simplified_module, RTLIL::escape_id(param.observation), RTLIL::escape_id("main_" + param.observation), RTLIL::escape_id(param.applicability), RTLIL::escape_id("main_" +param.applicability));
 	}
 
@@ -246,11 +245,12 @@ struct ContractPredictorSimplification : public Pass {
             assert(wire->width == 1);
         }
 
-        SigSpec all_true = true;
+        SigSpec all_true = SigSpec(true);
 
         SigSpec cur = all_true;
 
         for(Wire *wire : wires){
+            assert(wire->width == 1);
             Cell *andCell = mod->addCell(mod->uniquify(RTLIL::escape_id("and_cell")), ID($_AND_));
 
             andCell->setPort(ID::A, cur);
@@ -267,12 +267,11 @@ struct ContractPredictorSimplification : public Pass {
     }
 
     // this function assumes that expression conditions are disjoint
-    Module* make_simplified_module(Module *mod, vector<Wire*> mod_control_inputs, vector<Wire*> mod_data_inputs, vector<vector<int>> expression_conditions, vector<BasicExpression*> expressions){
-        Module *simplified_module = new Module();
-        simplified_module->name = IdString(RTLIL::escape_id(param.simplified_module_name));
-        for(Wire *wire : mod->wires()){
+    Module* make_simplified_module(Design *design, Module *predictor_mod, vector<Wire*> mod_control_inputs, vector<Wire*> mod_data_inputs, vector<vector<int>> expression_conditions, vector<BasicExpression*> expressions){
+        Module *simplified_module = design->addModule(RTLIL::escape_id(param.simplified_module_name));
+        for(Wire *wire : predictor_mod->wires()){
             if((wire->port_input) || (wire->port_output)) {
-                simplified_module->addWire(wire->name, wire);
+                Wire* added_wire = simplified_module->addWire(wire->name, wire);
             }
         }
 
@@ -312,7 +311,6 @@ struct ContractPredictorSimplification : public Pass {
         }
 
         create_simplification_pmux(simplified_module, RTLIL::escape_id(param.observation), 0, expression_applicability, expression_sigspecs, "observation");
-
 
         simplified_module->fixup_ports();
         return simplified_module;
