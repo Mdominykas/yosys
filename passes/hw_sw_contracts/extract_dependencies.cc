@@ -155,6 +155,9 @@ struct ExtractDependencies : public Pass {
 
         set_predictor_retired_wire(predictor_module, retirement_wires, pred_conf);
 
+        // I did this because I wanted easier time in simplification module, but it might be unnesessary
+        deal_with_connections(predictor_module);
+
         predictor_module->fixup_ports();
         design->add(predictor_module);
 
@@ -218,7 +221,6 @@ struct ExtractDependencies : public Pass {
                             wire_used_as_input_for[wire_id].push_back(cell_id);
                         }
                         else if(cell->output(sigName)){
-                            std::cout << "cell outputas yra wire pavadinimu: " << wire->name.str() << std::endl;
                             if(wire->name.str() == RTLIL::escape_id("retire")){
                                 std::cout << "retire nusetina: " << cell->name.str() << std::endl;
                             }
@@ -293,7 +295,7 @@ struct ExtractDependencies : public Pass {
         for(size_t index = 0; index < cell_names.size(); index++){
             if(dist[index] <= hist_len){
                 ans.push_back(mod->cell(cell_names[index]));
-                std::cout << "cell su pavadinimu: " << cell_names[index].str() << " yra reverse reachable" << std::endl;
+                // std::cout << "cell su pavadinimu: " << cell_names[index].str() << " yra reverse reachable" << std::endl;
             }
         }
         return ans;
@@ -307,10 +309,6 @@ struct ExtractDependencies : public Pass {
             IdString new_name = next_level_name(cell->name, level);
             Cell* new_cell = predictor_module->addCell(new_name, cell);
             new_layer.push_back(new_cell);
-            if(level == 0){
-                std::cout << "nulinis lygis sukuria cell su pavadinimu: " << new_cell->name.str() << std::endl;
-
-            }
         }
         std::map<Wire*, PredWire*> wire_in_next_layer;
 
@@ -606,6 +604,7 @@ struct ExtractDependencies : public Pass {
         // TODO: yosys' manual says "$buf" is an experimental feature and and it shouldn't be used.
         // so if something serious breaks I might need to change something
         for(auto [s1, s2] : mod->connections()){
+            assert(s1.size() == s2.size());
             assert(s1.is_wire()); // output should be a wire
             Cell *buf_cell = mod->addCell("$my_buf_cell_" + std::to_string(cnt), "$buf");
             buf_cell->setParam(ID::WIDTH, s1.size());

@@ -26,7 +26,7 @@ struct SimplificationParameters{
     std::string simplified_module_name;
 
     std::string applicability, observation;
-    vector<std::string> control_inputs;
+    vector<std::string> control_inputs, data_terms;
 
     int expression_complexity, test_cnt;
 
@@ -73,6 +73,13 @@ struct SimplificationParameters{
         for(auto ctr : control_input_arr){
             assert(ctr.is_string());
             control_inputs.push_back(ctr.string_value());
+        }
+
+
+        auto data_term_arr = parse_array_from_object(json_items, "data_terms");
+        for(auto term : data_term_arr){
+            assert(term.is_string());
+            data_terms.push_back(term.string_value());
         }
 
         parsed = true;
@@ -164,6 +171,13 @@ struct SimplificationParameters{
         // some random check to not have warning about unused element
         assert(extracted.size() == control_inputs.size());
 
+        for(std::string data_term : data_terms){
+            Wire *wire = predictor_mod->wire(RTLIL::escape_id(data_term));
+            if(wire == nullptr){
+                std::cout << "No wire named: " << data_term << " found" << std::endl;
+            }
+            assert(wire != nullptr);
+        }
 
         for(std::string output_wire : {applicability, observation}){
             Wire *wire = predictor_mod->wire(RTLIL::escape_id(output_wire));
