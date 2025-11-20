@@ -72,18 +72,19 @@ RunResult run_module(Module *mod, std::map<Wire*, unsigned int> values, Simplifi
         ce.set(wire, const_val);  // IN1 = 1 (1-bit)
     }
 
-    const int IMM_CTR_CNT = 43;
-    vector<SigSpec> imm_ctrs;
-    for(int i = 0; i < IMM_CTR_CNT; i++){
-        IdString imm_wire_name = RTLIL::escape_id("imm_ctr_level_" + std::to_string(i));
-        // std::cout << "ieskosiu imm_wire su pavadinimu: " << imm_wire_name.str() << std::endl;
-        Wire *imm_wire = mod->wire(imm_wire_name);
-        if(imm_wire == nullptr){
-            log_error("Neradau kazkurio lygio imm wire'o");
-        }
-        assert(imm_wire != nullptr);
-        imm_ctrs.push_back(imm_wire);
-    }
+    const int LVL_CNT = 10;
+
+    // vector<SigSpec> imm_ctrs;
+    // for(int i = 0; i < IMM_CTR_CNT; i++){
+    //     IdString imm_wire_name = RTLIL::escape_id("imm_ctr_level_" + std::to_string(i));
+    //     // std::cout << "ieskosiu imm_wire su pavadinimu: " << imm_wire_name.str() << std::endl;
+    //     Wire *imm_wire = mod->wire(imm_wire_name);
+    //     if(imm_wire == nullptr){
+    //         log_error("Neradau kazkurio lygio imm wire'o");
+    //     }
+    //     assert(imm_wire != nullptr);
+    //     imm_ctrs.push_back(imm_wire);
+    // }
 
     assert(mod->wire(RTLIL::escape_id(param.applicability)) != nullptr);
     SigSpec app_sig = mod->wire(RTLIL::escape_id(param.applicability));
@@ -93,15 +94,33 @@ RunResult run_module(Module *mod, std::map<Wire*, unsigned int> values, Simplifi
     bool success = ce.eval(app_sig, app_pending);
     success = success && ce.eval(obs_sig, obs_pending);
     if (success) {
-        for(int i = 0; i < IMM_CTR_CNT; i++){
-            SigSpec imm_pending;
-            bool suc = ce.eval(imm_ctrs[i], imm_pending);
-            assert(suc);
+        vector<std::string> debug_names = {"pc", "nxpc", "nxpc2", "nxpc3", "instr_r", "instr_exe", "instr_decode", "op_ctr", "imm_ctr", "imm_exe", "imm_decode", "ex_imm", "ex_op", "ready", "retire", "applicability", "wb_we"};
+        for(auto debug_name : debug_names){
+            std::cout << "values for " << debug_name << " : ";
+            for(int i = 0; i < LVL_CNT; i++){
+                SigSpec pending;
+                Wire *debug_wire = mod->wire(RTLIL::escape_id(debug_name + "_level_" + std::to_string(i)));
+                if(debug_wire == nullptr){
+                    std::cout << "Searching for " << i << " level wire: " << debug_name << std::endl;
+                    log_error("Neradau kazkurio lygio wire'o");
+                }
+                assert(debug_wire != nullptr);
+                SigSpec result = debug_wire;
+                bool suc = ce.eval(result, pending);
+                assert(suc);
+                std::cout << ((unsigned int) result.as_int()) << ", ";
+            }
+            std::cout << std::endl;
         }
-        std::cout << "imm_ctrs:";
-        for(auto imm : imm_ctrs){
-            std::cout << imm.as_int() << ", ";
-        }
+        // for(int i = 0; i < LVL_CNT; i++){
+        //     SigSpec imm_pending;
+        //     bool suc = ce.eval(imm_ctrs[i], imm_pending);
+        //     assert(suc);
+        // }
+        // std::cout << "imm_ctrs:";
+        // for(auto imm : imm_ctrs){
+        //     std::cout << imm.as_int() << ", ";
+        // }
         std::cout << std::endl;
         return RunResult(app_sig.as_int(), obs_sig.as_int());
     } else {
@@ -299,7 +318,8 @@ struct ContractPredictorSimplification : public Pass {
             if(!applicability_evaluation.applicability){
                 continue;
             }
-            std::cout << "control values are: " << std::endl;
+            std::cout << "\n\nCONTROL INPUT PRISKYRIMAS" << std::endl;
+            std::cout << "Control values are: " << std::endl;
             for(size_t i = 0; i < control_values.size(); i++){
                 std::cout << "value of " << control_inputs[i]->name.str() << " = " << control_values[i] << std::endl;
             }
@@ -308,7 +328,7 @@ struct ContractPredictorSimplification : public Pass {
             vector<vector<unsigned int> > test_inputs;
             vector<RunResult> test_results;
             for(int i = 0; i < param.test_cnt; i++){
-                std::cout << "Naujas testas" << std::endl;
+                std::cout << "\nNAUJAS TESTAS" << std::endl;
                 auto vals = generate_random_values(expression_variables, gen);
                 test_inputs.push_back(vals);
                 for(size_t wire_id = 0; wire_id < expression_variables.size(); wire_id++){
@@ -318,9 +338,6 @@ struct ContractPredictorSimplification : public Pass {
                 RunResult run_result = run_module(predictor_mod, values, param);
                 std::cout << "observation is: " << run_result.observation << std::endl;
                 test_results.push_back(run_result);
-            }
-            std::cout << "The random runs are: " << std::endl;
-            for(auto run_result : test_results){
                 std::cout << "run_result = " << run_result.to_string() << std::endl;
             }
 
@@ -338,6 +355,7 @@ struct ContractPredictorSimplification : public Pass {
                         }
                     }
                     if(valid){
+                        assert(false);
                         found = true;
                         expressions.push_back(exp);
                         expression_conditions.push_back(control_values);
@@ -345,12 +363,17 @@ struct ContractPredictorSimplification : public Pass {
                     }
                 }
                 if(found){
+                    std::cout << "Radau expression: " << expressions.back()->to_string(expression_variables) << std::endl;
                     break;
                 }
             }
+
+            std::cout << std::endl;
             // assert(found);
 
         } while(control_values != initial_control_values(control_input_widths));
+
+        assert(expression_conditions.size() == expressions.size());
 
         Module *simplified_module = make_simplified_module(design, predictor_mod, control_inputs, data_inputs, data_terms, expression_conditions, expressions);
         add_predictor_to_mod(main_mod, simplified_module, RTLIL::escape_id(param.observation), RTLIL::escape_id("main_" + param.observation), RTLIL::escape_id(param.applicability), RTLIL::escape_id("main_" +param.applicability));

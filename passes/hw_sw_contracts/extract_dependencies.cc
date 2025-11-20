@@ -405,6 +405,7 @@ struct ExtractDependencies : public Pass {
                 assert(inpBits.size() == outBits.size());
                 for(size_t index = 0; index < inpBits.size(); index++){
                     if(outBits[index].is_wire()){
+                        assert((replace_bit_with_past.find(outBits[index]) == replace_bit_with_past.end()) || (replace_bit_with_past[outBits[index]] == inpBits[index]));
                         replace_bit_with_past[outBits[index]] = inpBits[index];
                     }
                 }
@@ -494,6 +495,7 @@ struct ExtractDependencies : public Pass {
             vector<Wire*> preprocessed_layer;
 
             IdString redux_retirement_name = IdString(name_without_level(retirement_wires[0]->name).str() + "_redux");
+            // TODO: rename layer to level to keep terms consistent
             for(size_t layer = 0; layer < retirement_wires.size(); layer++){
                 Cell *reduce_or_cell = predictor_module->addCell(predictor_module->uniquify(redux_retirement_name.str() + "_cell_" + std::to_string(layer)), "$reduce_or");
 
@@ -509,11 +511,17 @@ struct ExtractDependencies : public Pass {
 
                 Wire *preprocessed_wire = reduced_retirement;
 
+
                 // and of previous retirement
                 if(retirement_id > 0){
+                    SigSpec previous_true = SigSpec(false); // false, nes 0 niekada negali buti tiesa
+                    if(layer > 0){
+                        previous_true = preprocessed_retirements.back()[layer - 1];
+                    }
+
                     Cell *and_cell = predictor_module->addCell(predictor_module->uniquify(RTLIL::escape_id("and_cell")), "$_AND_");
                     and_cell->setPort(ID::A, preprocessed_wire);
-                    and_cell->setPort(ID::B, preprocessed_retirements.back()[layer]);
+                    and_cell->setPort(ID::B, previous_true);
                     
                     Wire *and_output = predictor_module->addWire(predictor_module->uniquify(RTLIL::escape_id("and_result")));
                     and_cell->setPort(ID::Y, and_output);
