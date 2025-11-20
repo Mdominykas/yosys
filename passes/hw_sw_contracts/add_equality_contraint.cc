@@ -102,16 +102,16 @@ struct AddEqualityCheck : public Pass {
 
 
 			if(l_wire == nullptr){
-				log_error("Wire with left name not found");
+				log_error("Left Wire not found. Name %s does not exists.", l_name.c_str());
 				return;
 			}
 			if(r_wire == nullptr){
-				log_error("Wire with right name not found");
+				log_error("Right Wire not found. Name %s does not exists.", r_name.c_str());
 				return;
 			}
 
 			if(mod->wire(out_name) != nullptr){
-				log_error("Found wire with out_wirename");
+				log_error("Outwire cannot be created. Found wire with name = %s", out_name.c_str());
 				return;
 			}
 
