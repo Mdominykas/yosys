@@ -10,3 +10,5 @@ OBJS += passes/hw_sw_contracts/contract_predictor_simplification.o
 OBJS += passes/hw_sw_contracts/simplification_parameters.o
 OBJS += passes/hw_sw_contracts/generatable_expressions/basic_expressions.o
 OBJS += passes/hw_sw_contracts/utils.o
+OBJS += passes/hw_sw_contracts/analyze_dependencies.o
+OBJS += passes/hw_sw_contracts/constant_extraction.o
