@@ -41,28 +41,28 @@ struct ConstantExtraction : public Pass {
 
         std::string output_file = args[1];
 
-        std::set<int> answer;
+        std::set<string> answer;
 
         for(Cell *cell : mod->cells()){
             for(auto [portname, sigSpec] : cell->connections()){
                 if(sigSpec.is_fully_const()){
-                    assert(sigSpec.convertible_to_int());
-                    answer.insert(sigSpec.as_int());
+                    assert(!sigSpec.empty());
+                    answer.insert(sigSpec.as_const().as_string());
                 }
             }
         }
 
-        vector<int> answer_vec;
-        for(int c : answer){
+        vector<string> answer_vec;
+        for(auto c : answer){
             answer_vec.push_back(c);
         }
         export_constants_to_file(output_file, answer_vec);
     }
 
-    void export_constants_to_file(string output_file, vector<int> constants){
+    void export_constants_to_file(string output_file, vector<string> constants){
         std::ofstream out(output_file);
 
-        for(int c : constants){
+        for(auto c : constants){
             out << c << "\n";
         }
     }
