@@ -96,6 +96,7 @@ struct AddEqualityCheck : public Pass {
 
 			if(l_wire->width !=r_wire->width){
 				std::cout << "The lengths of wires: " << l_wire->name.str() << " and " << r_wire->name.str() << " are different" << std::endl;
+				std::cout << "They are respectively " << l_wire->width << " and " << r_wire->width << std::endl;
 				log_error("FAILURE: The two compared wires have different width");
 			}
 			int wire_width = l_wire->width;

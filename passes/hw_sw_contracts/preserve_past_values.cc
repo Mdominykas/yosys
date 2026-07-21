@@ -69,7 +69,8 @@ struct PreservePastValues : public Pass {
 		for(auto mod : design->selected_modules()){
 			RTLIL::Wire *wire = mod->wire(RTLIL::escape_id(component_name));
 			if (wire == nullptr) {
-				log_error("FAILURE: Wire with such name not found");
+				const std::string error_msg = "FAILURE: Wire with name \"" + RTLIL::escape_id(component_name) + "\" not found";
+	            log_error("%s", error_msg.c_str());
 				return;
 			}
 			int wire_width = wire->width;
