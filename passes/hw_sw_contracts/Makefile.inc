@@ -12,3 +12,5 @@ OBJS += passes/hw_sw_contracts/generatable_expressions/basic_expressions.o
 OBJS += passes/hw_sw_contracts/utils.o
 OBJS += passes/hw_sw_contracts/analyze_dependencies.o
 OBJS += passes/hw_sw_contracts/constant_extraction.o
+OBJS += passes/hw_sw_contracts/lifting_wires.o
+OBJS += passes/hw_sw_contracts/my_json_parser.o
