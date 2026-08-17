@@ -85,6 +85,64 @@ struct LiftingWires : public Pass {
 		log("\n");
 	}
 
+    RTLIL::Module *find_unique_parameterized_module(RTLIL::Design *design, const std::string &module_name)
+    {
+        RTLIL::IdString wanted = RTLIL::escape_id(module_name);
+        RTLIL::IdString exact = "";
+
+        pool<RTLIL::IdString> candidates;
+
+        std::cout << "looking for a module named: " << module_name << std::endl;
+
+        for (RTLIL::Module *pos_mod : design->modules())
+        {
+            std::cout << "there is a module named: " << pos_mod->name.str() << std::endl;
+
+            // Already non-parameterized.
+            if (pos_mod->name == wanted) {
+                exact = pos_mod->name;
+                
+                continue;
+            }
+
+            // Parameterized module.
+            if(!pos_mod->name.begins_with("$paramod")){
+                continue;
+            }
+
+            if (pos_mod->has_attribute(ID::hdlname))
+            {
+                std::string original_name = pos_mod->get_string_attribute(ID::hdlname);
+                if (IdString(RTLIL::escape_id(original_name)) == wanted)
+                    candidates.insert(pos_mod->name);
+            }
+        }
+
+        if((candidates.empty()) && (exact != "")){
+            candidates.insert(exact);
+        }
+
+        if (candidates.empty()) {
+            log_error("Could not find a parameterized module corresponding to `%s'.\n",module_name.c_str());
+        }
+
+        if (candidates.size() != 1) {
+            log("Found multiple elaborated variants of `%s':\n", module_name.c_str());
+
+            for (auto type : candidates)
+                log("    %s\n", type.c_str());
+
+            log_error("Module `%s' does not have a unique elaborated variant.\n", module_name.c_str());
+        }
+
+        RTLIL::IdString result = *candidates.begin();
+
+        RTLIL::Module *mod = design->module(result);
+        log_assert(mod != nullptr);
+
+        return mod;
+    }
+
     void execute(std::vector<std::string> args, RTLIL::Design *design) override
 	{
         log_header(design, "Executing LIFTING WIRES pass.\n");
@@ -99,32 +157,49 @@ struct LiftingWires : public Pass {
         wire_lifting_configuration.parse_input_from_file(configuration_file_name);
 
         for(SingleWireLifting lifting : wire_lifting_configuration.liftings){
-            RTLIL::Module *outer_mod = design->module(RTLIL::escape_id(lifting.outer_module));
-            if(outer_mod == NULL){
-                log_error("Module named: %s doesn't exist", lifting.outer_module.c_str());
-            }
-            RTLIL::Module *inner_mod = design->module(RTLIL::escape_id(lifting.inner_module));
-            if(inner_mod == NULL){
-                log_error("Module named: %s doesn't exist", lifting.inner_module.c_str());
-            }
+            RTLIL::Module *outer_mod = find_unique_parameterized_module(design, lifting.outer_module);
+            RTLIL::Module *inner_mod = find_unique_parameterized_module(design, lifting.inner_module);
 
             RTLIL::Wire *inner_wire = inner_mod->wire(RTLIL::escape_id(lifting.inner_wire));
             if(inner_wire == nullptr){
+                for(auto wire : inner_mod->wires()){
+                    std::cout << "have wire:" << wire->name.str() << std::endl;
+                }
                 log_error("Wire named: %s doesn't exist", lifting.inner_wire.c_str());
             }
+
+            if (inner_wire->port_input && !inner_wire->port_output) {
+                log_error("Trying to lift %s.%s, but it is already an INPUT port.\n", lifting.inner_module.c_str(), lifting.inner_wire.c_str());
+            }
+
 
             inner_wire->port_output = true;
             inner_mod->fixup_ports();
 
             RTLIL::Wire *outer_wire = outer_mod->wire(RTLIL::escape_id(lifting.outer_wire));
             if(outer_wire == nullptr){
+                std::cout << "Adding wire named:" << lifting.outer_wire << " to module: " << outer_mod->name.str() << std::endl;
                 outer_wire = outer_mod->addWire(RTLIL::escape_id(lifting.outer_wire), inner_wire->width);
+            }
+            else{
+                if (outer_wire != nullptr && outer_wire->width != inner_wire->width) {
+                    log_error("Width mismatch: %s.%s is %d bits, but %s.%s is %d bits.\n",
+                    lifting.inner_module.c_str(), lifting.inner_wire.c_str(), inner_wire->width,
+                    lifting.outer_module.c_str(), lifting.outer_wire.c_str(), outer_wire->width);
+                }
             }
 
             RTLIL::Cell *inner_cell = outer_mod->cell(RTLIL::escape_id(lifting.instance_name));
             assert(inner_cell != nullptr);
 
             inner_cell->setPort(RTLIL::escape_id(lifting.inner_wire), RTLIL::SigSpec(outer_wire));
+
+            RTLIL::IdString port_name = RTLIL::escape_id(lifting.inner_wire);
+
+            log("configured inner module: %s\n", inner_mod->name.c_str());
+            log("actual cell type:        %s\n", inner_cell->type.c_str());
+            log("cell thinks port is output: %d\n",
+            inner_cell->output(port_name));
 
         }
     }
