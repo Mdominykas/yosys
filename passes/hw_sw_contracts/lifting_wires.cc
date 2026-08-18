@@ -92,12 +92,8 @@ struct LiftingWires : public Pass {
 
         pool<RTLIL::IdString> candidates;
 
-        std::cout << "looking for a module named: " << module_name << std::endl;
-
         for (RTLIL::Module *pos_mod : design->modules())
         {
-            std::cout << "there is a module named: " << pos_mod->name.str() << std::endl;
-
             // Already non-parameterized.
             if (pos_mod->name == wanted) {
                 exact = pos_mod->name;
@@ -156,6 +152,8 @@ struct LiftingWires : public Pass {
         WireLiftingConfiguration wire_lifting_configuration;
         wire_lifting_configuration.parse_input_from_file(configuration_file_name);
 
+        std::set<Wire*> already_made_output;
+
         for(SingleWireLifting lifting : wire_lifting_configuration.liftings){
             RTLIL::Module *outer_mod = find_unique_parameterized_module(design, lifting.outer_module);
             RTLIL::Module *inner_mod = find_unique_parameterized_module(design, lifting.inner_module);
@@ -173,12 +171,16 @@ struct LiftingWires : public Pass {
             }
 
 
+
+            if((already_made_output.find(inner_wire) == already_made_output.end()) && (inner_wire->port_output)){
+                log_error("Trying to make wire %s into output, but it already was an output. So setting a new one will disconnect something", inner_wire->name.c_str());
+            }
             inner_wire->port_output = true;
             inner_mod->fixup_ports();
+            already_made_output.insert(inner_wire);
 
             RTLIL::Wire *outer_wire = outer_mod->wire(RTLIL::escape_id(lifting.outer_wire));
             if(outer_wire == nullptr){
-                std::cout << "Adding wire named:" << lifting.outer_wire << " to module: " << outer_mod->name.str() << std::endl;
                 outer_wire = outer_mod->addWire(RTLIL::escape_id(lifting.outer_wire), inner_wire->width);
             }
             else{
@@ -192,15 +194,12 @@ struct LiftingWires : public Pass {
             RTLIL::Cell *inner_cell = outer_mod->cell(RTLIL::escape_id(lifting.instance_name));
             assert(inner_cell != nullptr);
 
+            // !!!!!! SITO NEDARYTI NEBENT IS ANKSCIAU PASETINTAS ARBA NERA OUTPUTAS
             inner_cell->setPort(RTLIL::escape_id(lifting.inner_wire), RTLIL::SigSpec(outer_wire));
 
             RTLIL::IdString port_name = RTLIL::escape_id(lifting.inner_wire);
 
-            log("configured inner module: %s\n", inner_mod->name.c_str());
-            log("actual cell type:        %s\n", inner_cell->type.c_str());
-            log("cell thinks port is output: %d\n",
-            inner_cell->output(port_name));
-
+            std::cout << "I will do something with wires named: " << inner_wire->name.str() << " and " << outer_wire->name.str() << std::endl;
         }
     }
 
