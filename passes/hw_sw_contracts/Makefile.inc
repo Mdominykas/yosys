@@ -14,3 +14,6 @@ OBJS += passes/hw_sw_contracts/analyze_dependencies.o
 OBJS += passes/hw_sw_contracts/constant_extraction.o
 OBJS += passes/hw_sw_contracts/lifting_wires.o
 OBJS += passes/hw_sw_contracts/my_json_parser.o
+OBJS += passes/hw_sw_contracts/add_logical_or_wire.o
+OBJS += passes/hw_sw_contracts/add_less_wire.o
+OBJS += passes/hw_sw_contracts/add_less_or_equal_wire.o
