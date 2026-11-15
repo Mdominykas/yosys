@@ -1,7 +1,13 @@
 #ifndef HARDWARE_SOFTWARE_CONTRACT_UTILS
 #define HARDWARE_SOFTWARE_CONTRACT_UTILS
 
+#include "kernel/log.h"
+
 #include <string>
+
+std::vector<std::string> split_into_parts(std::string name);
+
+int replaceAll(std::string& str, const std::string& s, const std::string& t);
 
 YOSYS_NAMESPACE_BEGIN
 namespace hardware_software_contracts {

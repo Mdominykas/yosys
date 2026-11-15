@@ -5,6 +5,7 @@
 #include "kernel/celltypes.h"
 #include "kernel/json.h"
 #include "libs/sha1/sha1.h"
+#include "passes/hw_sw_contracts/lifting_wires.h"
 #include "passes/hw_sw_contracts/configuration_file.cc"
 #include "passes/hw_sw_contracts/my_json_parser.cc"
 
@@ -17,14 +18,7 @@
 USING_YOSYS_NAMESPACE
 PRIVATE_NAMESPACE_BEGIN
 
-struct SingleWireLifting{
-    string inner_module;
-    string outer_module;
-    string instance_name;
-    string inner_wire;
-    string outer_wire;
-    SingleWireLifting(string inner_module, string outer_module, string instance_name, string inner_wire, string outer_wire) : inner_module(inner_module), outer_module(outer_module), instance_name(instance_name), inner_wire(inner_wire), outer_wire(outer_wire) { }
-};
+
 
 
 
@@ -160,9 +154,6 @@ struct LiftingWires : public Pass {
 
             RTLIL::Wire *inner_wire = inner_mod->wire(RTLIL::escape_id(lifting.inner_wire));
             if(inner_wire == nullptr){
-                for(auto wire : inner_mod->wires()){
-                    std::cout << "have wire:" << wire->name.str() << std::endl;
-                }
                 log_error("Wire named: %s doesn't exist", lifting.inner_wire.c_str());
             }
 
@@ -198,8 +189,6 @@ struct LiftingWires : public Pass {
             inner_cell->setPort(RTLIL::escape_id(lifting.inner_wire), RTLIL::SigSpec(outer_wire));
 
             RTLIL::IdString port_name = RTLIL::escape_id(lifting.inner_wire);
-
-            std::cout << "I will do something with wires named: " << inner_wire->name.str() << " and " << outer_wire->name.str() << std::endl;
         }
     }
 

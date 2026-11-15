@@ -31,6 +31,29 @@
 
 #include "passes/hw_sw_contracts/utils.h"
 
+int replaceAll(std::string& str, const std::string& s, const std::string& t){
+    if (s.empty()){
+        Yosys::log_error("tried to replaced an empty string");
+    }
+    std::size_t pos = 0;
+    int replaced_cnt = 0;
+    while ((pos = str.find(s, pos)) != std::string::npos) {
+        str.replace(pos, s.size(), t);
+        pos += t.size();                   // skip past the inserted text
+        replaced_cnt += 1;
+    }
+    return replaced_cnt;
+}
+
+std::vector<std::string> split_into_parts(std::string name){
+    std::vector<std::string> parts;
+    std::stringstream ss(name);
+    std::string item;
+    while (std::getline(ss, item, '.')){
+        parts.push_back(item);
+    }
+    return parts;
+}
 
 USING_YOSYS_NAMESPACE
 
