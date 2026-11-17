@@ -157,38 +157,52 @@ struct LiftingWires : public Pass {
                 log_error("Wire named: %s doesn't exist", lifting.inner_wire.c_str());
             }
 
-            if (inner_wire->port_input && !inner_wire->port_output) {
-                log_error("Trying to lift %s.%s, but it is already an INPUT port.\n", lifting.inner_module.c_str(), lifting.inner_wire.c_str());
-            }
-
-
-
-            if((already_made_output.find(inner_wire) == already_made_output.end()) && (inner_wire->port_output)){
-                log_error("Trying to make wire %s into output, but it already was an output. So setting a new one will disconnect something", inner_wire->name.c_str());
-            }
-            inner_wire->port_output = true;
-            inner_mod->fixup_ports();
-            already_made_output.insert(inner_wire);
-
             RTLIL::Wire *outer_wire = outer_mod->wire(RTLIL::escape_id(lifting.outer_wire));
             if(outer_wire == nullptr){
                 outer_wire = outer_mod->addWire(RTLIL::escape_id(lifting.outer_wire), inner_wire->width);
-            }
-            else{
-                if (outer_wire != nullptr && outer_wire->width != inner_wire->width) {
-                    log_error("Width mismatch: %s.%s is %d bits, but %s.%s is %d bits.\n",
-                    lifting.inner_module.c_str(), lifting.inner_wire.c_str(), inner_wire->width,
-                    lifting.outer_module.c_str(), lifting.outer_wire.c_str(), outer_wire->width);
-                }
+                // same bit numbering and signedness as the inner wire, so x[i] and x < 0 keep their meaning
+                outer_wire->start_offset = inner_wire->start_offset;
+                outer_wire->upto = inner_wire->upto;
+                outer_wire->is_signed = inner_wire->is_signed;
             }
 
             RTLIL::Cell *inner_cell = outer_mod->cell(RTLIL::escape_id(lifting.instance_name));
-            assert(inner_cell != nullptr);
-
-            // !!!!!! SITO NEDARYTI NEBENT IS ANKSCIAU PASETINTAS ARBA NERA OUTPUTAS
-            inner_cell->setPort(RTLIL::escape_id(lifting.inner_wire), RTLIL::SigSpec(outer_wire));
-
+            if (inner_cell == nullptr || inner_cell->type != inner_mod->name){
+                log_error("%s has no instance %s of %s.\n", log_id(outer_mod),
+                        lifting.instance_name.c_str(), log_id(inner_mod));
+            }
+            
             RTLIL::IdString port_name = RTLIL::escape_id(lifting.inner_wire);
+            bool is_port = inner_wire->port_input || inner_wire->port_output;
+            RTLIL::SigSpec existing;
+            assert(existing.empty());
+            if (inner_cell->hasPort(port_name)) {
+                existing = inner_cell->getPort(port_name);
+            }
+ 
+            if (!existing.empty()) {
+                // A connected port (input, output or inout): its value already lives in outer_mod.
+                if (!is_port || GetSize(existing) != inner_wire->width) {
+                    log_error("Connection of %s on %s doesn't match the port.\nis_port = %d, GetSize(existing) = %d, inner_wire->width = %d\n",
+                        log_id(port_name),
+                        log_id(inner_cell),
+                        is_port, GetSize(existing), inner_wire->width);
+                }
+                if (existing != RTLIL::SigSpec(outer_wire)) {
+                    outer_mod->connect(outer_wire, existing);
+                }
+                continue;
+            }
+
+            // Nothing is connected to this port on this instance, so setPort can't disconnect anything.
+            if (inner_wire->port_input) {
+                log_error("Input %s of %s is not connected.\n", log_id(port_name), log_id(inner_cell));
+            }
+            if (!inner_wire->port_output) {
+                inner_wire->port_output = true;
+                inner_mod->fixup_ports();
+            }
+            inner_cell->setPort(port_name, RTLIL::SigSpec(outer_wire));
         }
     }
 

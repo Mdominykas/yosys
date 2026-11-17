@@ -73,6 +73,20 @@ struct PreprocessedAssumptionConfig : public MyJsonParser{
 };
 
 
+struct AdditionalDeclaration {
+    std::string module_name;
+    std::string wire_name;
+    int width;
+    AdditionalDeclaration(std::string module_name, std::string wire_name, int width) : module_name(module_name), wire_name(wire_name), width(width) { }
+
+    bool operator==(const AdditionalDeclaration &other) const {
+    return module_name == other.module_name &&
+           wire_name == other.wire_name &&
+           width == other.width;
+    }
+};
+
+
 struct ConvertAssumptions : public Pass {
     struct ModuleTree {
         struct ModuleEdge;
@@ -206,9 +220,6 @@ struct ConvertAssumptions : public Pass {
         std::string assumption_output_file = args[2];
         std::string wire_lifting_output_file = args[3];
 
-        PrettyJson assumption_json;
-        assumption_json.write_to_file(assumption_output_file);
-
         vector<std::pair<std::string, vector<json11::Json> > > module_assumptions;
 
         auto config = PreprocessedAssumptionConfig();
@@ -218,9 +229,11 @@ struct ConvertAssumptions : public Pass {
         ModuleTree tree = ModuleTree(RTLIL::unescape_id(top->name.str()), top);
 
         std::vector<SingleWireLifting> wire_liftings;
+        std::vector<AdditionalDeclaration> additional_declarations;
         for(auto a : config.preprocessed_assumptions){
             vector<ModuleTree::ModuleNode*> last_modules;
             vector<bool> needs_escaping;
+            vector<int> widths;
             for(auto var : a.variables){
                 vector<string> parts = split_into_parts(var);
                 ModuleTree::ModuleNode *cur_node = tree.root;
@@ -238,11 +251,15 @@ struct ConvertAssumptions : public Pass {
                 }
                 last_modules.push_back(cur_node);
                 needs_escaping.push_back((parts.size()) > 1);
+                RTLIL::IdString last_wire_name = RTLIL::escape_id(parts.back());
+                if(cur_module->wire(last_wire_name) == nullptr){
+                    log_error("Wire named %s is not in module %s ", last_wire_name.c_str(), cur_module->name.c_str());
+                }
+                widths.push_back(cur_module->wire(last_wire_name)->width);
             }
             ModuleTree::ModuleNode* common_ancestor = find_lowest_common_ancestor(last_modules);
             assert(common_ancestor != nullptr);
 
-            // it might include duplicates, but I think wire lif
 
             vector<string> last_names;
             for(size_t i = 0; i < a.variables.size(); i++){
@@ -259,14 +276,31 @@ struct ConvertAssumptions : public Pass {
 
                     SingleWireLifting wire_lifting = SingleWireLifting(cur_mod->module_name, cur_mod->parent->module_name, parts[d - 1], concat_suffix, higher);
 
-                    bool need_to_add = true;
+                    bool need_to_add_lifting = true;
                     for(SingleWireLifting wl : wire_liftings){
                         if(wl == wire_lifting){
-                            need_to_add = false;
+                            need_to_add_lifting = false;
+                            break;
                         }
                     }
-                    if(need_to_add){
+                    if(need_to_add_lifting){
                         wire_liftings.push_back(wire_lifting);
+                    }
+
+                    int width = widths[i];
+                    AdditionalDeclaration new_decl = AdditionalDeclaration(cur_mod->parent->module_name, higher, width);
+                    
+                    bool needs_additional_declaration = true;
+                    for(AdditionalDeclaration add_decl : additional_declarations){
+                        if(add_decl == new_decl){
+                            needs_additional_declaration = false;
+                            break;
+                        }
+                    }
+
+                    if(needs_additional_declaration){
+                        additional_declarations.push_back(new_decl);
+
                     }
 
                     concat_suffix = higher;
@@ -284,6 +318,9 @@ struct ConvertAssumptions : public Pass {
                     var_name = "\\" + var_name + " ";
                 }
                 int replaced_cnt = replaceAll(modified_cond, var_name, last_names[i]);
+                if(replaced_cnt == 0){
+                    log_error("Tried to replace \"%s\" with \"%s\" inside \"%s\"\n", var_name.c_str(), last_names[i].c_str(), modified_cond.c_str());
+                }
                 assert(replaced_cnt > 0);
             }
             auto statement_obj = json11::Json(json11::Json::object {
@@ -309,7 +346,25 @@ struct ConvertAssumptions : public Pass {
 
         check_single_module_hypothesis(design, tree);
 
+        PrettyJson assumption_json;
+        if (!assumption_json.write_to_file(assumption_output_file)){
+            log_error("Cannot open %s for writing\n", assumption_output_file.c_str());
+        }
+        
         assumption_json.begin_object();
+
+        assumption_json.name("wire_declarations");
+        assumption_json.begin_array();
+        for(auto decl : additional_declarations){
+            auto decl_object = json11::Json(json11::Json::object {
+                {"module", decl.module_name + ".v"},
+                {"name", decl.wire_name},
+                {"width", decl.width}
+            });
+            assumption_json.value(decl_object);
+        }
+        assumption_json.end_array();
+
         assumption_json.name("assumptions");
         assumption_json.begin_array();
         for(size_t i = 0; i < module_assumptions.size(); i++){
@@ -324,11 +379,16 @@ struct ConvertAssumptions : public Pass {
             assumption_json.end_object();
         }
         assumption_json.end_array();
+
         assumption_json.end_object();
 
         PrettyJson wire_lifting_json;
-        wire_lifting_json.write_to_file(wire_lifting_output_file);
+        if (!wire_lifting_json.write_to_file(wire_lifting_output_file)){
+            log_error("Cannot open %s for writing\n", wire_lifting_output_file.c_str());
+        }
+
         wire_lifting_json.begin_object();
+
         wire_lifting_json.name("liftings");
         wire_lifting_json.begin_array();
         for(SingleWireLifting lifting: wire_liftings){
@@ -342,6 +402,7 @@ struct ConvertAssumptions : public Pass {
             wire_lifting_json.value(lifting_object);
         }
         wire_lifting_json.end_array();
+
         wire_lifting_json.end_object();
     }
 
