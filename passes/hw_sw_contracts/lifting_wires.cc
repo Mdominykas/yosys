@@ -165,6 +165,11 @@ struct LiftingWires : public Pass {
                 outer_wire->upto = inner_wire->upto;
                 outer_wire->is_signed = inner_wire->is_signed;
             }
+            else if (outer_wire->width != inner_wire->width) {
+                log_error("Width mismatch: %s.%s is %d bits, but %s.%s is %d bits.\n",
+                    lifting.inner_module.c_str(), lifting.inner_wire.c_str(), inner_wire->width,
+                    lifting.outer_module.c_str(), lifting.outer_wire.c_str(), outer_wire->width);
+            }
 
             RTLIL::Cell *inner_cell = outer_mod->cell(RTLIL::escape_id(lifting.instance_name));
             if (inner_cell == nullptr || inner_cell->type != inner_mod->name){
@@ -199,6 +204,7 @@ struct LiftingWires : public Pass {
                 log_error("Input %s of %s is not connected.\n", log_id(port_name), log_id(inner_cell));
             }
             if (!inner_wire->port_output) {
+                log("Modulyje %s padariau outputu: %s\n", inner_mod->name.c_str(), inner_wire->name.c_str());
                 inner_wire->port_output = true;
                 inner_mod->fixup_ports();
             }
