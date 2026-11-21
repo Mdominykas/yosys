@@ -8,8 +8,8 @@ prep -nokeepdc
 equiv_opt -assert peepopt
 design -load postopt
 clean
-select -assert-count 1 t:$shiftx
-select -assert-count 0 t:$shiftx t:* %D
+select -assert-count 1 t:$bmux
+select -assert-count 0 t:$bmux t:* %D
 
 ####################
 
@@ -72,9 +72,10 @@ design -import gate -as gate peepopt_shiftmul_3
 miter -equiv -make_assert -make_outputs -ignore_gold_x -flatten gold gate miter
 sat -verify -show-public -enable_undef -prove-asserts miter
 cd gate
-select -assert-count 1 t:$shr
-select -assert-count 1 t:$mul
-select -assert-count 0 t:$shr t:$mul %% t:* %D
+clean
+select -assert-count 1 t:$bmux
+select -assert-count 0 t:$shr
+select -assert-count 0 t:$mul
 
 ####################
 
@@ -92,3 +93,317 @@ equiv_opt -assert peepopt
 design -load postopt
 clean
 select -assert-count 0 t:*
+
+####################
+
+# shiftpow2: a power-of-two part-select i[s*W+:W] becomes a $bmux word mux
+design -reset
+read_verilog <<EOT
+module peepopt_shiftpow2_0 #(parameter M=8, parameter W=4) (input [M*W-1:0] i, input [$clog2(M)-1:0] s, output [W-1:0] o);
+assign o = i[s*W+:W];
+endmodule
+EOT
+
+prep -nokeepdc
+equiv_opt -assert peepopt
+design -load postopt
+clean
+select -assert-count 1 t:$bmux
+select -assert-count 0 t:$bmux t:* %D
+
+####################
+
+# shiftpow2: explicit aligned right shift D >> (S*8), checked by SAT miter
+design -reset
+read_verilog <<EOT
+module peepopt_shiftpow2_1 (input [63:0] D, input [2:0] S, output [7:0] Y);
+	assign Y = D >> (S*8);
+endmodule
+EOT
+
+prep
+design -save gold
+peepopt
+design -stash gate
+
+design -import gold -as gold peepopt_shiftpow2_1
+design -import gate -as gate peepopt_shiftpow2_1
+
+miter -equiv -make_assert -make_outputs -ignore_gold_x -flatten gold gate miter
+sat -verify -show-public -enable_undef -prove-asserts miter
+cd gate
+clean
+select -assert-count 1 t:$bmux
+select -assert-count 0 t:$shr
+
+####################
+
+# shiftpow2: width smaller than stride is non-overlapping
+design -reset
+read_verilog <<EOT
+module peepopt_shiftpow2_narrow (input [31:0] D, input [2:0] S, output [3:0] Y);
+	assign Y = D >> (S*8);
+endmodule
+EOT
+
+prep
+design -save gold
+peepopt
+design -stash gate
+
+design -import gold -as gold peepopt_shiftpow2_narrow
+design -import gate -as gate peepopt_shiftpow2_narrow
+
+miter -equiv -make_assert -make_outputs -ignore_gold_x -flatten gold gate miter
+sat -verify -show-public -enable_undef -prove-asserts miter
+cd gate
+clean
+select -assert-count 1 t:$bmux
+select -assert-count 0 t:$shr
+
+####################
+
+# shiftpow2: signed part-select with out-of-range padding
+design -reset
+read_verilog <<EOT
+module peepopt_shiftpow2_signed (input signed [15:0] i, input [2:0] s, output [3:0] o);
+	assign o = i[s*4 +: 4];
+endmodule
+EOT
+
+prep
+# drive wreduce to a fixed point before checking for the reduced shift
+wreduce
+design -save gold
+peepopt
+design -stash gate
+
+design -import gold -as gold peepopt_shiftpow2_signed
+design -import gate -as gate peepopt_shiftpow2_signed
+
+miter -equiv -make_assert -make_outputs -ignore_gold_x -flatten gold gate miter
+sat -verify -show-public -enable_undef -prove-asserts miter
+cd gate
+clean
+select -assert-count 1 t:$bmux
+select -assert-count 0 t:$shiftx
+
+####################
+
+# shiftpow2: signed $shr extends A to Y_WIDTH
+design -reset
+read_verilog <<EOT
+module peepopt_shiftpow2_signed_shr (input signed [3:0] D, input S, output [7:0] Y);
+	assign Y = D >> (S*8);
+endmodule
+EOT
+
+prep
+design -save gold
+peepopt
+design -stash gate
+
+design -import gold -as gold peepopt_shiftpow2_signed_shr
+design -import gate -as gate peepopt_shiftpow2_signed_shr
+
+miter -equiv -make_assert -make_outputs -flatten gold gate miter
+sat -verify -show-public -prove-asserts miter
+cd gate
+clean
+select -assert-count 1 t:$bmux
+select -assert-count 0 t:$shr
+
+####################
+
+# shiftpow2 must NOT fire for overlapping selections
+design -reset
+read_verilog <<EOT
+module peepopt_shiftpow2_overlap (input [31:0] D, input [1:0] S, output [7:0] Y);
+	assign Y = D >> (S*4);
+endmodule
+EOT
+
+prep -nokeepdc
+peepopt
+clean
+select -assert-count 0 t:$bmux
+select -assert-count 1 t:$shr
+
+####################
+
+# shiftpow2: shiftmul can expose a non-overlapping power-of-two stride
+design -reset
+read_verilog <<EOT
+module peepopt_shiftpow2_shiftmul #(parameter M=8, parameter W=3) (input [M*W-1:0] i, input [2:0] s, output [W-1:0] o);
+assign o = i[s*W+:W];
+endmodule
+EOT
+
+prep -nokeepdc
+equiv_opt -assert peepopt
+design -load postopt
+clean
+select -assert-count 1 t:$bmux
+select -assert-count 0 t:$bmux t:* %D
+
+####################
+
+# shiftadd left an empty A on a signed $shr, which techmap turned into x (#6214)
+design -reset
+read_verilog <<EOT
+module peepopt_shiftadd_6214 (input signed [1:0] in, output Y);
+	assign Y = !((in >> 2) >> (1 + in[0]));
+endmodule
+EOT
+
+synth
+sat -verify -prove Y 1'b1
+
+####################
+
+# signed $shr sign-extends A to Y_WIDTH, the narrowed A must carry that extension
+design -reset
+read_verilog <<EOT
+module peepopt_shiftadd_signed_shr (input signed [3:0] D, input [1:0] S, output [7:0] Y);
+	wire signed [7:0] A = D;
+	assign Y = A >> (S + 1);
+endmodule
+EOT
+
+prep
+# wreduce narrows A below Y_WIDTH
+wreduce
+equiv_opt -assert peepopt
+design -load postopt
+clean
+select -assert-count 0 t:$add
+
+####################
+
+# A_WIDTH > Y_WIDTH needs no extension, but A_SIGNED must still be cleared
+design -reset
+read_rtlil <<EOT
+module \t
+  wire width 4 input 1 signed \A
+  wire input 2 \S
+  wire width 2 output 3 \Y
+  wire width 3 \BS
+  cell $add \a
+    parameter \A_SIGNED 0
+    parameter \B_SIGNED 0
+    parameter \A_WIDTH 2
+    parameter \B_WIDTH 1
+    parameter \Y_WIDTH 3
+    connect \A 2'11
+    connect \B \S
+    connect \Y \BS
+  end
+  cell $shr \s
+    parameter \A_SIGNED 1
+    parameter \B_SIGNED 0
+    parameter \A_WIDTH 4
+    parameter \B_WIDTH 3
+    parameter \Y_WIDTH 2
+    connect \A \A
+    connect \B \BS
+    connect \Y \Y
+  end
+end
+EOT
+
+equiv_opt -assert peepopt
+design -load postopt
+clean
+select -assert-count 0 t:$add
+
+####################
+
+# shiftadd: signed add read unsigned by $shr (#6241)
+design -reset
+read_verilog <<EOT
+module peepopt_shiftadd_signed_add (input signed [3:0] v, input [15:0] data, output [15:0] out);
+	wire signed [1:0] c = -1;
+	wire [4:0] amt = v + c;
+	assign out = data >> amt;
+endmodule
+EOT
+
+proc
+equiv_opt -assert peepopt
+
+####################
+
+# shiftadd: unsigned add read signed by $shift, MSB of the sum can be set
+design -reset
+read_rtlil <<EOT
+module \peepopt_shiftadd_unsigned_shift
+  wire width 4 input 1 \v
+  wire width 16 input 2 \d
+  wire width 5 \s
+  wire width 16 output 3 \y
+  cell $add \add
+    parameter \A_SIGNED 0
+    parameter \B_SIGNED 0
+    parameter \A_WIDTH 4
+    parameter \B_WIDTH 3
+    parameter \Y_WIDTH 5
+    connect \A \v
+    connect \B 3'011
+    connect \Y \s
+  end
+  cell $shift \sh
+    parameter \A_SIGNED 0
+    parameter \B_SIGNED 1
+    parameter \A_WIDTH 16
+    parameter \B_WIDTH 5
+    parameter \Y_WIDTH 16
+    connect \A \d
+    connect \B \s
+    connect \Y \y
+  end
+end
+EOT
+
+equiv_opt -assert peepopt
+
+####################
+
+#6255
+design -reset
+read_verilog <<EOT
+module peepopt_muldiv_c_0(input signed [3:0] a, output [8:0] y);
+wire signed [8:0] p = a * 5'sd9;
+assign y = $unsigned(p) / 9'd3;
+endmodule
+EOT
+
+prep -nokeepdc
+equiv_opt -assert peepopt
+design -load postopt
+select -assert-count 1 t:$div
+
+design -reset
+read_verilog <<EOT
+module peepopt_muldiv_c_1(input [5:0] a, output [7:0] y);
+wire [7:0] p = a * 2'd3;
+assign y = $signed(p) / 3'sd3;
+endmodule
+EOT
+
+prep -nokeepdc
+equiv_opt -assert peepopt
+design -load postopt
+select -assert-count 1 t:$div
+
+design -reset
+read_verilog <<EOT
+module peepopt_muldiv_c_2(input signed [3:0] a, output signed [8:0] y);
+wire signed [8:0] p = a * 5'sd9;
+assign y = p / 9'sd3;
+endmodule
+EOT
+
+prep -nokeepdc
+equiv_opt -assert peepopt
+design -load postopt
+select -assert-count 0 t:$div

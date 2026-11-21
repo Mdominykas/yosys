@@ -17,11 +17,9 @@
  *
  */
 
-#include "kernel/register.h"
 #include "kernel/sigtools.h"
-#include "kernel/log.h"
-#include <stdlib.h>
-#include <stdio.h>
+#include "kernel/yosys.h"
+#include "kernel/log_help.h"
 
 USING_YOSYS_NAMESPACE
 PRIVATE_NAMESPACE_BEGIN
@@ -32,10 +30,19 @@ struct RmportsPassPass : public Pass {
 	{
 		//   |---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|
 		log("\n");
-		log("    rmports [selection]\n");
+		log("    rmports [options] [selection]\n");
 		log("\n");
 		log("This pass identifies ports in the selected modules which are not used or\n");
 		log("driven and removes them.\n");
+		log("\n");
+		log("An output which is driven inside the module is also removed, if no\n");
+		log("instance of the module uses it. The top module, a module which nothing\n");
+		log("instantiates, and a port with the keep attribute stay. This needs a module\n");
+		log("with the top attribute (see hierarchy -top). Without one, a parent design\n");
+		log("which is not loaded can still use these ports.\n");
+		log("\n");
+		log("    -purge\n");
+		log("        remove driven outputs also when no module has the top attribute\n");
 		log("\n");
 	}
 
@@ -43,25 +50,110 @@ struct RmportsPassPass : public Pass {
 	{
 		log_header(design, "Executing RMPORTS pass (remove ports with no connections).\n");
 
-		size_t argidx = 1;
+		bool purge_mode = false;
+
+		size_t argidx;
+		for(argidx = 1; argidx < args.size(); argidx++)
+		{
+			if(args[argidx] == "-purge")
+			{
+				purge_mode = true;
+				continue;
+			}
+			break;
+		}
 		extra_args(args, argidx, design);
 
 		// The set of ports we removed
 		dict<IdString, pool<IdString>> removed_ports;
 
+		// Find the ports which are used by some instance in the design
+		dict<IdString, pool<IdString>> used_instance_ports;
+		pool<IdString> instantiated;
+		pool<IdString> positional;
+		CollectInstantiated(design, instantiated);
+		bool scan_outputs = purge_mode || HasTopModule(design);
+		if(scan_outputs)
+			ScanInstances(design, used_instance_ports, positional);
+		else
+			log("The design has no module with the top attribute. Outputs which are driven inside their module stay.\n");
+
 		// Find all of the unused ports, and remove them from that module
-		auto modules = design->selected_modules();
-		for(auto mod : modules)
-			ScanModule(mod, removed_ports);
+		for(auto mod : design->selected_modules())
+		{
+			bool keep_outputs = !scan_outputs || !instantiated.count(mod->name) ||
+					positional.count(mod->name) || mod->get_bool_attribute(ID::top);
+			ScanModule(mod, removed_ports, used_instance_ports[mod->name], keep_outputs);
+		}
 
 		// Remove the unused ports from all instances of those modules
-		for(auto mod : modules)
+		for(auto mod : design->modules())
 			CleanupModule(mod, removed_ports);
+	}
+
+	// The cell types which some cell in the design instantiates
+	void CollectInstantiated(Design *design, pool<IdString> &instantiated)
+	{
+		for(auto mod : design->modules())
+			for(auto cell : mod->cells())
+				instantiated.insert(cell->type);
+	}
+
+	bool HasTopModule(Design *design)
+	{
+		for(auto mod : design->modules())
+			if(mod->get_bool_attribute(ID::top))
+				return true;
+		return false;
+	}
+
+	// A port is used by an instance if some bit of its connection goes anywhere
+	// else in the parent module: a public, port or kept wire, a second reference
+	// to the same bit, or any wire at all if the parent still contains processes
+	void ScanInstances(Design *design, dict<IdString, pool<IdString>> &used_instance_ports, pool<IdString> &positional)
+	{
+		// Count how often each wire bit is referenced anywhere in the design
+		dict<SigBit, int> bit_refs;
+		for(auto mod : design->modules())
+		{
+			for(auto &conn : mod->connections())
+				for(auto bit : SigSpec{conn.first, conn.second})
+					if(bit.wire != NULL)
+						bit_refs[bit]++;
+			for(auto cell : mod->cells())
+				for(auto &conn : cell->connections())
+					for(auto bit : conn.second)
+						if(bit.wire != NULL)
+							bit_refs[bit]++;
+		}
+
+		for(auto mod : design->modules())
+		{
+			bool has_procs = !mod->processes.empty();
+			for(auto cell : mod->cells())
+				for(auto &conn : cell->connections())
+				{
+					if(!conn.first.isPublic())
+						positional.insert(cell->type);
+
+					for(auto bit : conn.second)
+					{
+						if(bit.wire == NULL)
+							continue;
+						if(has_procs || bit.wire->name.isPublic() || bit.wire->port_input || bit.wire->port_output ||
+								bit.wire->get_bool_attribute(ID::keep) || bit_refs.at(bit) > 1)
+						{
+							used_instance_ports[cell->type].insert(conn.first);
+							break;
+						}
+					}
+				}
+		}
 	}
 
 	void CleanupModule(Module *module, dict<IdString, pool<IdString>> &removed_ports)
 	{
-		log("Removing now-unused cell ports in module %s\n", module->name.c_str());
+		log("Removing now-unused cell ports in module %s\n", module->name);
 
 		auto cells = module->cells();
 		for(auto cell : cells)
@@ -69,7 +161,7 @@ struct RmportsPassPass : public Pass {
 			if(removed_ports.find(cell->type) == removed_ports.end())
 			{
 				// log("  Not touching instance \"%s\" because we didn't remove any ports from module \"%s\"\n",
-				//	cell->name.c_str(), cell->type.c_str());
+				//	cell->name, cell->type);
 				continue;
 			}
 
@@ -77,15 +169,16 @@ struct RmportsPassPass : public Pass {
 			for(auto p : ports_to_remove)
 			{
 				log("  Removing port \"%s\" from instance \"%s\"\n",
-					p.c_str(), cell->type.c_str());
+					module->twines().str(p), cell->type.str());
 				cell->unsetPort(p);
 			}
 		}
 	}
 
-	void ScanModule(Module* module, dict<IdString, pool<IdString>> &removed_ports)
+	void ScanModule(Module* module, dict<IdString, pool<IdString>> &removed_ports,
+			const pool<IdString> &used_instance_ports, bool keep_outputs)
 	{
-		log("Finding unconnected ports in module %s\n", module->name.c_str());
+		log("Finding unconnected ports in module %s\n", module->name);
 
 		pool<IdString> used_ports;
 
@@ -110,7 +203,7 @@ struct RmportsPassPass : public Pass {
 				if( (w1 == NULL) || (w2 == NULL) )
 					continue;
 
-				//log("  conn %s, %s\n", w1->name.c_str(), w2->name.c_str());
+				//log("  conn %s, %s\n", w1->name, w2->name);
 
 				if( (w1->port_input || w1->port_output) && (used_ports.find(w1->name) == used_ports.end()) )
 					used_ports.insert(w1->name);
@@ -133,7 +226,7 @@ struct RmportsPassPass : public Pass {
 					if(sig == NULL)
 						continue;
 
-					// log("  sig %s\n", sig->name.c_str());
+					// log("  sig %s\n", sig->name);
 					if( (sig->port_input || sig->port_output) && (used_ports.find(sig->name) == used_ports.end()) )
 						used_ports.insert(sig->name);
 				}
@@ -144,15 +237,29 @@ struct RmportsPassPass : public Pass {
 		pool<IdString> unused_ports;
 		for(auto port : module->ports)
 		{
-			if(used_ports.find(port) != used_ports.end())
+			if(used_ports.find(port) == used_ports.end())
+			{
+				unused_ports.insert(port);
 				continue;
-			unused_ports.insert(port);
+			}
+
+			// An output which no instance of this module uses can be removed
+			// even if it is driven internally
+			auto wire = module->wire(port);
+			if(
+				wire->port_output &&
+				!wire->port_input &&
+				!keep_outputs &&
+				used_instance_ports.find(port) == used_instance_ports.end() &&
+				!wire->get_bool_attribute(ID::keep)
+			)
+				unused_ports.insert(port);
 		}
 
 		// Print the ports out as we go through them
 		for(auto port : unused_ports)
 		{
-			log("  removing unused port %s\n", port.c_str());
+			log("  removing unused port %s\n", module->twines().str(port));
 			removed_ports[module->name].insert(port);
 
 			// Remove from ports list

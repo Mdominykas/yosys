@@ -53,7 +53,7 @@ struct Slice {
 	}
 
 	static void syntax_error(const std::string &slice) {
-		log_cmd_error("Invalid slice '%s', expected '<first>:<last>' or '<single>'", slice.c_str());
+		log_cmd_error("Invalid slice '%s', expected '<first>:<last>' or '<single>'\n", slice);
 	}
 
 	std::string to_string() const {
@@ -67,7 +67,7 @@ struct Slice {
 	int wire_offset(RTLIL::Wire *wire, int index) const {
 		int rtl_offset = indices == RtlilSlice ? index : wire->from_hdl_index(index);
 		if (rtl_offset < 0 || rtl_offset >= wire->width) {
-			log_error("Slice %s is out of bounds for wire %s in module %s", to_string().c_str(), log_id(wire), log_id(wire->module));
+			log_error("Slice %s is out of bounds for wire %s in module %s\n", to_string(), wire, wire->module);
 		}
 		return rtl_offset;
 	}
@@ -156,9 +156,9 @@ dict<SigBit, std::vector<SelReason>> gather_selected_reps(Module* mod, const std
 void explain_selections(const std::vector<SelReason>& reasons) {
 	for (std::variant<Wire*, Cell*> reason : reasons) {
 		if (Cell** cell_reason = std::get_if<Cell*>(&reason))
-			log_debug("\tcell %s\n", (*cell_reason)->name.c_str());
+			log_debug("\tcell %s\n", (*cell_reason)->name);
 		else if (Wire** wire_reason = std::get_if<Wire*>(&reason))
-			log_debug("\twire %s\n", (*wire_reason)->name.c_str());
+			log_debug("\twire %s\n", (*wire_reason)->name);
 		else
 			log_assert(false && "insane reason variant\n");
 	}
@@ -187,7 +187,7 @@ unsigned int abstract_state(Module* mod, EnableLogic enable, const std::vector<S
 		for (int i = 0; i < GetSize(ff.sig_q); i++) {
 			SigBit bit = ff.sig_q[i];
 			if (selected_reps.count(sigmap(bit))) {
-				log_debug("Abstracting state for %s.Q[%i] in module %s due to selections:\n", log_id(ff.cell), i, log_id(mod));
+				log_debug("Abstracting state for %s.Q[%i] in module %s due to selections:\n", ff.cell, i, mod);
 				explain_selections(selected_reps.at(sigmap(bit)));
 				offsets_to_abstract.insert(i);
 			}
@@ -271,7 +271,7 @@ unsigned int abstract_value(Module* mod, EnableLogic enable, const std::vector<S
 				for (int i = 0; i < conn.second.size(); i++) {
 					if (selected_reps.count(sigmap(conn.second[i]))) {
 						log_debug("Abstracting value for %s.%s[%i] in module %s due to selections:\n",
-							log_id(cell), log_id(conn.first), i, log_id(mod));
+							cell, PooledName(cell->module, conn.first).unescape(), i, mod);
 						explain_selections(selected_reps.at(sigmap(conn.second[i])));
 						offsets_to_abstract.insert(i);
 					}
@@ -289,7 +289,7 @@ unsigned int abstract_value(Module* mod, EnableLogic enable, const std::vector<S
 			for (auto bit : SigSpec(wire))
 				if (selected_reps.count(sigmap(bit))) {
 					log_debug("Abstracting value for module input port bit %s in module %s due to selections:\n",
-						log_signal(bit), log_id(mod));
+						log_signal(bit), mod);
 					explain_selections(selected_reps.at(sigmap(bit)));
 					offsets_to_abstract.insert(bit.offset);
 				}
@@ -328,7 +328,7 @@ struct AbstractPass : public Pass {
 		log("during formal verification. The mode and options control when a signal should\n");
 		log("be abstracted and how it should affect FFs present in the design.\n");
 		log("\n");
-		log("Modes:");
+		log("Modes:\n");
 		log("\n");
 		log("    -state\n");
 		log("        The selected FFs will be modified to load a new abstract value on every\n");
@@ -373,6 +373,12 @@ struct AbstractPass : public Pass {
 		log("        abstractions performed by either mode. This option is not supported in\n");
 		log("        the -init mode.\n");
 		log("\n");
+		log("    -initstates <n>\n");
+		log("        Perform conditional abstraction for the first <n> time steps. See the\n");
+		log("        description of the -state and -value modes for details on how the\n");
+		log("        condition affects the abstractions performed by either mode. This option\n");
+		log("        is not supported in the -init mode.\n");
+		log("\n");
 		log("    -slice <lhs>:<rhs>\n");
 		log("    -slice <index>\n");
 		log("    -rtlilslice <lhs>:<rhs>\n");
@@ -402,8 +408,10 @@ struct AbstractPass : public Pass {
 			Always = -1,
 			ActiveLow = false, // ensuring we can use bool(enable)
 			ActiveHigh = true,
+			Initstates = 2,
 		};
 		Enable enable = Enable::Always;
+		int initstates = 0;
 		std::string enable_name;
 		std::vector<Slice> slices;
 		for (argidx = 1; argidx < args.size(); argidx++)
@@ -435,6 +443,13 @@ struct AbstractPass : public Pass {
 				enable = Enable::ActiveLow;
 				continue;
 			}
+			if (arg == "-initstates" && argidx + 1 < args.size()) {
+				if (enable != Enable::Always)
+					log_cmd_error("Multiple enable condition are not supported\n");
+				initstates = atoi(args[++argidx].c_str());
+				enable = Enable::Initstates;
+				continue;
+			}
 			if (arg == "-slice" && argidx + 1 < args.size()) {
 				slices.emplace_back(SliceIndices::HdlSlice, args[++argidx]);
 				continue;
@@ -451,22 +466,51 @@ struct AbstractPass : public Pass {
 			if (mode == Mode::Initial)
 				log_cmd_error("Conditional initial value abstraction is not supported\n");
 
-			if (enable_name.empty())
-				log_cmd_error("Unspecified enable wire\n");
+			switch (enable) {
+				case Enable::Always:
+					log_assert(false);
+					YS_FALLTHROUGH
+				case Enable::ActiveLow:
+				case Enable::ActiveHigh: {
+					if (enable_name.empty())
+						log_cmd_error("Unspecified enable wire\n");
+				} break;
+				case Enable::Initstates: {
+					if (initstates <= 0)
+						log_cmd_error("Number of initial time steps must be positive\n");
+				} break;
+			}
 		}
 
 		unsigned int changed = 0;
 		if ((mode == State) || (mode == Value)) {
 			for (auto mod : design->selected_modules()) {
-				EnableLogic enable_logic = { State::S1, true };
-				if (enable != Enable::Always) {
-					Wire *enable_wire = mod->wire("\\" + enable_name);
-					if (!enable_wire)
-						log_cmd_error("Enable wire %s not found in module %s\n", enable_name.c_str(), mod->name.c_str());
-					if (GetSize(enable_wire) != 1)
-						log_cmd_error("Enable wire %s must have width 1 but has width %d in module %s\n",
-								enable_name.c_str(), GetSize(enable_wire), mod->name.c_str());
-					enable_logic = { enable_wire, enable == Enable::ActiveHigh };
+				EnableLogic enable_logic;
+
+				switch (enable) {
+					case Enable::Always: {
+						enable_logic = { State::S1, true };
+					} break;
+					case Enable::ActiveLow:
+					case Enable::ActiveHigh: {
+						Wire *enable_wire = mod->wire("\\" + enable_name);
+						if (!enable_wire)
+							log_cmd_error("Enable wire %s not found in module %s\n", enable_name, mod->name);
+						if (GetSize(enable_wire) != 1)
+							log_cmd_error("Enable wire %s must have width 1 but has width %d in module %s\n",
+									enable_name, GetSize(enable_wire), mod->name);
+						enable_logic = { enable_wire, enable == Enable::ActiveHigh };
+					} break;
+					case Enable::Initstates: {
+						SigBit in_init_states = mod->Initstate(NEW_ID);
+						for (int i = 1; i < initstates; i++) {
+							Wire *in_init_states_q = mod->addWire(NEW_ID);
+							mod->addFf(NEW_ID, in_init_states, in_init_states_q);
+							in_init_states_q->attributes[ID::init] = State::S1;
+							in_init_states = in_init_states_q;
+						}
+						enable_logic = { in_init_states, true };
+					} break;
 				}
 				if (mode == State)
 					changed += abstract_state(mod, enable_logic, slices);

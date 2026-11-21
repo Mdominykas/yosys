@@ -29,6 +29,19 @@ struct SynthSf2Pass : public ScriptPass
 {
 	SynthSf2Pass() : ScriptPass("synth_sf2", "synthesis for SmartFusion2 and IGLOO2 FPGAs") { }
 
+	void on_register() override
+	{
+		target_register.emplace("sf2", Target{
+			"Microchip SmartFusion2",
+			{
+				{"", { // default
+					"",
+					{"+/sf2/cells_sim.v"}
+				}}
+			}
+		});
+	}
+
 	void help() override
 	{
 		//   |---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|
@@ -69,9 +82,6 @@ struct SynthSf2Pass : public ScriptPass
 		log("    -discard-ffinit\n");
 		log("        discard FF init value instead of emitting an error\n");
 		log("\n");
-		log("    -retime\n");
-		log("        run 'abc' with '-dff -D 1' options\n");
-		log("\n");
 		log("\n");
 		log("The following commands are executed by this synthesis command:\n");
 		help_script();
@@ -88,7 +98,6 @@ struct SynthSf2Pass : public ScriptPass
 		vlog_file = "";
 		json_file = "";
 		flatten = true;
-		retime = false;
 		iobs = true;
 		clkbuf = false;
 		discard_ffinit = false;
@@ -131,7 +140,7 @@ struct SynthSf2Pass : public ScriptPass
 				continue;
 			}
 			if (args[argidx] == "-retime") {
-				retime = true;
+				// Removed: ABC9 does not support retiming.
 				continue;
 			}
 			if (args[argidx] == "-noiobs") {
@@ -166,12 +175,13 @@ struct SynthSf2Pass : public ScriptPass
 		if (check_label("begin"))
 		{
 			run("read_verilog -lib +/sf2/cells_sim.v");
-			run(stringf("hierarchy -check %s", help_mode ? "-top <top>" : top_opt.c_str()));
+			run(stringf("hierarchy -check %s", help_mode ? "-top <top>" : top_opt));
 		}
 
 		if (flatten && check_label("flatten", "(unless -noflatten)"))
 		{
 			run("proc");
+			run("check");
 			run("flatten");
 			run("tribuf -logic");
 			run("deminout");
@@ -191,8 +201,6 @@ struct SynthSf2Pass : public ScriptPass
 			run("opt -undriven -fine");
 			run("techmap -map +/techmap.v -map +/sf2/arith_map.v");
 			run("opt -fast");
-			if (retime || help_mode)
-				run("abc -dff -D 1", "(only if -retime)");
 		}
 
 		if (check_label("map_ffs"))
@@ -208,7 +216,7 @@ struct SynthSf2Pass : public ScriptPass
 
 		if (check_label("map_luts"))
 		{
-			run("abc -lut 4");
+			run("abc9 -lut 4");
 			run("clean");
 		}
 
@@ -228,7 +236,7 @@ struct SynthSf2Pass : public ScriptPass
 				} else {
 					run("clkbufmap -buf CLKINT Y:A");
 				}
-				run("iopadmap -bits -inpad INBUF Y:PAD -outpad OUTBUF D:PAD -toutpad TRIBUFF E:D:PAD -tinoutpad BIBUF E:Y:D:PAD", "(unless -noiobs)");
+				run("iopadmap -bits -inpad INBUF Y:PAD -outpad OUTBUF D:PAD -toutpad TRIBUFF E:D:PAD -tinoutpad BIBUF E:Y:D:PAD A:top", "(unless -noiobs)");
 			}
 			run("clean -purge");
 		}
@@ -244,19 +252,19 @@ struct SynthSf2Pass : public ScriptPass
 		if (check_label("edif"))
 		{
 			if (!edif_file.empty() || help_mode)
-				run(stringf("write_edif -gndvccy %s", help_mode ? "<file-name>" : edif_file.c_str()));
+				run(stringf("write_edif -gndvccy %s", help_mode ? "<file-name>" : edif_file));
 		}
 
 		if (check_label("vlog"))
 		{
 			if (!vlog_file.empty() || help_mode)
-				run(stringf("write_verilog %s", help_mode ? "<file-name>" : vlog_file.c_str()));
+				run(stringf("write_verilog %s", help_mode ? "<file-name>" : vlog_file));
 		}
 
 		if (check_label("json"))
 		{
 			if (!json_file.empty() || help_mode)
-				run(stringf("write_json %s", help_mode ? "<file-name>" : json_file.c_str()));
+				run(stringf("write_json %s", help_mode ? "<file-name>" : json_file));
 		}
 	}
 } SynthSf2Pass;

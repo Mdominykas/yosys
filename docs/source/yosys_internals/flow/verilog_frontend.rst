@@ -47,9 +47,9 @@ be found in :file:`frontends/verilog/verilog_lexer.l` in the Yosys source tree.
 The lexer does little more than identifying all keywords and literals recognised
 by the Yosys Verilog frontend.
 
-The lexer keeps track of the current location in the Verilog source code using
-some global variables. These variables are used by the constructor of AST nodes
-to annotate each node with the source code location it originated from.
+The lexer keeps track of the current location in the Verilog source code with
+a ``VerilogLexer::out_loc`` and uses it to construct parser-defined
+symbol objects.
 
 Finally the lexer identifies and handles special comments such as "``// synopsys
 translate_off``" and "``// synopsys full_case``". (It is recommended to use
@@ -178,21 +178,22 @@ properties:
 
 -  | Source code location
    | Each ``AST::AstNode`` is automatically annotated with the current source
-     code location by the ``AST::AstNode`` constructor. It is stored in the
-     ``std::string filename`` and ``int linenum`` member variables.
+     code location by the ``AST::AstNode`` constructor. The ``location`` type
+     is a manual reimplementation of the bison-provided location type. This
+     type is defined at ``frontends/verilog/verilog_location.h``.
 
-The ``AST::AstNode`` constructor can be called with up to two child nodes that
-are automatically added to the list of child nodes for the new object. This
+The ``AST::AstNode`` constructor can be called with up to 4 child nodes. This
 simplifies the creation of AST nodes for simple expressions a bit. For example
 the bison code for parsing multiplications:
 
 .. code:: none
-   	:number-lines:
+   :number-lines:
 
-	basic_expr '*' attr basic_expr {
-		$$ = new AstNode(AST_MUL, $1, $4);
-		append_attr($$, $3);
-	} |
+   basic_expr TOK_ASTER attr basic_expr {
+     $$ = std::make_unique<AstNode>(AST_MUL, std::move($1), std::move($4));
+     SET_AST_NODE_LOC($$.get(), @1, @4);
+     append_attr($$.get(), $3);
+   } |
 
 The generated AST data structure is then passed directly to the AST frontend
 that performs the actual conversion to RTLIL.
@@ -204,7 +205,7 @@ tree respectively.
 Transforming AST to RTLIL
 -------------------------
 
-The AST Frontend converts a set of modules in AST representation to modules in
+The AST frontend converts a set of modules in AST representation to modules in
 RTLIL representation and adds them to the current design. This is done in two
 steps: simplification and RTLIL generation.
 
@@ -431,12 +432,12 @@ variables:
     initialization of ``AST_INTERNAL::ProcessGenerator`` these two variables are
     empty.
 
--  | ``subst_lvalue_from`` and ``subst_lvalue_to`` 
+-  | ``subst_lvalue_from`` and ``subst_lvalue_to``
    | These two variables contain the mapping from left-hand-side signals (``\
      <name>``) to the current temporary signal for the same thing (initially
      ``$0\ <name>``).
 
--  | ``current_case`` 
+-  | ``current_case``
    | A pointer to a ``RTLIL::CaseRule`` object. Initially this is the root case
      of the generated ``RTLIL::Process``.
 
@@ -602,13 +603,13 @@ behavioural model in ``RTLIL::Process`` representation. The actual conversion
 from a behavioural model to an RTL representation is performed by the `proc`
 pass and the passes it launches:
 
--  | `proc_clean` and `proc_rmdead` 
+-  | `proc_clean` and `proc_rmdead`
    | These two passes just clean up the ``RTLIL::Process`` structure. The
      `proc_clean` pass removes empty parts (eg. empty assignments) from the
      process and `proc_rmdead` detects and removes unreachable branches from the
      process's decision trees.
 
--  | `proc_arst` 
+-  | `proc_arst`
    | This pass detects processes that describe d-type flip-flops with
      asynchronous resets and rewrites the process to better reflect what they
      are modelling: Before this pass, an asynchronous reset has two
@@ -616,7 +617,7 @@ pass and the passes it launches:
      reset path. After this pass the sync rule for the reset is level-sensitive
      and the top-level ``RTLIL::SwitchRule`` has been removed.
 
--  | `proc_mux` 
+-  | `proc_mux`
    | This pass converts the ``RTLIL::CaseRule``/\ ``RTLIL::SwitchRule``-tree to
      a tree of multiplexers per written signal. After this, the
      ``RTLIL::Process`` structure only contains the ``RTLIL::SyncRule`` s that

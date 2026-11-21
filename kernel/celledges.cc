@@ -24,7 +24,7 @@ PRIVATE_NAMESPACE_BEGIN
 
 void bitwise_unary_op(AbstractCellEdgesDatabase *db, RTLIL::Cell *cell)
 {
-	bool is_signed = (cell->type != ID($buf)) && cell->getParam(ID::A_SIGNED).as_bool();
+	bool is_signed = !cell->type.in(ID($buf), ID($barrier)) && cell->getParam(ID::A_SIGNED).as_bool();
 	int a_width = GetSize(cell->getPort(ID::A));
 	int y_width = GetSize(cell->getPort(ID::Y));
 
@@ -110,6 +110,41 @@ void reduce_op(AbstractCellEdgesDatabase *db, RTLIL::Cell *cell)
 
 	for (int i = 0; i < a_width; i++)
 		db->add_edge(cell, ID::A, i, ID::Y, 0, -1);
+}
+
+void logic_op(AbstractCellEdgesDatabase *db, RTLIL::Cell *cell)
+{
+	int a_width = GetSize(cell->getPort(ID::A));
+	int b_width = GetSize(cell->getPort(ID::B));
+
+	for (int i = 0; i < a_width; i++)
+		db->add_edge(cell, ID::A, i, ID::Y, 0, -1);
+	for (int i = 0; i < b_width; i++)
+		db->add_edge(cell, ID::B, i, ID::Y, 0, -1);
+}
+
+void concat_op(AbstractCellEdgesDatabase *db, RTLIL::Cell *cell)
+{
+	int a_width = GetSize(cell->getPort(ID::A));
+	int b_width = GetSize(cell->getPort(ID::B));
+
+	for (int i = 0; i < a_width; i++)
+		db->add_edge(cell, ID::A, i, ID::Y, i, -1);
+	for (int i = 0; i < b_width; i++)
+		db->add_edge(cell, ID::B, i, ID::Y, a_width + i, -1);
+}
+
+void slice_op(AbstractCellEdgesDatabase *db, RTLIL::Cell *cell)
+{
+	int offset = cell->getParam(ID::OFFSET).as_int();
+	int a_width = GetSize(cell->getPort(ID::A));
+	int y_width = GetSize(cell->getPort(ID::Y));
+
+	for (int i = 0; i < y_width; i++) {
+		int a_bit = offset + i;
+		if (a_bit >= 0 && a_bit < a_width)
+			db->add_edge(cell, ID::A, a_bit, ID::Y, i, -1);
+	}
 }
 
 void compare_op(AbstractCellEdgesDatabase *db, RTLIL::Cell *cell)
@@ -254,7 +289,7 @@ void shift_op(AbstractCellEdgesDatabase *db, RTLIL::Cell *cell)
 					int skip = 1 << (k + 1);
 					int base = skip -1;
 					if (i % skip != base && i - a_width + 2 < 1 << b_width_capped)
-						db->add_edge(cell, ID::B, k, ID::Y, i, -1);	
+						db->add_edge(cell, ID::B, k, ID::Y, i, -1);
 				} else if (is_signed) {
 					if (i - a_width + 2 < 1 << b_width_capped)
 						db->add_edge(cell, ID::B, k, ID::Y, i, -1);
@@ -388,11 +423,69 @@ void ff_op(AbstractCellEdgesDatabase *db, RTLIL::Cell *cell)
 			db->add_edge(cell, ID::ARST, 0, ID::Q, k, -1);
 }
 
+void full_op(AbstractCellEdgesDatabase *db, RTLIL::Cell *cell)
+{
+	std::vector<RTLIL::IdString> input_ports;
+	std::vector<RTLIL::IdString> output_ports;
+
+	for (auto &conn : cell->connections())
+	{
+		RTLIL::IdString port = conn.first;
+		RTLIL::PortDir dir = cell->port_dir(port);
+		if (cell->input(port) || dir == RTLIL::PortDir::PD_INOUT)
+			input_ports.push_back(port);
+		if (cell->output(port) || dir == RTLIL::PortDir::PD_INOUT)
+			output_ports.push_back(port);
+	}
+
+	for (auto out_port : output_ports)
+	{
+		int out_width = GetSize(cell->getPort(out_port));
+		for (int out_bit = 0; out_bit < out_width; out_bit++)
+		{
+			for (auto in_port : input_ports)
+			{
+				int in_width = GetSize(cell->getPort(in_port));
+				for (int in_bit = 0; in_bit < in_width; in_bit++)
+					db->add_edge(cell, in_port, in_bit, out_port, out_bit, -1);
+			}
+		}
+	}
+}
+
+void bweqx_op(AbstractCellEdgesDatabase *db, RTLIL::Cell *cell)
+{
+	int width = GetSize(cell->getPort(ID::Y));
+	int a_width = GetSize(cell->getPort(ID::A));
+	int b_width = GetSize(cell->getPort(ID::B));
+	int max_width = std::min(width, std::min(a_width, b_width));
+
+	for (int i = 0; i < max_width; i++) {
+		db->add_edge(cell, ID::A, i, ID::Y, i, -1);
+		db->add_edge(cell, ID::B, i, ID::Y, i, -1);
+	}
+}
+
+void bwmux_op(AbstractCellEdgesDatabase *db, RTLIL::Cell *cell)
+{
+	int width = GetSize(cell->getPort(ID::Y));
+	int a_width = GetSize(cell->getPort(ID::A));
+	int b_width = GetSize(cell->getPort(ID::B));
+	int s_width = GetSize(cell->getPort(ID::S));
+	int max_width = std::min(width, std::min(a_width, std::min(b_width, s_width)));
+
+	for (int i = 0; i < max_width; i++) {
+		db->add_edge(cell, ID::A, i, ID::Y, i, -1);
+		db->add_edge(cell, ID::B, i, ID::Y, i, -1);
+		db->add_edge(cell, ID::S, i, ID::Y, i, -1);
+	}
+}
+
 PRIVATE_NAMESPACE_END
 
 bool YOSYS_NAMESPACE_PREFIX AbstractCellEdgesDatabase::add_edges_from_cell(RTLIL::Cell *cell)
 {
-	if (cell->type.in(ID($not), ID($pos), ID($buf))) {
+	if (cell->type.in(ID($not), ID($pos), ID($buf), ID($barrier))) {
 		bitwise_unary_op(this, cell);
 		return true;
 	}
@@ -414,6 +507,21 @@ bool YOSYS_NAMESPACE_PREFIX AbstractCellEdgesDatabase::add_edges_from_cell(RTLIL
 
 	if (cell->type.in(ID($reduce_and), ID($reduce_or), ID($reduce_xor), ID($reduce_xnor), ID($reduce_bool), ID($logic_not))) {
 		reduce_op(this, cell);
+		return true;
+	}
+
+	if (cell->type.in(ID($logic_and), ID($logic_or))) {
+		logic_op(this, cell);
+		return true;
+	}
+
+	if (cell->type == ID($slice)) {
+		slice_op(this, cell);
+		return true;
+	}
+
+	if (cell->type == ID($concat)) {
+		concat_op(this, cell);
 		return true;
 	}
 
@@ -442,23 +550,44 @@ bool YOSYS_NAMESPACE_PREFIX AbstractCellEdgesDatabase::add_edges_from_cell(RTLIL
 		return true;
 	}
 
+	if (cell->type == ID($bweqx)) {
+		bweqx_op(this, cell);
+		return true;
+	}
+
+	if (cell->type == ID($bwmux)) {
+		bwmux_op(this, cell);
+		return true;
+	}
+
 	if (cell->type.in(ID($mem_v2), ID($memrd), ID($memrd_v2), ID($memwr), ID($memwr_v2), ID($meminit))) {
 		mem_op(this, cell);
 		return true;
 	}
 
-	if (RTLIL::builtin_ff_cell_types().count(cell->type)) {
+	if (cell->is_builtin_ff()) {
 		ff_op(this, cell);
 		return true;
 	}
 
-	// FIXME: $mul $div $mod $divfloor $modfloor $slice $concat
-	// FIXME: $lut $sop $alu $lcu $macc $macc_v2 $fa
-	// FIXME: $mul $div $mod $divfloor $modfloor $pow $slice $concat $bweqx
-	// FIXME: $lut $sop $alu $lcu $macc $fa $logic_and $logic_or $bwmux
+	if (cell->type.in(ID($mul), ID($div), ID($mod), ID($divfloor), ID($modfloor), ID($pow))) {
+		full_op(this, cell);
+		return true;
+	}
 
-	// FIXME: $_BUF_ $_NOT_ $_AND_ $_NAND_ $_OR_ $_NOR_ $_XOR_ $_XNOR_ $_ANDNOT_ $_ORNOT_
-	// FIXME: $_MUX_ $_NMUX_ $_MUX4_ $_MUX8_ $_MUX16_ $_AOI3_ $_OAI3_ $_AOI4_ $_OAI4_
+	if (cell->type.in(ID($lut), ID($sop), ID($alu), ID($lcu), ID($macc), ID($macc_v2))) {
+		full_op(this, cell);
+		return true;
+	}
+
+	if (cell->type.in(
+			ID($_BUF_), ID($_NOT_), ID($_AND_), ID($_NAND_), ID($_OR_), ID($_NOR_),
+			ID($_XOR_), ID($_XNOR_), ID($_ANDNOT_), ID($_ORNOT_), ID($_MUX_), ID($_NMUX_),
+			ID($_MUX4_), ID($_MUX8_), ID($_MUX16_), ID($_AOI3_), ID($_OAI3_), ID($_AOI4_),
+			ID($_OAI4_), ID($_TBUF_))) {
+		full_op(this, cell);
+		return true;
+	}
 
 	// FIXME: $specify2 $specify3 $specrule ???
 	// FIXME: $equiv $set_tag $get_tag $overwrite_tag $original_tag
@@ -468,4 +597,3 @@ bool YOSYS_NAMESPACE_PREFIX AbstractCellEdgesDatabase::add_edges_from_cell(RTLIL
 
 	return false;
 }
-

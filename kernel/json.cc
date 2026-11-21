@@ -24,7 +24,13 @@ USING_YOSYS_NAMESPACE
 void PrettyJson::emit_to_log()
 {
     struct LogTarget : public Target {
-        void emit(const char *data) override { log("%s", data); }
+        std::string buffer;
+        void emit(const char *data) override { buffer += data; }
+        void flush() override {
+            log_lines(buffer);
+            buffer.clear();
+        }
+        ~LogTarget() override { flush(); }
     };
 
     targets.push_back(std::unique_ptr<Target>(new LogTarget));
@@ -169,4 +175,3 @@ void PrettyJson::entry_json(const char *name, const Json &value)
     this->name(name);
     this->value(value);
 }
-

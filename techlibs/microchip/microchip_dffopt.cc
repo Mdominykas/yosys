@@ -93,7 +93,7 @@ bool merge_lut(LutData &result, const LutData &data, const LutData select, bool 
 			int lut_idx = i >> idx_data & ((1 << GetSize(data.second)) - 1);
 			new_bit = data.first[lut_idx] == State::S1;
 		}
-		result.first.bits()[i] = new_bit ? State::S1 : State::S0;
+		result.first.set(i, new_bit ? State::S1 : State::S0);
 	}
 	return true;
 }
@@ -121,7 +121,7 @@ struct MicrochipDffOptPass : public Pass {
 		extra_args(args, argidx, design);
 
 		for (auto module : design->selected_modules()) {
-			log("Optimizing FFs in %s.\n", log_id(module));
+			log("Optimizing FFs in %s.\n", module);
 
 			SigMap sigmap(module);
 			dict<SigBit, pair<LutData, Cell *>> bit_to_lut;
@@ -294,7 +294,7 @@ struct MicrochipDffOptPass : public Pass {
 					ports += " + S";
 				if (worthy_post_ce)
 					ports += " + CE";
-				log("  Merging D%s LUTs for %s/%s (%d -> %d)\n", ports.c_str(), log_id(cell), log_id(sig_Q.wire),
+				log("  Merging D%s LUTs for %s/%s (%d -> %d)\n", ports, cell, sig_Q.wire,
 				    GetSize(lut_d.second), GetSize(final_lut.second));
 
 				// Okay, we're doing it.  Unmap ports.

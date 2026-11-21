@@ -11,8 +11,8 @@ The `opt` macro command
 
 The Yosys pass `opt` runs a number of simple optimizations. This includes
 removing unused signals and cells and const folding. It is recommended to run
-this pass after each major step in the synthesis script.  As listed in
-:doc:`/cmd/opt`, this macro command calls the following ``opt_*`` commands:
+this pass after each major step in the synthesis script.  This macro command
+calls the following ``opt_*`` commands:
 
 .. literalinclude:: /code_examples/macro_commands/opt.ys
    :language: yoscrypt
@@ -203,8 +203,6 @@ Removing unused cells and wires - `opt_clean` pass
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 This pass identifies unused signals and cells and removes them from the design.
-It also creates an ``unused_bits`` attribute on wires with unused bits. This
-attribute can be used for debugging or by other optimization passes.
 
 When to use `opt` or `clean`
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -233,7 +231,5 @@ Other optimizations
 
 .. todo:: more on the other optimizations
 
-- :doc:`/cmd/wreduce`
-- :doc:`/cmd/peepopt`
-- :doc:`/cmd/share`
+- Check :doc:`/cmd/index_passes_opt` for more.
 - `abc` and `abc9`, see also: :doc:`abc`.

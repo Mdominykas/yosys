@@ -101,10 +101,10 @@ struct QlDspSimdPass : public Pass {
 		};
 
 		// Source DSP cell type (SISD)
-		static const IdString m_SisdDspType = ID(dsp_t1_10x9x32);
+		static const IdString m_SisdDspType = ID::dsp_t1_10x9x32;
 
 		// Target DSP cell types for the SIMD mode
-		static const IdString m_SimdDspType = ID(QL_DSP2);
+		static const IdString m_SimdDspType = ID::QL_DSP2;
 
 		// Parse args
 		extra_args(a_Args, 1, a_Design);
@@ -150,13 +150,13 @@ struct QlDspSimdPass : public Pass {
 					// Create the new cell
 					Cell *simd = module->addCell(NEW_ID, m_SimdDspType);
 
-					log(" SIMD: %s (%s) + %s (%s) => %s (%s)\n", log_id(dsp_a), log_id(dsp_a->type),
-						log_id(dsp_b), log_id(dsp_b->type), log_id(simd), log_id(simd->type));
+					log(" SIMD: %s (%s) + %s (%s) => %s (%s)\n", dsp_a, dsp_a->type.unescape(),
+						dsp_b, dsp_b->type.unescape(), simd, simd->type.unescape());
 
 					// Check if the target cell is known (important to know
 					// its port widths)
 					if (!simd->known())
-						log_error(" The target cell type '%s' is not known!", log_id(simd));
+						log_error(" The target cell type '%s' is not known!\n", simd);
 
 					// Connect common ports
 					for (const auto &it : m_DspCfgPorts)
@@ -197,13 +197,12 @@ struct QlDspSimdPass : public Pass {
 					// MODE_BITS parameter
 					Const mode_bits;
 					for (const auto &it : m_DspParams) {
-						auto val_a = dsp_a->getParam(it);
-						auto val_b = dsp_b->getParam(it);
+						IdString param = module->twines().add("\\" + it);
+						auto val_a = dsp_a->getParam(param);
+						auto val_b = dsp_b->getParam(param);
 
-						mode_bits.bits().insert(mode_bits.bits().end(),
-							val_a.begin(), val_a.end());
-						mode_bits.bits().insert(mode_bits.bits().end(),
-							val_b.begin(), val_b.end());
+						mode_bits.append(val_a);
+						mode_bits.append(val_b);
 					}
 
 					// Enable the fractured mode by connecting the control

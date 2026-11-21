@@ -44,6 +44,8 @@ struct JnyWriter
         // but for now for the PoC this looks to be sufficient
         std::unordered_map<std::string, std::vector<Cell*>> _cells{};
 
+        Design *_design = nullptr;
+
         bool _include_connections;
         bool _include_attributes;
         bool _include_properties;
@@ -91,7 +93,7 @@ struct JnyWriter
         {
             _cells.clear();
             for (auto cell : mod->cells()) {
-                const auto cell_type = escape_string(RTLIL::unescape_id(cell->type));
+                const auto cell_type = escape_string(cell->type.unescape());
 
                 if (_cells.find(cell_type) == _cells.end())
                     _cells.emplace(cell_type, std::vector<Cell*>());
@@ -120,12 +122,13 @@ struct JnyWriter
     void write_metadata(Design *design, uint16_t indent_level = 0, std::string invk = "")
     {
         log_assert(design != nullptr);
+        _design = design;
 
         design->sort();
 
         f << "{\n";
         f << "  \"$schema\": \"https://raw.githubusercontent.com/YosysHQ/yosys/main/misc/jny.schema.json\",\n";
-        f << stringf("  \"generator\": \"%s\",\n", escape_string(yosys_maybe_version()).c_str());
+        f << stringf("  \"generator\": \"%s\",\n", escape_string(yosys_maybe_version()));
         f << "  \"version\": \"0.0.1\",\n";
         f << "  \"invocation\": \"" << escape_string(invk) << "\",\n";
         f << "  \"features\": [";
@@ -214,7 +217,7 @@ struct JnyWriter
     void write_cell_conn(const std::pair<RTLIL::IdString, RTLIL::SigSpec>& sig, uint16_t indent_level = 0) {
         const auto _indent = gen_indent(indent_level);
         f << _indent << "  {\n";
-        f << _indent << "    \"name\": \"" << escape_string(RTLIL::unescape_id(sig.first)) << "\",\n";
+        f << _indent << "    \"name\": \"" << escape_string(_design->twines().unescaped_str(sig.first)) << "\",\n";
         f << _indent << "    \"signals\": [\n";
 
         write_sigspec(sig.second, indent_level + 2);
@@ -232,7 +235,7 @@ struct JnyWriter
         const auto _indent = gen_indent(indent_level);
 
         f << _indent << "{\n";
-        f << stringf("  %s\"name\": \"%s\",\n", _indent.c_str(), escape_string(RTLIL::unescape_id(mod->name)).c_str());
+        f << stringf("  %s\"name\": \"%s\",\n", _indent, escape_string(mod->name.unescape()));
         f << _indent << "  \"cell_sorts\": [\n";
 
         bool first_sort{true};
@@ -275,12 +278,12 @@ struct JnyWriter
         const auto _indent = gen_indent(indent_level);
 
         bool first_port{true};
-        for (auto con : port_cell->connections()) {
+        for (auto& con : port_cell->connections()) {
             if (!first_port)
                 f << ",\n";
 
             f << _indent << "  {\n";
-            f << stringf("    %s\"name\": \"%s\",\n", _indent.c_str(), escape_string(RTLIL::unescape_id(con.first)).c_str());
+            f << stringf("    %s\"name\": \"%s\",\n", _indent, escape_string(_design->twines().unescaped_str(con.first)));
             f << _indent << "    \"direction\": \"";
             if (port_cell->input(con.first))
                 f << "i";
@@ -290,7 +293,7 @@ struct JnyWriter
             if (con.second.size() == 1)
                 f << _indent << "    \"range\": [0, 0]\n";
             else
-                f << stringf("    %s\"range\": [%d, %d]\n", _indent.c_str(), con.second.size(), 0);
+                f << stringf("    %s\"range\": [%d, %d]\n", _indent, con.second.size(), 0);
             f << _indent << "  }";
 
             first_port = false;
@@ -304,7 +307,7 @@ struct JnyWriter
         const auto _indent = gen_indent(indent_level);
 
         f << _indent << "{\n";
-        f << stringf("  %s\"type\": \"%s\",\n", _indent.c_str(), sort.first.c_str());
+        f << stringf("  %s\"type\": \"%s\",\n", _indent, sort.first);
         f << _indent << "  \"ports\": [\n";
 
         write_cell_ports(port_cell, indent_level + 2);
@@ -351,10 +354,10 @@ struct JnyWriter
                 f << stringf(",\n");
             const auto param_val = param.second;
             if (!param_val.empty()) {
-                f << stringf("  %s\"%s\": ", _indent.c_str(), escape_string(RTLIL::unescape_id(param.first)).c_str());
+                f << stringf("  %s\"%s\": ", _indent, escape_string(_design->twines().unescaped_str(param.first)));
                 write_param_val(param_val);
             } else {
-                f << stringf("  %s\"%s\": true", _indent.c_str(), escape_string(RTLIL::unescape_id(param.first)).c_str());
+                f << stringf("  %s\"%s\": true", _indent, escape_string(_design->twines().unescaped_str(param.first)));
             }
 
             first_param = false;
@@ -366,7 +369,7 @@ struct JnyWriter
         log_assert(cell != nullptr);
 
         f << _indent << "  {\n";
-        f << stringf("    %s\"name\": \"%s\"", _indent.c_str(), escape_string(RTLIL::unescape_id(cell->name)).c_str());
+        f << stringf("    %s\"name\": \"%s\"", _indent, escape_string(cell->name.unescape()));
 
         if (_include_connections) {
             f << ",\n" << _indent << "    \"connections\": [\n";
@@ -553,7 +556,7 @@ struct JnyPass : public Pass {
             ff->open(filename.c_str(), std::ofstream::trunc);
             if (ff->fail()) {
                 delete ff;
-                log_error("Can't open file `%s' for writing: %s\n", filename.c_str(), strerror(errno));
+                log_error("Can't open file `%s' for writing: %s\n", filename, strerror(errno));
             }
             f = ff;
             invk << filename;
@@ -568,7 +571,7 @@ struct JnyPass : public Pass {
         if (!empty) {
             delete f;
         } else {
-            log("%s", buf.str().c_str());
+            log_lines(buf.str());
         }
     }
 

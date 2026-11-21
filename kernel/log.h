@@ -24,7 +24,6 @@
 
 #include <time.h>
 
-#include <regex>
 #define YS_REGEX_COMPILE(param) std::regex(param, \
 				std::regex_constants::nosubs | \
 				std::regex_constants::optimize | \
@@ -43,19 +42,10 @@
 #  endif
 #endif
 
-#if defined(_MSC_VER)
-// At least this is not in MSVC++ 2013.
-#  define __PRETTY_FUNCTION__ __FUNCTION__
-#endif
-
 // from libs/sha1/sha1.h
 class SHA1;
 
 YOSYS_NAMESPACE_BEGIN
-
-#define S__LINE__sub2(x) #x
-#define S__LINE__sub1(x) S__LINE__sub2(x)
-#define S__LINE__ S__LINE__sub1(__LINE__)
 
 // YS_DEBUGTRAP is a macro that is functionally equivalent to a breakpoint
 // if the platform provides such functionality, and does nothing otherwise.
@@ -94,189 +84,512 @@ YOSYS_NAMESPACE_BEGIN
 
 struct log_cmd_error_exception { };
 
-extern std::vector<FILE*> log_files;
-extern std::vector<std::ostream*> log_streams;
-extern std::vector<std::string> log_scratchpads;
-extern std::map<std::string, std::set<std::string>> log_hdump;
-extern std::vector<std::regex> log_warn_regexes, log_nowarn_regexes, log_werror_regexes;
-extern std::set<std::string> log_warnings, log_experimentals, log_experimentals_ignored;
-extern int log_warnings_count;
-extern int log_warnings_count_noexpect;
-extern bool log_expect_no_warnings;
-extern bool log_hdump_all;
-extern FILE *log_errfile;
-extern SHA1 *log_hasher;
+enum class LogSeverity {
+	Debug,
+	Comment,
+	Info,
+	Highlight,
+	Header,
+	Warning,
+	NonFatalError,
+	Error
+};
 
-extern bool log_time;
-extern bool log_error_stderr;
-extern bool log_cmd_error_throw;
-extern bool log_quiet_warnings;
-extern int log_verbose_level;
-extern string log_last_error;
+struct LogSourceLocation {
+	LogSourceLocation() : filename({}),start_line(-1),start_col(-1),end_line(-1),end_col(-1) { }
+	LogSourceLocation(std::string filename) : filename(filename),start_line(-1),start_col(-1),end_line(-1),end_col(-1) { }
+	LogSourceLocation(std::string filename,int start_line) : filename(filename),start_line(start_line),start_col(-1),end_line(-1),end_col(-1) { }
+	LogSourceLocation(std::string filename,int start_line,int start_col,int end_line,int end_col) :
+		filename(filename),start_line(start_line),start_col(start_col),end_line(end_line),end_col(end_col) { }
+	std::string filename;
+	int start_line;
+	int start_col;
+	int end_line;
+	int end_col;
+};
+
+struct LogMessage {
+	LogMessage(LogSeverity severity, LogSourceLocation src, std::string_view prefix, std::string_view format, std::string_view message);
+	LogSeverity severity;
+	std::string prefix;
+	std::string format;
+	std::string message;
+	int64_t timestamp_us;
+	LogSourceLocation src;
+
+	std::string cached_msg;
+};
+
+class LogSink
+{
+public:
+	virtual ~LogSink() = default;
+
+	virtual bool should_log(const LogMessage &) const { return true; }
+	virtual void log(const LogMessage &msg) = 0;
+	virtual void flush() {}
+	// TODO: Remove when AST/read_verilog removed
+	virtual FILE *file_handle() { return nullptr; }
+};
+
+class LogSinkRef : public LogSink
+{
+public:
+	explicit LogSinkRef(LogSink *sink) : sink(sink) {}
+	bool should_log(const LogMessage &msg) const override { return sink->should_log(msg); }
+	void log(const LogMessage &msg) override { sink->log(msg); }
+	void flush() override { sink->flush(); }
+	FILE *file_handle() override { return sink->file_handle(); }
+private:
+	LogSink *sink;
+};
+
+class FileLogSink : public LogSink
+{
+public:
+	explicit FileLogSink(const std::string &filename, bool line_buffered, bool append);
+	~FileLogSink() override;
+	void log(const LogMessage &msg) override;
+	void flush() override;
+	FILE *file_handle() override { return file; }
+
+private:
+	FILE *file;
+};
+
+class ConsoleLogSink : public LogSink
+{
+public:
+	void log(const LogMessage &msg) override;
+	void flush() override;
+	FILE *file_handle() override { return stdout; }
+};
+
+class StderrLogSink : public LogSink
+{
+public:
+	explicit StderrLogSink(bool quiet) : quiet_warnings(quiet) {}
+	bool should_log(const LogMessage &msg) const override;
+	void log(const LogMessage &msg) override;
+	void flush() override;
+private:
+	bool quiet_warnings;
+};
+
+class StreamLogSink : public LogSink
+{
+public:
+	explicit StreamLogSink(std::ostream &stream) : stream(stream) {}
+	void log(const LogMessage &msg) override { stream << msg.cached_msg; }
+	void flush() override { stream.flush(); }
+
+private:
+	std::ostream &stream;
+};
+
+class ScratchPadLogSink : public LogSink
+{
+public:
+	explicit ScratchPadLogSink(std::string scratchpad);
+	void log(const LogMessage &msg) override;
+
+private:
+	std::string scratchpad;
+};
+
+class LogManager
+{
+private:
+	struct Patterns;
+
+public:
+	LogManager();
+	~LogManager();
+
+	template<typename T, typename... Args>
+	T &add_sink(Args&&... args)
+	{
+		auto sink = std::make_unique<T>(std::forward<Args>(args)...);
+		T &ref = *sink;
+		sinks.push_back(std::move(sink));
+		return ref;
+	}
+
+	template<typename F>
+	void for_each_sink(F &&func)
+	{
+		for (auto &sink : sinks)
+			func(*sink);
+	}
+
+	bool empty() { return sinks.empty(); }
+	void clear() { sinks.clear(); }
+	void clear_original();
+	void flush() { for (auto &sink : sinks) sink->flush(); }
+
+	class Scoped
+	{
+	public:
+		explicit Scoped(LogManager &manager) :
+			manager(manager),
+			backup_sinks(std::move(manager.sinks)),
+			backup_verbose_level(manager.verbose_level)
+		{
+			manager.sinks.reserve(backup_sinks.size());
+
+			for (const auto &sink : backup_sinks)
+				manager.sinks.push_back(std::make_unique<LogSinkRef>(sink.get()));
+		}
+
+		~Scoped()
+		{
+			manager.sinks.clear();
+			manager.sinks = std::move(backup_sinks);
+			manager.verbose_level = backup_verbose_level;
+		}
+
+		Scoped(const Scoped &) = delete;
+		Scoped &operator=(const Scoped &) = delete;
+
+	private:
+		LogManager &manager;
+		std::vector<std::unique_ptr<LogSink>> backup_sinks;
+		int backup_verbose_level;
+	};
+
+	Scoped sink_scope()
+	{
+		return Scoped(*this);
+	}
+
+	class ScopedCmdErrorThrow
+	{
+	public:
+		explicit ScopedCmdErrorThrow(LogManager &manager)
+			: manager(manager), previous(manager.cmd_error_throw)
+		{
+			manager.cmd_error_throw = true;
+		}
+
+		~ScopedCmdErrorThrow()
+		{
+			manager.cmd_error_throw = previous;
+		}
+
+	private:
+		LogManager &manager;
+		bool previous;
+	};
+
+	ScopedCmdErrorThrow error_throw_scope()
+	{
+		return ScopedCmdErrorThrow(*this);
+	}
+
+	class LogMakeDebugHdl
+	{
+	public:
+		explicit LogMakeDebugHdl(LogManager &manager, bool start_on = false)
+			: manager(manager)
+		{
+			if (start_on)
+				on();
+		}
+
+		~LogMakeDebugHdl()
+		{
+			off();
+		}
+
+		void on()
+		{
+			if (status)
+				return;
+			status = true;
+			manager.make_debug++;
+		}
+
+		void off_silent()
+		{
+			if (!status)
+				return;
+			status = false;
+			manager.make_debug--;
+		}
+
+		void off()
+		{
+			off_silent();
+		}
+	private:
+		LogManager &manager;
+		bool status = false;
+	};
+
+	LogMakeDebugHdl make_debug_scope(bool start_on = false)
+	{
+		return LogMakeDebugHdl(*this, start_on);
+	}
+
+	class ForceDebug
+	{
+	public:
+		explicit ForceDebug(LogManager &manager, bool start_on = false)
+			: manager(manager)
+		{
+			if (start_on)
+				on();
+		}
+
+		~ForceDebug()
+		{
+			off();
+		}
+
+		void on()
+		{
+			if (active)
+				return;
+
+			active = true;
+			manager.force_debug++;
+		}
+
+		void off()
+		{
+			if (!active)
+				return;
+
+			active = false;
+			manager.force_debug--;
+		}
+	private:
+		LogManager &manager;
+		bool active = false;
+	};
+
+	ForceDebug force_debug_scope(bool start_on = false)
+	{
+		return ForceDebug(*this, start_on);
+	}
+
+	void force_debug_on() { force_debug++; }
+	void force_debug_off() { if (force_debug > 0) force_debug--; }
+	void set_force_debug(bool enabled) { force_debug = enabled ? 1 : 0;	}
+
+	void report_unexpected_error();
+
+	void add_experimental_ignore(std::string name) { experimental_ignored.insert(name); }
+	void add_warn(std::string pattern);
+	void add_nowarn(std::string pattern);
+	void add_werror(std::string pattern);
+	void add_expect(std::string type, std::string pattern, int count);
+
+	void set_verbose_level(int level) { verbose_level = level; }
+	void add_verbose_level(int level) { verbose_level += level; }
+	void set_expect_no_warnings(bool value) { expect_no_warnings = value; }
+	void set_log_time(bool value) { log_time = value; }
+	void set_cmd_error_throw(bool value) { cmd_error_throw = value; }
+	void set_hdump_all(bool value) { hdump_all = value; }
+	int get_verbose_level() const { return verbose_level; }
+	bool get_log_time() const { return log_time; }
+	int get_warnings_unique() const { return GetSize(warnings); }
+	int get_warnings_total() const { return warnings_count; }
+	int get_errors_total() const { return errors_count; }
+	const std::set<std::string> &get_experimental() const { return experimental; }
+	const std::map<std::string, std::string> &get_deprecated() const { return deprecated; }
+
+	void add_hdump(std::string name, std::string value) { hdump[name].insert(value); }
+
+	void formatted_string(LogSeverity severity, LogSourceLocation src, std::string_view prefix, std::string_view format, std::string str);
+	void formatted_header(RTLIL::Design *design, std::string_view format, std::string str);
+	void formatted_warning(LogSourceLocation src, std::string_view prefix, std::string_view format, std::string message);
+	[[noreturn]] void formatted_error(LogSourceLocation src, std::string_view prefix, std::string_view format, std::string message);
+	void formatted_nonfatal_error(LogSourceLocation src, std::string_view prefix, std::string_view format, std::string message);
+	[[noreturn]] void formatted_cmd_error(std::string_view format, std::string message);
+	void suppressed();
+	void add_experimental(const std::string &str);
+	void add_deprecated(const std::string &feature, const std::string &earliest_removal);
+	void spacer();
+	void push();
+	void pop();
+	void log_lines(std::string_view text, LogSeverity severity = LogSeverity::Info);
+
+	void reset_stack();
+
+	void check_expected();
+	bool expects_error();
+#ifndef NDEBUG
+	bool is_debug(int n = 0) { if (force_debug) return true; debug_suppressed += n; return false; }
+#else
+	bool is_debug(int = 0) { return false; }
+#endif
+	void start_hasher();
+	std::string finish_hasher();
+
+private:
+	void logv_string(LogSeverity severity, LogSourceLocation src, std::string_view prefix, std::string_view format, std::string str_in);
+	void error_with_prefix(LogSeverity severity, LogSourceLocation src, std::string_view prefix, std::string_view format, std::string message);
+
+	std::vector<std::unique_ptr<LogSink>> sinks;
+	int verbose_level = 0;
+	int newline_count = 0;
+	vector<int> header_count;
+	int errors_count = 0;
+	int warnings_count = 0;
+	int warnings_count_noexpect = 0;
+	std::set<std::string> warnings, experimental, experimental_ignored;
+	std::map<std::string, std::string> deprecated;
+
+	std::unique_ptr<Patterns> pat;
+	bool expect_no_warnings = false;
+	bool log_time = false;
+	bool cmd_error_throw = false;
+	std::map<std::string, std::set<std::string>> hdump;
+	bool hdump_all = false;
+
+	int debug_suppressed = 0;
+	int make_debug = 0;
+	int force_debug = 0;
+	std::unique_ptr<SHA1> hasher;
+};
+
+LogManager &logger();
+
 extern void (*log_error_atexit)();
 
-extern int log_make_debug;
-extern int log_force_debug;
-extern int log_debug_suppressed;
-
-void logv(const char *format, va_list ap);
-void logv_header(RTLIL::Design *design, const char *format, va_list ap);
-void logv_warning(const char *format, va_list ap);
-void logv_warning_noprefix(const char *format, va_list ap);
-[[noreturn]] void logv_error(const char *format, va_list ap);
-[[noreturn]] void logv_file_error(const string &filename, int lineno, const char *format, va_list ap);
-
-void log(const char *format, ...)  YS_ATTRIBUTE(format(printf, 1, 2));
-void log_header(RTLIL::Design *design, const char *format, ...) YS_ATTRIBUTE(format(printf, 2, 3));
-void log_warning(const char *format, ...) YS_ATTRIBUTE(format(printf, 1, 2));
-void log_experimental(const char *format, ...) YS_ATTRIBUTE(format(printf, 1, 2));
-
-void set_verific_logging(void (*cb)(int msg_type, const char *message_id, const char* file_path, unsigned int left_line, unsigned int left_col, unsigned int right_line, unsigned int right_col, const char *msg));
-extern void (*log_verific_callback)(int msg_type, const char *message_id, const char* file_path, unsigned int left_line, unsigned int left_col, unsigned int right_line, unsigned int right_col, const char *msg);
-
-// Log with filename to report a problem in a source file.
-void log_file_warning(const std::string &filename, int lineno, const char *format, ...) YS_ATTRIBUTE(format(printf, 3, 4));
-void log_file_info(const std::string &filename, int lineno, const char *format, ...) YS_ATTRIBUTE(format(printf, 3, 4));
-
-void log_warning_noprefix(const char *format, ...) YS_ATTRIBUTE(format(printf, 1, 2));
-[[noreturn]] void log_error(const char *format, ...) YS_ATTRIBUTE(format(printf, 1, 2));
-[[noreturn]] void log_file_error(const string &filename, int lineno, const char *format, ...) YS_ATTRIBUTE(format(printf, 3, 4));
-[[noreturn]] void log_cmd_error(const char *format, ...) YS_ATTRIBUTE(format(printf, 1, 2));
+void set_verific_logging(void (*cb)(int msg_type, const char *message_id, LogSourceLocation src, const char *msg));
+extern void (*log_verific_callback)(int msg_type, const char *message_id, LogSourceLocation src, const char *msg);
 
 #ifndef NDEBUG
-static inline bool ys_debug(int n = 0) { if (log_force_debug) return true; log_debug_suppressed += n; return false; }
+static inline bool ys_debug(int n = 0) { return logger().is_debug(n); }
 #else
 static inline bool ys_debug(int = 0) { return false; }
 #endif
-#  define log_debug(...) do { if (ys_debug(1)) log(__VA_ARGS__); } while (0)
 
-static inline void log_suppressed() {
-	if (log_debug_suppressed && !log_make_debug) {
-		log("<suppressed ~%d debug messages>\n", log_debug_suppressed);
-		log_debug_suppressed = 0;
-	}
+template <typename... Args>
+inline void log(FmtString<TypeIdentity<Args>...> fmt, const Args &... args)
+{
+	logger().formatted_string(LogSeverity::Info, LogSourceLocation{}, {}, fmt.format_string(), fmt.format(args...));
 }
 
-struct LogMakeDebugHdl {
-	bool status = false;
-	LogMakeDebugHdl(bool start_on = false) {
-		if (start_on)
-			on();
-	}
-	~LogMakeDebugHdl() {
-		off();
-	}
-	void on() {
-		if (status) return;
-		status=true;
-		log_make_debug++;
-	}
-	void off_silent() {
-		if (!status) return;
-		status=false;
-		log_make_debug--;
-	}
-	void off() {
-		off_silent();
-	}
-};
+inline void log_lines(std::string_view text, LogSeverity severity = LogSeverity::Info)
+{
+	logger().log_lines(text, severity);
+}
 
-void log_spacer();
-void log_push();
-void log_pop();
+template <typename... Args>
+inline void log_comment(FmtString<TypeIdentity<Args>...> fmt, const Args &... args)
+{
+	logger().formatted_string(LogSeverity::Comment, LogSourceLocation{}, {}, fmt.format_string(), fmt.format(args...));
+}
+
+template <typename... Args>
+inline void log_highlight(FmtString<TypeIdentity<Args>...> fmt, const Args &... args)
+{
+	logger().formatted_string(LogSeverity::Highlight, LogSourceLocation{}, {}, fmt.format_string(), fmt.format(args...));
+}
+
+template <typename... Args>
+inline void log_formatted_string(LogSeverity severity, LogSourceLocation src, std::string_view prefix,
+		FmtString<TypeIdentity<Args>...> fmt, const Args &... args)
+{
+	logger().formatted_string(severity, src, prefix, fmt.format_string(), fmt.format(args...));
+}
+
+#define log_debug(...) do { if (ys_debug(1)) YOSYS_NAMESPACE_PREFIX log_formatted_string(YOSYS_NAMESPACE_PREFIX LogSeverity::Debug, {}, {}, __VA_ARGS__); } while (0)
+
+template <typename... Args>
+inline void log_header(RTLIL::Design *design, FmtString<TypeIdentity<Args>...> fmt, const Args &... args)
+{
+	logger().formatted_header(design, fmt.format_string(), fmt.format(args...));
+}
+
+template <typename... Args>
+inline void log_warning(FmtString<TypeIdentity<Args>...> fmt, const Args &... args)
+{
+	logger().formatted_warning(LogSourceLocation{}, "Warning: ", fmt.format_string(), fmt.format(args...));
+}
+
+template <typename... Args>
+inline void log_warning_noprefix(FmtString<TypeIdentity<Args>...> fmt, const Args &... args)
+{
+	logger().formatted_warning(LogSourceLocation{}, {}, fmt.format_string(), fmt.format(args...));
+}
+
+inline void log_experimental(const std::string &str)
+{
+	logger().add_experimental(str);
+}
+
+inline void log_deprecated(const std::string &feature, const std::string &earliest_removal = "")
+{
+	logger().add_deprecated(feature, earliest_removal);
+}
+
+// Log with filename to report a problem in a source file.
+template <typename... Args>
+void log_file_warning(LogSourceLocation src, FmtString<TypeIdentity<Args>...> fmt, const Args &... args)
+{
+	logger().formatted_warning(src, "Warning: ", fmt.format_string(), fmt.format(args...));
+}
+
+template <typename... Args>
+void log_file_info(LogSourceLocation src, FmtString<TypeIdentity<Args>...> fmt, const Args &... args)
+{
+	logger().formatted_string(LogSeverity::Info, src, "NOTE: ", fmt.format_string(), fmt.format(args...));
+}
+
+template <typename... Args>
+[[noreturn]] void log_error(FmtString<TypeIdentity<Args>...> fmt, const Args &... args)
+{
+	logger().formatted_error(LogSourceLocation{}, "ERROR: ", fmt.format_string(), fmt.format(args...));
+}
+
+template <typename... Args>
+[[noreturn]] void log_file_error(LogSourceLocation src, FmtString<TypeIdentity<Args>...> fmt, const Args &... args)
+{
+	logger().formatted_error(src, "ERROR: ", fmt.format_string(), fmt.format(args...));
+}
+
+template <typename... Args>
+void log_file_nonfatal_error(LogSourceLocation src, FmtString<TypeIdentity<Args>...> fmt, const Args &... args)
+{
+	logger().formatted_nonfatal_error(src, "ERROR: ", fmt.format_string(), fmt.format(args...));
+}
+
+template <typename... Args>
+[[noreturn]] void log_cmd_error(FmtString<TypeIdentity<Args>...> fmt, const Args &... args)
+{
+	logger().formatted_cmd_error(fmt.format_string(), fmt.format(args...));
+}
+
+inline void log_suppressed()
+{
+	logger().suppressed();
+}
+
+inline void log_spacer() { logger().spacer(); }
+inline void log_push() { logger().push(); }
+inline void log_pop() { logger().pop(); }
+
+inline void log_reset_stack() { logger().reset_stack(); }
+inline void log_flush() { logger().flush(); }
 
 void log_backtrace(const char *prefix, int levels);
-void log_reset_stack();
-void log_flush();
 
-struct LogExpectedItem
-{
-	LogExpectedItem(const std::regex &pat, int expected) :
-			pattern(pat), expected_count(expected), current_count(0) {}
-	LogExpectedItem() : expected_count(0), current_count(0) {}
 
-	std::regex pattern;
-	int expected_count;
-	int current_count;
-};
-
-extern dict<std::string, LogExpectedItem> log_expect_log, log_expect_warning, log_expect_error;
-void log_check_expected();
-
-const char *log_signal(const RTLIL::SigSpec &sig, bool autoint = true);
-const char *log_const(const RTLIL::Const &value, bool autoint = true);
-const char *log_id(const RTLIL::IdString &id);
-const char *log_str(const char *str);
-const char *log_str(std::string const &str);
-
-template<typename T> static inline const char *log_id(T *obj, const char *nullstr = nullptr) {
-	if (nullstr && obj == nullptr)
-		return nullstr;
-	return log_id(obj->name);
-}
+std::string log_signal(const RTLIL::SigSpec &sig, bool autoint = true);
+std::string log_const(const RTLIL::Const &value, bool autoint = true);
 
 void log_module(RTLIL::Module *module, std::string indent = "");
 void log_cell(RTLIL::Cell *cell, std::string indent = "");
 void log_wire(RTLIL::Wire *wire, std::string indent = "");
 
-#ifndef NDEBUG
-static inline void log_assert_worker(bool cond, const char *expr, const char *file, int line) {
-	if (!cond) log_error("Assert `%s' failed in %s:%d.\n", expr, file, line);
-}
-#  define log_assert(_assert_expr_) YOSYS_NAMESPACE_PREFIX log_assert_worker(_assert_expr_, #_assert_expr_, __FILE__, __LINE__)
-#else
-#  define log_assert(_assert_expr_) do { if (0) { (void)(_assert_expr_); } } while(0)
-#endif
-
-#define log_abort() YOSYS_NAMESPACE_PREFIX log_error("Abort in %s:%d.\n", __FILE__, __LINE__)
+[[noreturn]]
+void log_abort_internal(const char *file, int line);
+#define log_abort() YOSYS_NAMESPACE_PREFIX log_abort_internal(__FILE__, __LINE__)
 #define log_ping() YOSYS_NAMESPACE_PREFIX log("-- %s:%d %s --\n", __FILE__, __LINE__, __PRETTY_FUNCTION__)
-
-
-// ---------------------------------------------------
-// This is the magic behind the code coverage counters
-// ---------------------------------------------------
-
-#if defined(YOSYS_ENABLE_COVER) && (defined(__linux__) || defined(__FreeBSD__))
-
-#define cover(_id) do { \
-    static CoverData __d __attribute__((section("yosys_cover_list"), aligned(1), used)) = { __FILE__, __FUNCTION__, _id, __LINE__, 0 }; \
-    __d.counter++; \
-} while (0)
-
-struct CoverData {
-	const char *file, *func, *id;
-	int line, counter;
-} YS_ATTRIBUTE(packed);
-
-// this two symbols are created by the linker for the "yosys_cover_list" ELF section
-extern "C" struct CoverData __start_yosys_cover_list[];
-extern "C" struct CoverData __stop_yosys_cover_list[];
-
-extern dict<std::string, std::pair<std::string, int>> extra_coverage_data;
-
-void cover_extra(std::string parent, std::string id, bool increment = true);
-dict<std::string, std::pair<std::string, int>> get_coverage_data();
-
-#define cover_list(_id, ...) do { cover(_id); \
-	std::string r = cover_list_worker(_id, __VA_ARGS__); \
-	log_assert(r.empty()); \
-} while (0)
-
-static inline std::string cover_list_worker(std::string, std::string last) {
-	return last;
-}
-
-template<typename... T>
-std::string cover_list_worker(std::string prefix, std::string first, T... rest) {
-	std::string selected = cover_list_worker(prefix, rest...);
-	cover_extra(prefix, prefix + "." + first, first == selected);
-	return first == selected ? "" : selected;
-}
-
-#else
-#  define cover(...) do { } while (0)
-#  define cover_list(...) do { } while (0)
-#endif
 
 
 // ------------------------------------------------------------
@@ -350,16 +663,30 @@ static inline void log_dump_val_worker(unsigned long int v) { log("%lu", v); }
 static inline void log_dump_val_worker(long long int v) { log("%lld", v); }
 static inline void log_dump_val_worker(unsigned long long int v) { log("%lld", v); }
 #endif
-static inline void log_dump_val_worker(char c) { log(c >= 32 && c < 127 ? "'%c'" : "'\\x%02x'", c); }
-static inline void log_dump_val_worker(unsigned char c) { log(c >= 32 && c < 127 ? "'%c'" : "'\\x%02x'", c); }
+static inline void log_dump_val_worker(char c)
+{
+	if (c >= 32 && c < 127) {
+		log("'%c'", c);
+	} else {
+		log("'\\x%02x'", c);
+	}
+}
+static inline void log_dump_val_worker(unsigned char c)
+{
+	if (c >= 32 && c < 127) {
+		log("'%c'", c);
+	} else {
+		log("'\\x%02x'", c);
+	}
+}
 static inline void log_dump_val_worker(bool v) { log("%s", v ? "true" : "false"); }
 static inline void log_dump_val_worker(double v) { log("%f", v); }
 static inline void log_dump_val_worker(char *v) { log("%s", v); }
 static inline void log_dump_val_worker(const char *v) { log("%s", v); }
-static inline void log_dump_val_worker(std::string v) { log("%s", v.c_str()); }
+static inline void log_dump_val_worker(std::string v) { log("%s", v); }
 static inline void log_dump_val_worker(PerformanceTimer p) { log("%f seconds", p.sec()); }
 static inline void log_dump_args_worker(const char *p) { log_assert(*p == 0); }
-void log_dump_val_worker(RTLIL::IdString v);
+void log_dump_val_worker(IdString v);
 void log_dump_val_worker(RTLIL::SigSpec v);
 void log_dump_val_worker(RTLIL::State v);
 
@@ -373,7 +700,7 @@ static inline void log_dump_val_worker(dict<K, T> &v) {
 	log("{");
 	bool first = true;
 	for (auto &it : v) {
-		log(first ? " " : ", ");
+		log("%s ", first ? "" : ",");
 		log_dump_val_worker(it.first);
 		log(": ");
 		log_dump_val_worker(it.second);
@@ -387,7 +714,7 @@ static inline void log_dump_val_worker(pool<K> &v) {
 	log("{");
 	bool first = true;
 	for (auto &it : v) {
-		log(first ? " " : ", ");
+		log("%s ", first ? "" : ",");
 		log_dump_val_worker(it);
 		first = false;
 	}
@@ -399,7 +726,7 @@ static inline void log_dump_val_worker(std::vector<K> &v) {
 	log("{");
 	bool first = true;
 	for (auto &it : v) {
-		log(first ? " " : ", ");
+		log("%s ", first ? "" : ",");
 		log_dump_val_worker(it);
 		first = false;
 	}

@@ -8,12 +8,12 @@ namespace RTLIL {
 	class TechmapLibparseTest : public testing::Test {
 	protected:
 		TechmapLibparseTest() {
-			if (log_files.empty()) log_files.emplace_back(stdout);
+			if (logger().empty()) logger().add_sink<ConsoleLogSink>();
 		}
 		void checkAll(std::initializer_list<std::string> expressions, std::string expected) {
 			for (const auto& e : expressions) {
 				auto helper = LibertyExpression::Lexer(e);
-				auto tree_s = LibertyExpression::parse(helper).str();
+				auto tree_s = LibertyExpression::parse(helper).sexpr_str();
 				EXPECT_EQ(tree_s, expected);
 			}
 		}
@@ -81,6 +81,11 @@ namespace RTLIL {
 			" x&y' ",
 		}, "(and (pin \"x\")\n"
 		   "     (not (pin \"y\")))"
+		);
+		checkAll({
+			"( D & EN )",
+		}, "(and (pin \"D\")\n"
+		   "     (pin \"EN\"))"
 		);
 	}
 }

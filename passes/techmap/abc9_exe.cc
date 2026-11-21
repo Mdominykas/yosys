@@ -24,10 +24,14 @@
 
 #include "kernel/register.h"
 #include "kernel/log.h"
+#include "liberty_cache.h"
 
 #ifndef _WIN32
 #  include <unistd.h>
 #  include <dirent.h>
+#endif
+#if defined(__wasm)
+#include <wasi/libc.h>
 #endif
 
 #ifdef YOSYS_LINK_ABC
@@ -140,7 +144,7 @@ struct abc9_output_filter
 			return;
 		}
 		if (ch == '\n') {
-			log("ABC: %s\n", replace_tempdir(linebuf, tempdir_name, show_tempdir).c_str());
+			log("ABC: %s\n", replace_tempdir(linebuf, tempdir_name, show_tempdir));
 			got_cr = false, linebuf.clear();
 			return;
 		}
@@ -154,8 +158,8 @@ struct abc9_output_filter
 		//int pi, po;
 		//if (sscanf(line.c_str(), "Start-point = pi%d.  End-point = po%d.", &pi, &po) == 2) {
 		//	log("ABC: Start-point = pi%d (%s).  End-point = po%d (%s).\n",
-		//			pi, pi_map.count(pi) ? pi_map.at(pi).c_str() : "???",
-		//			po, po_map.count(po) ? po_map.at(po).c_str() : "???");
+		//			pi, pi_map.count(pi) ? pi_map.at(pi) : "???",
+		//			po, po_map.count(po) ? po_map.at(po) : "???");
 		//	return;
 		//}
 
@@ -165,7 +169,7 @@ struct abc9_output_filter
 };
 
 void abc9_module(RTLIL::Design *design, std::string script_file, std::string exe_file,
-		vector<int> lut_costs, bool dff_mode, std::string delay_target, std::string /*lutin_shared*/, bool fast_mode,
+		vector<int> lut_costs, bool dff_mode, std::string delay_target,
 		bool show_tempdir, std::string box_file, std::string lut_file,
 		std::vector<std::string> liberty_files, std::string wire_delay, std::string tempdir_name,
 		std::string constr_file, std::vector<std::string> dont_use_cells, std::vector<std::string> genlib_files)
@@ -173,28 +177,41 @@ void abc9_module(RTLIL::Design *design, std::string script_file, std::string exe
 	std::string abc9_script;
 
 	if (!lut_costs.empty())
-		abc9_script += stringf("read_lut %s/lutdefs.txt; ", tempdir_name.c_str());
+		abc9_script += stringf("read_lut %s/lutdefs.txt; ", tempdir_name);
 	else if (!lut_file.empty())
-		abc9_script += stringf("read_lut \"%s\"; ", lut_file.c_str());
+		abc9_script += stringf("read_lut \"%s\"; ", lut_file);
 	else if (!liberty_files.empty()) {
 		std::string dont_use_args;
 		for (std::string dont_use_cell : dont_use_cells) {
-			dont_use_args += stringf("-X \"%s\" ", dont_use_cell.c_str());
+			dont_use_args += stringf("-X \"%s\" ", dont_use_cell);
 		}
-		for (std::string liberty_file : liberty_files) {
-			abc9_script += stringf("read_lib %s -w \"%s\" ; ", dont_use_args.c_str(), liberty_file.c_str());
+
+		std::string merged_scl = convert_liberty_files_to_merged_scl(liberty_files, dont_use_args, exe_file);
+		if (!merged_scl.empty()) {
+			abc9_script += stringf("read_scl \"%s\" ; ", merged_scl);
+		} else if(!liberty_files.empty()) {
+			if (!scl_cache_enabled)
+				log("ABC: SCL cache disabled, using liberty format\n");
+			else
+				log_warning("ABC: Merged scl conversion failed, using liberty format\n");
+			bool first_lib = true;
+			for (std::string liberty_file : liberty_files) {
+				abc9_script += stringf("read_lib %s %s -w \"%s\" ; ", dont_use_args, first_lib ? "" : "-m", liberty_file);
+				first_lib = false;
+			}
 		}
+
 		if (!constr_file.empty())
-			abc9_script += stringf("read_constr -v \"%s\"; ", constr_file.c_str());
+			abc9_script += stringf("read_constr -v \"%s\"; ", constr_file);
 	} else if (!genlib_files.empty()) {
 		for (std::string genlib_file : genlib_files) {
-			abc9_script += stringf("read_genlib \"%s\"; ", genlib_file.c_str());
+			abc9_script += stringf("read_genlib \"%s\"; ", genlib_file);
 		}
 	}
 
 	log_assert(!box_file.empty());
-	abc9_script += stringf("read_box \"%s\"; ", box_file.c_str());
-	abc9_script += stringf("&read %s/input.xaig; &ps; ", tempdir_name.c_str());
+	abc9_script += stringf("read_box \"%s\"; ", box_file);
+	abc9_script += stringf("&read %s/input.xaig; &ps; ", tempdir_name);
 
 	if (!script_file.empty()) {
 		if (script_file[0] == '+') {
@@ -206,27 +223,19 @@ void abc9_module(RTLIL::Design *design, std::string script_file, std::string exe
 				else
 					abc9_script += script_file[i];
 		} else
-			abc9_script += stringf("source %s", script_file.c_str());
+			abc9_script += stringf("source %s", script_file);
 	} else if (!lut_costs.empty() || !lut_file.empty()) {
-		abc9_script += fast_mode ? RTLIL::constpad.at("abc9.script.default.fast").substr(1,std::string::npos)
-			: RTLIL::constpad.at("abc9.script.default").substr(1,std::string::npos);
+		abc9_script += RTLIL::constpad.at("abc9.script.default").substr(1,std::string::npos);
+	} else if (!liberty_files.empty() || !genlib_files.empty()) {
+		abc9_script += RTLIL::constpad.at("abc9.script.default").substr(1,std::string::npos);
 	} else
 		log_abort();
 
 	for (size_t pos = abc9_script.find("{D}"); pos != std::string::npos; pos = abc9_script.find("{D}", pos))
 		abc9_script = abc9_script.substr(0, pos) + delay_target + abc9_script.substr(pos+3);
 
-	//for (size_t pos = abc9_script.find("{S}"); pos != std::string::npos; pos = abc9_script.find("{S}", pos))
-	//	abc9_script = abc9_script.substr(0, pos) + lutin_shared + abc9_script.substr(pos+3);
-
 	for (size_t pos = abc9_script.find("{W}"); pos != std::string::npos; pos = abc9_script.find("{W}", pos))
 		abc9_script = abc9_script.substr(0, pos) + wire_delay + abc9_script.substr(pos+3);
-
-	std::string C;
-	if (design->scratchpad.count("abc9.if.C"))
-		C = "-C " + design->scratchpad_get_string("abc9.if.C");
-	for (size_t pos = abc9_script.find("{C}"); pos != std::string::npos; pos = abc9_script.find("{C}", pos))
-		abc9_script = abc9_script.substr(0, pos) + C + abc9_script.substr(pos+3);
 
 	std::string R;
 	if (design->scratchpad.count("abc9.if.R"))
@@ -238,15 +247,15 @@ void abc9_module(RTLIL::Design *design, std::string script_file, std::string exe
 		for (size_t pos = abc9_script.find("&mfs"); pos != std::string::npos; pos = abc9_script.find("&mfs", pos))
 			abc9_script = abc9_script.erase(pos, strlen("&mfs"));
 	else {
-		auto s = stringf("&write -n %s/output.aig; ", tempdir_name.c_str());
+		auto s = stringf("&write -n %s/output.aig; ", tempdir_name);
 		for (size_t pos = abc9_script.find("&mfs"); pos != std::string::npos; pos = abc9_script.find("&mfs", pos)) {
 			abc9_script = abc9_script.insert(pos, s);
 			pos += GetSize(s) + strlen("&mfs");
 		}
 	}
 
-	abc9_script += stringf("; &ps -l; &write -n %s/output.aig", tempdir_name.c_str());
-	if (design->scratchpad_get_bool("abc9.verify")) {
+	abc9_script += stringf("; &ps -l; &write -n %s/output.aig", tempdir_name);
+	if (design->scratchpad_get_bool("abc9.verify", true)) {
 		if (dff_mode)
 			abc9_script += "; &verify -s";
 		else
@@ -259,7 +268,7 @@ void abc9_module(RTLIL::Design *design, std::string script_file, std::string exe
 		if (abc9_script[i] == ';' && abc9_script[i+1] == ' ')
 			abc9_script[i+1] = '\n';
 
-	FILE *f = fopen(stringf("%s/abc.script", tempdir_name.c_str()).c_str(), "wt");
+	FILE *f = fopen(stringf("%s/abc.script", tempdir_name).c_str(), "wt");
 	fprintf(f, "%s\n", abc9_script.c_str());
 	fclose(f);
 
@@ -268,32 +277,32 @@ void abc9_module(RTLIL::Design *design, std::string script_file, std::string exe
 	log_header(design, "Executing ABC9.\n");
 
 	if (!lut_costs.empty()) {
-		buffer = stringf("%s/lutdefs.txt", tempdir_name.c_str());
+		buffer = stringf("%s/lutdefs.txt", tempdir_name);
 		f = fopen(buffer.c_str(), "wt");
 		if (f == NULL)
-			log_error("Opening %s for writing failed: %s\n", buffer.c_str(), strerror(errno));
+			log_error("Opening %s for writing failed: %s\n", buffer, strerror(errno));
 		for (int i = 0; i < GetSize(lut_costs); i++)
 			fprintf(f, "%d %d.00 1.00\n", i+1, lut_costs.at(i));
 		fclose(f);
 	}
 
-	buffer = stringf("\"%s\" -s -f %s/abc.script 2>&1", exe_file.c_str(), tempdir_name.c_str());
-	log("Running ABC command: %s\n", replace_tempdir(buffer, tempdir_name, show_tempdir).c_str());
+	buffer = stringf("\"%s\" -s -f %s/abc.script 2>&1", exe_file, tempdir_name);
+	log("Running ABC command: %s\n", replace_tempdir(buffer, tempdir_name, show_tempdir));
 
 #ifndef YOSYS_LINK_ABC
 	abc9_output_filter filt(tempdir_name, show_tempdir);
 	int ret = run_command(buffer, std::bind(&abc9_output_filter::next_line, filt, std::placeholders::_1));
 #else
-	string temp_stdouterr_name = stringf("%s/stdouterr.txt", tempdir_name.c_str());
+	string temp_stdouterr_name = stringf("%s/stdouterr.txt", tempdir_name);
 	FILE *temp_stdouterr_w = fopen(temp_stdouterr_name.c_str(), "w");
 	if (temp_stdouterr_w == NULL)
-		log_error("ABC: cannot open a temporary file for output redirection");
+		log_error("ABC: cannot open a temporary file for output redirection\n");
 	fflush(stdout);
 	fflush(stderr);
 	FILE *old_stdout = fopen(temp_stdouterr_name.c_str(), "r"); // need any fd for renumbering
 	FILE *old_stderr = fopen(temp_stdouterr_name.c_str(), "r"); // need any fd for renumbering
 #if defined(__wasm)
-#define fd_renumber(from, to) (void)__wasi_fd_renumber(from, to)
+#define fd_renumber(from, to) (void)__wasilibc_fd_renumber(from, to)
 #else
 #define fd_renumber(from, to) dup2(from, to)
 #endif
@@ -304,7 +313,7 @@ void abc9_module(RTLIL::Design *design, std::string script_file, std::string exe
 	fclose(temp_stdouterr_w);
 	// These needs to be mutable, supposedly due to getopt
 	char *abc9_argv[5];
-	string tmp_script_name = stringf("%s/abc.script", tempdir_name.c_str());
+	string tmp_script_name = stringf("%s/abc.script", tempdir_name);
 	abc9_argv[0] = strdup(exe_file.c_str());
 	abc9_argv[1] = strdup("-s");
 	abc9_argv[2] = strdup("-f");
@@ -328,10 +337,10 @@ void abc9_module(RTLIL::Design *design, std::string script_file, std::string exe
 	temp_stdouterr_r.close();
 #endif
 	if (ret != 0) {
-		if (check_file_exists(stringf("%s/output.aig", tempdir_name.c_str())))
-			log_warning("ABC: execution of command \"%s\" failed: return code %d.\n", buffer.c_str(), ret);
+		if (check_file_exists(stringf("%s/output.aig", tempdir_name)))
+			log_warning("ABC: execution of command \"%s\" failed: return code %d.\n", buffer, ret);
 		else
-			log_error("ABC: execution of command \"%s\" failed: return code %d.\n", buffer.c_str(), ret);
+			log_error("ABC: execution of command \"%s\" failed: return code %d.\n", buffer, ret);
 	}
 }
 
@@ -352,7 +361,7 @@ struct Abc9ExePass : public Pass {
 #ifdef ABCEXTERNAL
 		log("        use the specified command instead of \"" ABCEXTERNAL "\" to execute ABC.\n");
 #else
-		log("        use the specified command instead of \"<yosys-bindir>/%syosys-abc\" to execute ABC.\n", proc_program_prefix().c_str());
+		log("        use the specified command instead of \"<yosys-bindir>/%syosys-abc\" to execute ABC.\n", proc_program_prefix());
 #endif
 		log("        This can e.g. be used to call a specific version of ABC or a wrapper.\n");
 		log("\n");
@@ -365,12 +374,7 @@ struct Abc9ExePass : public Pass {
 		log("        replaced with blanks before the string is passed to ABC.\n");
 		log("\n");
 		log("        if no -script parameter is given, the following scripts are used:\n");
-		log("%s\n", fold_abc9_cmd(RTLIL::constpad.at("abc9.script.default").substr(1,std::string::npos)).c_str());
-		log("\n");
-		log("    -fast\n");
-		log("        use different default scripts that are slightly faster (at the cost\n");
-		log("        of output quality):\n");
-		log("%s\n", fold_abc9_cmd(RTLIL::constpad.at("abc9.script.default.fast").substr(1,std::string::npos)).c_str());
+		log("%s\n", fold_abc9_cmd(RTLIL::constpad.at("abc9.script.default").substr(1,std::string::npos)));
 		log("\n");
 		log("    -constr <file>\n");
 		log("        pass this file with timing constraints to ABC.\n");
@@ -451,9 +455,9 @@ struct Abc9ExePass : public Pass {
 		std::string exe_file = yosys_abc_executable;
 		std::string script_file, clk_str, box_file, lut_file, constr_file;
 		std::vector<std::string> liberty_files, genlib_files, dont_use_cells;
-		std::string delay_target, lutin_shared = "-S 1", wire_delay;
+		std::string delay_target, wire_delay;
 		std::string tempdir_name;
-		bool fast_mode = false, dff_mode = false;
+		bool dff_mode = false;
 		bool show_tempdir = false;
 		vector<int> lut_costs;
 
@@ -470,7 +474,6 @@ struct Abc9ExePass : public Pass {
 		}
 		lut_arg = design->scratchpad_get_string("abc9.lut", lut_arg);
 		luts_arg = design->scratchpad_get_string("abc9.luts", luts_arg);
-		fast_mode = design->scratchpad_get_bool("abc9.fast", fast_mode);
 		dff_mode = design->scratchpad_get_bool("abc9.dff", dff_mode);
 		show_tempdir = design->scratchpad_get_bool("abc9.showtmp", show_tempdir);
 		box_file = design->scratchpad_get_string("abc9.box", box_file);
@@ -502,20 +505,12 @@ struct Abc9ExePass : public Pass {
 				delay_target = "-D " + args[++argidx];
 				continue;
 			}
-			//if (arg == "-S" && argidx+1 < args.size()) {
-			//	lutin_shared = "-S " + args[++argidx];
-			//	continue;
-			//}
 			if (arg == "-lut" && argidx+1 < args.size()) {
 				lut_arg = args[++argidx];
 				continue;
 			}
 			if (arg == "-luts" && argidx+1 < args.size()) {
-				lut_arg = args[++argidx];
-				continue;
-			}
-			if (arg == "-fast") {
-				fast_mode = true;
+				luts_arg = args[++argidx];
 				continue;
 			}
 			if (arg == "-dff") {
@@ -620,7 +615,7 @@ struct Abc9ExePass : public Pass {
 			log_cmd_error("abc9_exe '-genlib' is incompatible with '-dont_use'.\n");
 
 		abc9_module(design, script_file, exe_file, lut_costs, dff_mode,
-				delay_target, lutin_shared, fast_mode, show_tempdir,
+				delay_target, show_tempdir,
 				box_file, lut_file, liberty_files, wire_delay, tempdir_name,
 				constr_file, dont_use_cells, genlib_files);
 	}

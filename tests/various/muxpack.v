@@ -20,8 +20,8 @@ endmodule
 
 module mux_if_unbal_5_3_invert #(parameter N=5, parameter W=3) (input [N*W-1:0] i, input [$clog2(N)-1:0] s, output reg [W-1:0] o);
 always @*
-    if (s != 0) 
-	   	if (s != 1) 
+    if (s != 0)
+	   	if (s != 1)
 			if (s != 2)
 				if (s != 3)
 					if (s != 4) o <= i[4*W+:W];
@@ -236,6 +236,16 @@ module case_overlap (
                     endcase
         endcase
         end
+endmodule
+
+module chain_slice_self_input (
+        input [31:0] A,
+        input [1:0] S,
+        output [31:0] Y
+);
+        wire [31:0] tmp;
+        assign tmp = S == 1 ? {A[7:0], A[7:0], A[7:0], A[7:0]} : A;
+        assign Y = S == 2 ? {A[15:0], tmp[15:0]} : tmp;
 endmodule
 
 module case_overlap2 (

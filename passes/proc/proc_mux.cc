@@ -153,7 +153,7 @@ void apply_attrs(RTLIL::Cell *cell, const RTLIL::SwitchRule *sw, const RTLIL::Ca
 RTLIL::SigSpec gen_cmp(RTLIL::Module *mod, const RTLIL::SigSpec &signal, const std::vector<RTLIL::SigSpec> &compare, RTLIL::SwitchRule *sw, RTLIL::CaseRule *cs, bool ifxmode)
 {
 	std::stringstream sstr;
-	sstr << "$procmux$" << (autoidx++);
+	sstr << "$procmux$" << (mod->twines().next_autoidx());
 
 	RTLIL::Wire *cmp_wire = mod->addWire(sstr.str() + "_CMP", 0);
 
@@ -178,7 +178,7 @@ RTLIL::SigSpec gen_cmp(RTLIL::Module *mod, const RTLIL::SigSpec &signal, const s
 		else
 		{
 			// create compare cell
-			RTLIL::Cell *eq_cell = mod->addCell(stringf("%s_CMP%d", sstr.str().c_str(), cmp_wire->width), ifxmode ? ID($eqx) : ID($eq));
+			RTLIL::Cell *eq_cell = mod->addCell(stringf("%s_CMP%d", sstr.str(), cmp_wire->width), ifxmode ? ID($eqx) : ID($eq));
 			apply_attrs(eq_cell, sw, cs);
 
 			eq_cell->parameters[ID::A_SIGNED] = RTLIL::Const(0);
@@ -223,7 +223,7 @@ RTLIL::SigSpec gen_mux(RTLIL::Module *mod, const RTLIL::SigSpec &signal, const s
 	log_assert(when_signal.size() == else_signal.size());
 
 	std::stringstream sstr;
-	sstr << "$procmux$" << (autoidx++);
+	sstr << "$procmux$" << (mod->twines().next_autoidx());
 
 	// the trivial cases
 	if (compare.size() == 0 || when_signal == else_signal)
@@ -412,7 +412,7 @@ RTLIL::SigSpec signal_to_mux_tree(RTLIL::Module *mod, SnippetSwCache &swcache, d
 
 void proc_mux(RTLIL::Module *mod, RTLIL::Process *proc, bool ifxmode)
 {
-	log("Creating decoders for process `%s.%s'.\n", mod->name.c_str(), proc->name.c_str());
+	log("Creating decoders for process `%s.%s'.\n", mod->name, proc->name);
 
 	SigSnippets sigsnip;
 	sigsnip.insert(&proc->root_case);

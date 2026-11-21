@@ -70,7 +70,7 @@ At the bottom of the `help` output for
 `synth_ice40` is the complete list of commands called by this script.
 Let's start with the section labeled ``begin``:
 
-.. literalinclude:: /cmd/synth_ice40.rst
+.. literalinclude:: /code_examples/macro_commands/synth_ice40.ys
    :language: yoscrypt
    :start-after: begin:
    :end-before: flatten:
@@ -143,8 +143,8 @@ line refers to the line numbers of the start/end of the corresponding ``always
 @`` block.  In the case of an ``initial`` block, we instead see the ``PROC``
 referring to line 0.
 
-To handle these, let us now introduce the next command: :doc:`/cmd/proc`. `proc`
-is a macro command like `synth_ice40`.  Rather than modifying the design
+To handle these, let us now introduce the next command: :cmd:title:`proc`.
+`proc` is a macro command like `synth_ice40`.  Rather than modifying the design
 directly, it instead calls a series of other commands.  In the case of `proc`,
 these sub-commands work to convert the behavioral logic of processes into
 multiplexers and registers.  Let's see what happens when we run it.  For now, we
@@ -188,7 +188,7 @@ opt_expr <adv_opt_expr>`.
 
 .. note::
 
-   :doc:`/cmd/clean` can also be called with two semicolons after any command,
+   :cmd:title:`clean` can also be called with two semicolons after any command,
    for example we could have called :yoscrypt:`opt_expr;;` instead of
    :yoscrypt:`opt_expr; clean`.  You may notice some scripts will end each line
    with ``;;``.  It is beneficial to run `clean` before inspecting intermediate
@@ -199,7 +199,7 @@ opt_expr <adv_opt_expr>`.
 .. todo:: consider a brief glossary for terms like adff
 
 .. seealso:: Advanced usage docs for
-   
+
    - :doc:`/using_yosys/synthesis/proc`
    - :doc:`/using_yosys/synthesis/opt`
 
@@ -215,8 +215,8 @@ Note that if we tried to run this command now then we would get an error.  This
 is because we already removed all of the modules other than ``addr_gen``.  We
 could restart our shell session, but instead let's use two new commands:
 
-- :doc:`/cmd/design`, and
-- :doc:`/cmd/read_verilog`.
+- :cmd:title:`design`, and
+- :cmd:title:`read_verilog`.
 
 .. literalinclude:: /code_examples/fifo/fifo.out
    :language: doscon
@@ -251,7 +251,7 @@ our design won't run into this issue, we can skip the ``-defer``.
 We can also run `proc` now to finish off the full :ref:`synth_begin`. Because
 the design schematic is quite large, we will be showing just the data path for
 the ``rdata`` output.  If you would like to see the entire design for yourself,
-you can do so with :doc:`/cmd/show`.  Note that the `show` command only works
+you can do so with :cmd:title:`show`.  Note that the `show` command only works
 with a single module, so you may need to call it with :yoscrypt:`show fifo`.
 :ref:`show_intro` section in :doc:`/getting_started/scripting_intro` has more on
 how to use `show`.
@@ -283,7 +283,7 @@ Flattening
 At this stage of a synthesis flow there are a few other commands we could run.
 In `synth_ice40` we get these:
 
-.. literalinclude:: /cmd/synth_ice40.rst
+.. literalinclude:: /code_examples/macro_commands/synth_ice40.ys
    :language: yoscrypt
    :start-after: flatten:
    :end-before: coarse:
@@ -291,7 +291,10 @@ In `synth_ice40` we get these:
    :name: synth_flatten
    :caption: ``flatten`` section
 
-First off is `flatten`.  Flattening the design like this can allow for
+We start by runnning `check`.  This doesn't affect the design, but it can
+identify a few obvious problems which will cause errors later.  Calling it here
+lets us fail faster rather than wasting time on something we know is impossible.
+Next up is `flatten`.  Flattening the design like this can allow for
 optimizations between modules which would otherwise be missed.  Let's run
 :yoscrypt:`flatten;;` on our design.
 
@@ -318,7 +321,7 @@ and merged with the ``raddr`` wire feeding into the `$memrd` cell.  This wire
 merging happened during the call to `clean` which we can see in the
 :ref:`flat_clean`.
 
-.. note:: 
+.. note::
 
    `flatten` and `clean` would normally be combined into a
    single :yoterm:`yosys> flatten;;` output, but they appear separately here as
@@ -355,7 +358,7 @@ Part 1
 
 In the iCE40 flow, we start with the following commands:
 
-.. literalinclude:: /cmd/synth_ice40.rst
+.. literalinclude:: /code_examples/macro_commands/synth_ice40.ys
    :language: yoscrypt
    :start-after: coarse:
    :end-before: wreduce
@@ -363,17 +366,14 @@ In the iCE40 flow, we start with the following commands:
    :caption: ``coarse`` section (part 1)
    :name: synth_coarse1
 
-We've already come across `opt_expr`, and `opt_clean` is the same as `clean` but
-with more verbose output.  The `check` pass identifies a few obvious problems
-which will cause errors later.  Calling it here lets us fail faster rather than
-wasting time on something we know is impossible.
-
-Next up is :yoscrypt:`opt -nodffe -nosdff` performing a set of simple
-optimizations on the design.  This command also ensures that only a specific
-subset of FF types are included, in preparation for the next command:
-:doc:`/cmd/fsm`.  Both `opt` and `fsm` are macro commands which are explored in
-more detail in :doc:`/using_yosys/synthesis/opt` and
-:doc:`/using_yosys/synthesis/fsm` respectively.
+We've already come across `opt_expr` and `check`, and `opt_clean` is the same as
+`clean` but with more verbose output.  Next up is :yoscrypt:`opt -nodffe
+-nosdff` performing a set of simple optimizations on the design.  This command
+also ensures that only a specific subset of FF types are included, in
+preparation for the next command: :cmd:title:`fsm`.  Both `opt` and `fsm` are
+macro commands which are explored in more detail in
+:doc:`/using_yosys/synthesis/opt` and :doc:`/using_yosys/synthesis/fsm`
+respectively.
 
 Up until now, the data path for ``rdata`` has remained the same since
 :ref:`rdata_flat`.  However the next call to `opt` does cause a change.
@@ -394,7 +394,7 @@ highlighted below:
    ``rdata`` output after `opt_dff`
 
 .. seealso:: Advanced usage docs for
-   
+
    - :doc:`/using_yosys/synthesis/fsm`
    - :doc:`/using_yosys/synthesis/opt`
 
@@ -403,15 +403,15 @@ Part 2
 
 The next group of commands performs a series of optimizations:
 
-.. literalinclude:: /cmd/synth_ice40.rst
+.. literalinclude:: /code_examples/macro_commands/synth_ice40.ys
    :language: yoscrypt
    :start-at: wreduce
-   :end-before: t:$mul
+   :end-before: macc-only
    :dedent:
    :caption: ``coarse`` section (part 2)
    :name: synth_coarse2
 
-First up is :doc:`/cmd/wreduce`.  If we run this we get the following:
+First up is :cmd:title:`wreduce`.  If we run this we get the following:
 
 .. literalinclude:: /code_examples/fifo/fifo.out
    :language: doscon
@@ -432,7 +432,7 @@ the schematic and see the output of that cell has now changed.
 
    ``rdata`` output after `wreduce`
 
-The next two (new) commands are :doc:`/cmd/peepopt` and :doc:`/cmd/share`.
+The next two (new) commands are :cmd:title:`peepopt` and :cmd:title:`share`.
 Neither of these affect our design, and they're explored in more detail in
 :doc:`/using_yosys/synthesis/opt`, so let's skip over them.  :yoscrypt:`techmap
 -map +/cmp2lut.v -D LUT_WIDTH=4` optimizes certain comparison operators by
@@ -440,7 +440,7 @@ converting them to LUTs instead.  The usage of `techmap` is explored more in
 :doc:`/using_yosys/synthesis/techmap_synth`.
 
 Our next command to run is
-:doc:`/cmd/memory_dff`.
+:cmd:title:`memory_dff`.
 
 .. literalinclude:: /code_examples/fifo/fifo.out
    :language: doscon
@@ -461,7 +461,7 @@ memory read with appropriate enable (``EN=1'1``) and reset (``ARST=1'0`` and
 ``SRST=1'0``) inputs.
 
 .. seealso:: Advanced usage docs for
-   
+
    - :doc:`/using_yosys/synthesis/opt`
    - :doc:`/using_yosys/synthesis/techmap_synth`
    - :doc:`/using_yosys/synthesis/memory`
@@ -475,13 +475,20 @@ will only be performed if called with the ``-dsp`` flag: :yoscrypt:`synth_ice40
 -dsp`.  While our example has nothing that could be mapped to DSPs we can still
 take a quick look at the commands here and describe what they do.
 
-.. literalinclude:: /cmd/synth_ice40.rst
+.. literalinclude:: /code_examples/macro_commands/synth_ice40.ys
    :language: yoscrypt
-   :start-at: t:$mul
-   :end-before: alumacc
+   :start-at: macc-only
+   :end-at: chtype
    :dedent:
    :caption: ``coarse`` section (part 3)
    :name: synth_coarse3
+
+The first three commands reassociate sums of products.  :yoscrypt:`alumacc
+-macc-only` collects each chain of `$mul` and `$add` cells into a single
+`$macc_v2` cell, and :yoscrypt:`maccmap -unmap` lowers it straight back to
+`$mul` and `$add` cells, but as a chain with the plain addends first, so that
+every multiplier has an adder of its own for `ice40_dsp` to absorb.
+`opt_clean` then removes the original cells.
 
 :yoscrypt:`wreduce t:$mul` performs width reduction again, this time targetting
 only cells of type `$mul`.  :yoscrypt:`techmap -map +/mul2dsp.v -map
@@ -514,9 +521,9 @@ Part 4
 
 That brings us to the fourth and final part for the iCE40 synthesis flow:
 
-.. literalinclude:: /cmd/synth_ice40.rst
+.. literalinclude:: /code_examples/macro_commands/synth_ice40.ys
    :language: yoscrypt
-   :start-at: alumacc
+   :start-after: chtype
    :end-before: map_ram:
    :dedent:
    :caption: ``coarse`` section (part 4)
@@ -543,7 +550,7 @@ Once these cells have been inserted, the call to `opt` can combine cells which
 are now identical but may have been missed due to e.g. the difference between
 `$add` and `$sub`.
 
-The other new command in this part is :doc:`/cmd/memory`.  `memory` is another
+The other new command in this part is :cmd:title:`memory`.  `memory` is another
 macro command which we examine in more detail in
 :doc:`/using_yosys/synthesis/memory`.  For this document, let us focus just on
 the step most relevant to our example: `memory_collect`. Up until this point,
@@ -594,7 +601,7 @@ Memory blocks
 Mapping to hard memory blocks uses a combination of `memory_libmap` and
 `techmap`.
 
-.. literalinclude:: /cmd/synth_ice40.rst
+.. literalinclude:: /code_examples/macro_commands/synth_ice40.ys
    :language: yoscrypt
    :start-after: map_ram:
    :end-before: map_ffram:
@@ -636,7 +643,7 @@ into flip flops (the ``logic fallback``) with `memory_map`.
 .. |techlibs/ice40/brams_map.v| replace:: :file:`techlibs/ice40/brams_map.v`
 .. _techlibs/ice40/brams_map.v: https://github.com/YosysHQ/yosys/tree/main/techlibs/ice40/brams_map.v
 
-.. literalinclude:: /cmd/synth_ice40.rst
+.. literalinclude:: /code_examples/macro_commands/synth_ice40.ys
    :language: yoscrypt
    :start-after: map_ffram:
    :end-before: map_gates:
@@ -659,7 +666,7 @@ into flip flops (the ``logic fallback``) with `memory_map`.
    complex.
 
 .. seealso:: Advanced usage docs for
-   
+
    - :doc:`/using_yosys/synthesis/techmap_synth`
    - :doc:`/using_yosys/synthesis/memory`
 
@@ -671,7 +678,7 @@ an explosion in cells as multi-bit `$mux` and `$adffe` are replaced with
 single-bit `$_MUX_` and `$_DFFE_PP0P_` cells, while the `$alu` is replaced with
 primitive `$_OR_` and `$_NOT_` gates and a `$lut` cell.
 
-.. literalinclude:: /cmd/synth_ice40.rst
+.. literalinclude:: /code_examples/macro_commands/synth_ice40.ys
    :language: yoscrypt
    :start-after: map_gates:
    :end-before: map_ffs:
@@ -700,7 +707,7 @@ mapped to hardware into gate-level primitives.  This includes optimizing
 `$_MUX_` cells where one of the inputs is a constant ``1'0``, replacing it
 instead with an `$_AND_` cell.
 
-.. literalinclude:: /cmd/synth_ice40.rst
+.. literalinclude:: /code_examples/macro_commands/synth_ice40.ys
    :language: yoscrypt
    :start-after: map_ffs:
    :end-before: map_luts:
@@ -725,7 +732,7 @@ LUTs
 `abc`. For more on what these do, and what the difference between these two
 commands are, refer to :doc:`/using_yosys/synthesis/abc`.
 
-.. literalinclude:: /cmd/synth_ice40.rst
+.. literalinclude:: /code_examples/macro_commands/synth_ice40.ys
    :language: yoscrypt
    :start-after: map_luts:
    :end-before: map_cells:
@@ -742,7 +749,7 @@ commands are, refer to :doc:`/using_yosys/synthesis/abc`.
 Finally we use `techmap` to map the generic `$lut` cells to iCE40 ``SB_LUT4``
 cells.
 
-.. literalinclude:: /cmd/synth_ice40.rst
+.. literalinclude:: /code_examples/macro_commands/synth_ice40.ys
    :language: yoscrypt
    :start-after: map_cells:
    :end-before: check:
@@ -757,7 +764,7 @@ cells.
    ``rdata`` output after :ref:`map_cells`
 
 .. seealso:: Advanced usage docs for
-   
+
    - :doc:`/using_yosys/synthesis/techmap_synth`
    - :doc:`/using_yosys/synthesis/abc`
 
@@ -784,19 +791,18 @@ Final steps
 The next section of the iCE40 synth flow performs some sanity checking and final
 tidy up:
 
-.. literalinclude:: /cmd/synth_ice40.rst
+.. literalinclude:: /code_examples/macro_commands/synth_ice40.ys
    :language: yoscrypt
    :start-after: check:
-   :end-before: blif:
    :dedent:
    :name: check
    :caption: ``check`` section
 
 The new commands here are:
 
-- :doc:`/cmd/autoname`,
-- :doc:`/cmd/stat`, and
-- :doc:`/cmd/blackbox`.
+- :cmd:title:`autoname`,
+- :cmd:title:`stat`, and
+- :cmd:title:`blackbox`.
 
 The output from `stat` is useful for checking resource utilization; providing a
 list of cells used in the design and the number of each, as well as the number
@@ -835,9 +841,9 @@ Synthesis output
 
 The iCE40 synthesis flow has the following output modes available:
 
-- :doc:`/cmd/write_blif`,
-- :doc:`/cmd/write_edif`, and
-- :doc:`/cmd/write_json`.
+- `write_blif`,
+- `write_edif`, and
+- `write_json`.
 
 As an example, if we called :yoscrypt:`synth_ice40 -top fifo -json fifo.json`,
 our synthesized ``fifo`` design will be output as :file:`fifo.json`.  We can
@@ -848,4 +854,4 @@ is beyond the scope of this documentation.
 
 .. _nextpnr: https://github.com/YosysHQ/nextpnr
 
-.. seealso:: :doc:`/cmd/synth_ice40`
+.. seealso:: :cmd:title:`synth_ice40`

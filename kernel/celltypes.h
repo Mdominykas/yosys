@@ -21,6 +21,7 @@
 #define CELLTYPES_H
 
 #include "kernel/yosys.h"
+#include "kernel/newcelltypes.h"
 
 YOSYS_NAMESPACE_BEGIN
 
@@ -64,10 +65,16 @@ struct CellTypes
 		cell_types[ct.type] = ct;
 	}
 
+	template<typename N, YS_NAME_STRING(N)>
+	void setup_type(const N &type_str, const pool<RTLIL::IdString> &inputs, const pool<RTLIL::IdString> &outputs, bool is_evaluable = false, bool is_combinatorial = false, bool is_synthesizable = false)
+	{
+		setup_type(ID::lookup(type_str), inputs, outputs, is_evaluable, is_combinatorial, is_synthesizable);
+	}
+
 	void setup_module(RTLIL::Module *module)
 	{
-		pool<RTLIL::IdString> inputs, outputs;
-		for (RTLIL::IdString wire_name : module->ports) {
+		pool<IdString> inputs, outputs;
+		for (auto wire_name : module->ports) {
 			RTLIL::Wire *wire = module->wire(wire_name);
 			if (wire->port_input)
 				inputs.insert(wire->name);
@@ -87,22 +94,24 @@ struct CellTypes
 	{
 		setup_internals_eval();
 
-		setup_type(ID($tribuf), {ID::A, ID::EN}, {ID::Y}, true);
+		setup_type(ID($barrier), {ID::A}, {ID::Y});
 
-		setup_type(ID($assert), {ID::A, ID::EN}, pool<RTLIL::IdString>(), true);
-		setup_type(ID($assume), {ID::A, ID::EN}, pool<RTLIL::IdString>(), true);
-		setup_type(ID($live), {ID::A, ID::EN}, pool<RTLIL::IdString>(), true);
-		setup_type(ID($fair), {ID::A, ID::EN}, pool<RTLIL::IdString>(), true);
-		setup_type(ID($cover), {ID::A, ID::EN}, pool<RTLIL::IdString>(), true);
-		setup_type(ID($initstate), pool<RTLIL::IdString>(), {ID::Y}, true);
-		setup_type(ID($anyconst), pool<RTLIL::IdString>(), {ID::Y}, true);
-		setup_type(ID($anyseq), pool<RTLIL::IdString>(), {ID::Y}, true);
-		setup_type(ID($allconst), pool<RTLIL::IdString>(), {ID::Y}, true);
-		setup_type(ID($allseq), pool<RTLIL::IdString>(), {ID::Y}, true);
-		setup_type(ID($equiv), {ID::A, ID::B}, {ID::Y}, true);
-		setup_type(ID($specify2), {ID::EN, ID::SRC, ID::DST}, pool<RTLIL::IdString>(), true);
-		setup_type(ID($specify3), {ID::EN, ID::SRC, ID::DST, ID::DAT}, pool<RTLIL::IdString>(), true);
-		setup_type(ID($specrule), {ID::EN_SRC, ID::EN_DST, ID::SRC, ID::DST}, pool<RTLIL::IdString>(), true);
+		setup_type(ID($tribuf), {ID::A, ID::EN}, {ID::Y});
+
+		setup_type(ID($assert), {ID::A, ID::EN}, pool<RTLIL::IdString>());
+		setup_type(ID($assume), {ID::A, ID::EN}, pool<RTLIL::IdString>());
+		setup_type(ID($live), {ID::A, ID::EN}, pool<RTLIL::IdString>());
+		setup_type(ID($fair), {ID::A, ID::EN}, pool<RTLIL::IdString>());
+		setup_type(ID($cover), {ID::A, ID::EN}, pool<RTLIL::IdString>());
+		setup_type(ID($initstate), pool<RTLIL::IdString>(), {ID::Y});
+		setup_type(ID($anyconst), pool<RTLIL::IdString>(), {ID::Y});
+		setup_type(ID($anyseq), pool<RTLIL::IdString>(), {ID::Y});
+		setup_type(ID($allconst), pool<RTLIL::IdString>(), {ID::Y});
+		setup_type(ID($allseq), pool<RTLIL::IdString>(), {ID::Y});
+		setup_type(ID($equiv), {ID::A, ID::B}, {ID::Y});
+		setup_type(ID($specify2), {ID::EN, ID::SRC, ID::DST}, pool<RTLIL::IdString>());
+		setup_type(ID($specify3), {ID::EN, ID::SRC, ID::DST, ID::DAT}, pool<RTLIL::IdString>());
+		setup_type(ID($specrule), {ID::SRC_EN, ID::DST_EN, ID::SRC, ID::DST}, pool<RTLIL::IdString>());
 		setup_type(ID($print), {ID::EN, ID::ARGS, ID::TRG}, pool<RTLIL::IdString>());
 		setup_type(ID($check), {ID::A, ID::EN, ID::ARGS, ID::TRG}, pool<RTLIL::IdString>());
 		setup_type(ID($set_tag), {ID::A, ID::SET, ID::CLR}, {ID::Y});
@@ -111,6 +120,8 @@ struct CellTypes
 		setup_type(ID($original_tag), {ID::A}, {ID::Y});
 		setup_type(ID($future_ff), {ID::A}, {ID::Y});
 		setup_type(ID($scopeinfo), {}, {});
+		setup_type(ID($input_port), {}, {ID::Y});
+		setup_type(ID($connect), {ID::A, ID::B}, {});
 	}
 
 	void setup_internals_eval()
@@ -193,7 +204,7 @@ struct CellTypes
 	{
 		setup_stdcells_eval();
 
-		setup_type(ID($_TBUF_), {ID::A, ID::E}, {ID::Y}, true);
+		setup_type(ID($_TBUF_), {ID::A, ID::E}, {ID::Y});
 	}
 
 	void setup_stdcells_eval()
@@ -320,6 +331,16 @@ struct CellTypes
 		return it != cell_types.end() && it->second.inputs.count(port) != 0;
 	}
 
+	RTLIL::PortDir cell_port_dir(RTLIL::IdString type, RTLIL::IdString port) const
+	{
+		auto it = cell_types.find(type);
+		if (it == cell_types.end())
+			return RTLIL::PD_UNKNOWN;
+		bool is_input = it->second.inputs.count(port);
+		bool is_output = it->second.outputs.count(port);
+		return RTLIL::PortDir(is_input + is_output * 2);
+	}
+
 	bool cell_evaluable(RTLIL::IdString type) const
 	{
 		auto it = cell_types.find(type);
@@ -328,12 +349,13 @@ struct CellTypes
 
 	static RTLIL::Const eval_not(RTLIL::Const v)
 	{
-		for (auto &bit : v.bits())
+		for (auto bit : v)
 			if (bit == State::S0) bit = State::S1;
 			else if (bit == State::S1) bit = State::S0;
 		return v;
 	}
 
+	// Consider using the ConstEval struct instead if you need named ports and/or multiple outputs
 	static RTLIL::Const eval(RTLIL::IdString type, const RTLIL::Const &arg1, const RTLIL::Const &arg2, bool signed1, bool signed2, int result_len, bool *errp = nullptr)
 	{
 		if (type == ID($sshr) && !signed1)
@@ -347,7 +369,7 @@ struct CellTypes
 				signed1 = false, signed2 = false;
 		}
 
-#define HANDLE_CELL_TYPE(_t) if (type == ID($##_t)) return const_ ## _t(arg1, arg2, signed1, signed2, result_len);
+#define HANDLE_CELL_TYPE(_t) if (type == constid<ID::lookup("$" #_t).raw()>) return const_ ## _t(arg1, arg2, signed1, signed2, result_len);
 		HANDLE_CELL_TYPE(not)
 		HANDLE_CELL_TYPE(and)
 		HANDLE_CELL_TYPE(or)
@@ -416,19 +438,18 @@ struct CellTypes
 		log_abort();
 	}
 
+	// Consider using the ConstEval struct instead if you need named ports and/or multiple outputs
 	static RTLIL::Const eval(RTLIL::Cell *cell, const RTLIL::Const &arg1, const RTLIL::Const &arg2, bool *errp = nullptr)
 	{
 		if (cell->type == ID($slice)) {
-			RTLIL::Const ret;
 			int width = cell->parameters.at(ID::Y_WIDTH).as_int();
 			int offset = cell->parameters.at(ID::OFFSET).as_int();
-			ret.bits().insert(ret.bits().end(), arg1.begin()+offset, arg1.begin()+offset+width);
-			return ret;
+			return arg1.extract(offset, width);
 		}
 
 		if (cell->type == ID($concat)) {
 			RTLIL::Const ret = arg1;
-			ret.bits().insert(ret.bits().end(), arg2.begin(), arg2.end());
+			ret.append(arg2);
 			return ret;
 		}
 
@@ -503,10 +524,13 @@ struct CellTypes
 		return eval(cell->type, arg1, arg2, signed_a, signed_b, result_len, errp);
 	}
 
+	// Consider using the ConstEval struct instead if you need named ports and/or multiple outputs
 	static RTLIL::Const eval(RTLIL::Cell *cell, const RTLIL::Const &arg1, const RTLIL::Const &arg2, const RTLIL::Const &arg3, bool *errp = nullptr)
 	{
 		if (cell->type.in(ID($mux), ID($_MUX_)))
 			return const_mux(arg1, arg2, arg3);
+		if (cell->type == ID($_NMUX_))
+			return eval_not(const_mux(arg1, arg2, arg3));
 		if (cell->type == ID($bwmux))
 			return const_bwmux(arg1, arg2, arg3);
 		if (cell->type == ID($pmux))
@@ -520,6 +544,7 @@ struct CellTypes
 		return eval(cell, arg1, arg2, errp);
 	}
 
+	// Consider using the ConstEval struct instead if you need named ports and/or multiple outputs
 	static RTLIL::Const eval(RTLIL::Cell *cell, const RTLIL::Const &arg1, const RTLIL::Const &arg2, const RTLIL::Const &arg3, const RTLIL::Const &arg4, bool *errp = nullptr)
 	{
 		if (cell->type == ID($_AOI4_))
@@ -531,9 +556,6 @@ struct CellTypes
 		return eval(cell, arg1, arg2, arg3, errp);
 	}
 };
-
-// initialized by yosys_setup()
-extern CellTypes yosys_celltypes;
 
 YOSYS_NAMESPACE_END
 

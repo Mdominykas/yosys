@@ -22,6 +22,7 @@
 
 #include "kernel/yosys.h"
 #include <numeric>
+#include <regex>
 
 YOSYS_NAMESPACE_BEGIN
 
@@ -68,7 +69,7 @@ struct QbfSolutionType {
 		for (auto cell : module->cells()) {
 			pool<std::string> cell_src = cell->get_strpool_attribute(ID::src);
 			auto pos = hole_to_value.find(cell_src);
-			if (pos != hole_to_value.end() && cell->type.in("$anyconst", "$anyseq")) {
+			if (pos != hole_to_value.end() && cell->type.in(ID($anyconst), ID($anyseq))) {
 				RTLIL::SigSpec port_y = cell->getPort(ID::Y);
 				for (int i = GetSize(port_y) - 1; i >= 0; --i) {
 					hole_loc_idx_to_sigbit[std::make_pair(pos->first, i)] = port_y[i];
@@ -132,7 +133,7 @@ struct QbfSolutionType {
 		//More importantly, we want to have the ability to port hole assignments to other modules with compatible
 		//hole names and widths.  Obviously in those cases source locations of the $anyconst cells will not match.
 		//
-		//Option 2 has the benefits previously described, but wire names can be changed automatically by 
+		//Option 2 has the benefits previously described, but wire names can be changed automatically by
 		//optimization or techmapping passes, especially when (ex/im)porting from BLIF for optimization with ABC.
 		//
 		//The approach taken here is to allow both options.  We write the assignment information for each bit of
@@ -170,7 +171,6 @@ struct QbfSolutionType {
 		std::smatch m;
 		bool sat_regex_found = false;
 		bool unsat_regex_found = false;
-		dict<std::string, bool> hole_value_recovered;
 		for (const std::string &x : stdout_lines) {
 			if(std::regex_search(x, m, hole_value_regex)) {
 				std::string loc = m[1].str();

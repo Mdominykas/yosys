@@ -78,9 +78,9 @@ struct DffinitPass : public Pass {
 				continue;
 			}
 			if (args[argidx] == "-ff" && argidx+3 < args.size()) {
-				IdString cell_name = RTLIL::escape_id(args[++argidx]);
-				IdString output_port = RTLIL::escape_id(args[++argidx]);
-				IdString init_param = RTLIL::escape_id(args[++argidx]);
+				IdString cell_name = design->twines().find(RTLIL::escape_id(args[++argidx]));
+				IdString output_port = design->twines().find(RTLIL::escape_id(args[++argidx]));
+				IdString init_param = design->twines().add(RTLIL::escape_id(args[++argidx]));
 				ff_types[cell_name][output_port] = init_param;
 				continue;
 			}
@@ -118,19 +118,19 @@ struct DffinitPass : public Pass {
 					for (int i = 0; i < GetSize(sig); i++) {
 						if (initval[i] == State::Sx)
 							continue;
-						while (GetSize(value) <= i)
-							value.bits().push_back(State::S0);
+						if (GetSize(value) <= i)
+							value.resize(i + 1, State::S0);
 						if (noreinit && value[i] != State::Sx && value[i] != initval[i])
 							log_error("Trying to assign a different init value for %s.%s.%s which technically "
 									"have a conflicted init value.\n",
-									log_id(module), log_id(cell), log_id(it.second));
-						value.bits()[i] = initval[i];
+									module, cell, PooledName(design, it.second).unescape());
+						value.set(i, initval[i]);
 					}
 
 					if (highlow_mode && GetSize(value) != 0) {
 						if (GetSize(value) != 1)
 							log_error("Multi-bit init value for %s.%s.%s is incompatible with -highlow mode.\n",
-									log_id(module), log_id(cell), log_id(it.second));
+									module, cell, PooledName(design, it.second).unescape());
 						if (value[0] == State::S1)
 							value = Const(high_string);
 						else
@@ -138,8 +138,8 @@ struct DffinitPass : public Pass {
 					}
 
 					if (value.size() != 0) {
-						log("Setting %s.%s.%s (port=%s, net=%s) to %s.\n", log_id(module), log_id(cell), log_id(it.second),
-								log_id(it.first), log_signal(sig), log_signal(value));
+						log("Setting %s.%s.%s (port=%s, net=%s) to %s.\n", module, cell, PooledName(design, it.second).unescape(),
+								PooledName(design, it.first).unescape(), log_signal(sig), log_signal(value));
 						cell->setParam(it.second, value);
 					}
 				}

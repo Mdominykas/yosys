@@ -22,6 +22,7 @@
 #include "kernel/ffinit.h"
 #include "kernel/consteval.h"
 #include "kernel/log.h"
+#include "passes/proc/proc_dlatch.h"
 #include <sstream>
 #include <stdlib.h>
 #include <stdio.h>
@@ -39,6 +40,13 @@ struct proc_dlatch_db_t
 	dict<Cell*, vector<SigBit>> mux_srcbits;
 	dict<SigBit, pair<Cell*, int>> mux_drivers;
 	dict<SigBit, int> sigusers;
+	pool<SigBit> active_bits;
+	dict<SigBit, int> extra_readers;
+	bool all_processes_muxed = true;
+
+	// Results of the current find_mux_feedback/find_mux_constant query.  The
+	// mux network is a DAG, and re-walking shared subtrees is exponential.
+	dict<SigBit, int> feedback_memo;
 
 	proc_dlatch_db_t(Module *module) : module(module), sigmap(module)
 	{
@@ -77,7 +85,96 @@ struct proc_dlatch_db_t
 			if (wire->port_input)
 				for (auto bit : sigmap(wire))
 					sigusers[bit]++;
+			if (wire->port_output || wire->get_bool_attribute(ID::keep))
+				count_extra_readers(wire);
 		}
+
+		// after proc_mux, sync rules hold the only process reads that are not muxes
+		for (auto [_, proc] : module->processes) {
+			if (has_assignments(&proc->root_case))
+				all_processes_muxed = false;
+			for (auto sync : proc->syncs) {
+				count_extra_readers(sync->signal);
+				for (auto &[lhs, rhs] : sync->actions)
+					count_extra_readers(rhs);
+				for (auto &mem_write : sync->mem_write_actions) {
+					count_extra_readers(mem_write.address);
+					count_extra_readers(mem_write.data);
+					count_extra_readers(mem_write.enable);
+				}
+			}
+		}
+	}
+
+	static bool has_assignments(RTLIL::CaseRule *case_rule)
+	{
+		for (auto &[lhs, rhs] : case_rule->actions)
+			if (!lhs.empty())
+				return true;
+		for (auto switch_rule : case_rule->switches)
+			for (auto sub_case : switch_rule->cases)
+				if (has_assignments(sub_case))
+					return true;
+		return false;
+	}
+
+	void count_extra_readers(const SigSpec &sig)
+	{
+		for (auto bit : sigmap(sig))
+			extra_readers[bit]++;
+	}
+
+	int readers(SigBit bit)
+	{
+		return sigusers[bit] + extra_readers[bit];
+	}
+
+	struct hold_cone_t
+	{
+		SigBit q;
+		dict<SigBit, int> uses; // reads of each bit by the cone muxes
+		pool<SigBit> reaches_q; // bits whose value can come from q
+	};
+
+	void count_hold_uses(SigBit bit, hold_cone_t &cone)
+	{
+		auto it = mux_drivers.find(bit);
+		if (bit == cone.q || it == mux_drivers.end())
+			return;
+
+		auto [cell, index] = it->second;
+		if (cell->has_keep_attr())
+			return;
+
+		SigSpec sig_a = sigmap(cell->getPort(ID::A));
+		SigSpec sig_b = sigmap(cell->getPort(ID::B));
+		int width = GetSize(sig_a);
+		SigSpec inputs = sig_a[index];
+		if (cell->type == ID($bwmux))
+			inputs.append(sig_b[index]);
+		else
+			for (int i = 0; i < GetSize(sig_b) / width; i++)
+				inputs.append(sig_b[i*width + index]);
+
+		for (auto input : inputs) {
+			if (cone.uses[input]++ == 0)
+				count_hold_uses(input, cone);
+			if (cone.reaches_q.count(input))
+				cone.reaches_q.insert(bit);
+		}
+	}
+
+	// q and every mux bit it reaches only feed the hold path
+	bool is_unused_latch(SigBit q, SigBit d)
+	{
+		if (!all_processes_muxed || readers(d) != 1)
+			return false;
+		hold_cone_t cone = {q, {}, {q}};
+		count_hold_uses(d, cone);
+		for (auto [bit, uses] : cone.uses)
+			if (cone.reaches_q.count(bit) && readers(bit) != uses)
+				return false;
+		return cone.uses.count(q);
 	}
 
 	bool quickcheck(const SigSpec &haystack, const SigSpec &needle)
@@ -170,13 +267,30 @@ struct proc_dlatch_db_t
 		return rules_db(node);
 	}
 
-	int find_mux_feedback(SigBit haystack, SigBit needle, bool set_undef)
+	void enter_mux_bit(SigBit bit, Cell *cell)
 	{
-		if (sigusers[haystack] > 1)
+		if (!active_bits.insert(bit).second)
+			log_error("Found logic loop through %s cell `%s.%s' (%s).\n",
+					cell->type, module->name, cell->name, cell->get_src_attribute());
+	}
+
+	int find_mux_feedback(SigBit haystack, SigBit needle, bool set_undef, bool force_undef = false)
+	{
+		feedback_memo.clear();
+		return find_mux_feedback_rec(haystack, needle, set_undef, force_undef);
+	}
+
+	int find_mux_feedback_rec(SigBit haystack, SigBit needle, bool set_undef, bool force_undef)
+	{
+		if (sigusers[haystack] > 1 && !force_undef)
 			set_undef = false;
 
 		if (haystack == needle)
 			return true_node;
+
+		auto memo_it = feedback_memo.find(haystack);
+		if (memo_it != feedback_memo.end())
+			return memo_it->second;
 
 		auto it = mux_drivers.find(haystack);
 		if (it == mux_drivers.end())
@@ -184,6 +298,8 @@ struct proc_dlatch_db_t
 
 		Cell *cell = it->second.first;
 		int index = it->second.second;
+
+		enter_mux_bit(haystack, cell);
 
 		log_assert(cell->type.in(ID($mux), ID($pmux), ID($bwmux)));
 		bool is_bwmux = (cell->type == ID($bwmux));
@@ -194,9 +310,98 @@ struct proc_dlatch_db_t
 
 		pool<int> children;
 
-		int n = find_mux_feedback(sig_a[index], needle, set_undef);
+		int n = find_mux_feedback_rec(sig_a[index], needle, set_undef, force_undef);
 		if (n != false_node) {
 			if (set_undef && sig_a[index] == needle) {
+				SigSpec sig = cell->getPort(ID::A);
+				sig[index] = State::Sx;
+				cell->setPort(ID::A, sig);
+			}
+			bool sibling_undef = true;
+			for (int i = 0; i < (is_bwmux ? 1 : GetSize(sig_s)); i++)
+				if (sig_b[i*width + index] != State::Sx)
+					sibling_undef = false;
+			if (!sibling_undef) {
+				if (!is_bwmux) {
+					for (int i = 0; i < GetSize(sig_s); i++)
+						n = make_inner(sig_s[i], State::S0, n);
+				} else {
+					n = make_inner(sig_s[index], State::S0, n);
+				}
+			}
+			children.insert(n);
+		}
+
+		for (int i = 0; i < (is_bwmux ? 1 : GetSize(sig_s)); i++) {
+			n = find_mux_feedback_rec(sig_b[i*width + index], needle, set_undef, force_undef);
+			if (n != false_node) {
+				if (set_undef && sig_b[i*width + index] == needle) {
+					SigSpec sig = cell->getPort(ID::B);
+					sig[i*width + index] = State::Sx;
+					cell->setPort(ID::B, sig);
+				}
+				bool sibling_undef = (sig_a[index] == State::Sx);
+				if (!is_bwmux)
+					for (int j = 0; j < GetSize(sig_s); j++)
+						if (j != i && sig_b[j*width + index] != State::Sx)
+							sibling_undef = false;
+				if (!sibling_undef)
+					n = make_inner(sig_s[is_bwmux ? index : i], State::S1, n);
+				children.insert(n);
+			}
+		}
+
+		active_bits.erase(haystack);
+
+		if (children.empty()) {
+			feedback_memo[haystack] = false_node;
+			return false_node;
+		}
+
+		int result = make_inner(children);
+		feedback_memo[haystack] = result;
+		return result;
+	}
+
+	int find_mux_constant(SigBit haystack, State needle, bool set_undef)
+	{
+		feedback_memo.clear();
+		return find_mux_constant_rec(haystack, needle, set_undef);
+	}
+
+	int find_mux_constant_rec(SigBit haystack, State needle, bool set_undef)
+	{
+		if (sigusers[haystack] > 1)
+			set_undef = false;
+
+		if (haystack == SigBit(needle))
+			return true_node;
+
+		auto memo_it = feedback_memo.find(haystack);
+		if (memo_it != feedback_memo.end())
+			return memo_it->second;
+
+		auto it = mux_drivers.find(haystack);
+		if (it == mux_drivers.end())
+			return false_node;
+
+		Cell *cell = it->second.first;
+		int index = it->second.second;
+
+		enter_mux_bit(haystack, cell);
+
+		log_assert(cell->type.in(ID($mux), ID($pmux), ID($bwmux)));
+		bool is_bwmux = (cell->type == ID($bwmux));
+		SigSpec sig_a = sigmap(cell->getPort(ID::A));
+		SigSpec sig_b = sigmap(cell->getPort(ID::B));
+		SigSpec sig_s = sigmap(cell->getPort(ID::S));
+		int width = GetSize(sig_a);
+
+		pool<int> children;
+
+		int n = find_mux_constant_rec(sig_a[index], needle, set_undef);
+		if (n != false_node) {
+			if (set_undef && sig_a[index] == SigBit(needle)) {
 				SigSpec sig = cell->getPort(ID::A);
 				sig[index] = State::Sx;
 				cell->setPort(ID::A, sig);
@@ -211,7 +416,7 @@ struct proc_dlatch_db_t
 		}
 
 		for (int i = 0; i < (is_bwmux ? 1 : GetSize(sig_s)); i++) {
-			n = find_mux_feedback(sig_b[i*width + index], needle, set_undef);
+			n = find_mux_constant_rec(sig_b[i*width + index], needle, set_undef);
 			if (n != false_node) {
 				if (set_undef && sig_b[i*width + index] == needle) {
 					SigSpec sig = cell->getPort(ID::B);
@@ -222,10 +427,16 @@ struct proc_dlatch_db_t
 			}
 		}
 
-		if (children.empty())
-			return false_node;
+		active_bits.erase(haystack);
 
-		return make_inner(children);
+		if (children.empty()) {
+			feedback_memo[haystack] = false_node;
+			return false_node;
+		}
+
+		int result = make_inner(children);
+		feedback_memo[haystack] = result;
+		return result;
 	}
 
 	SigBit make_hold(int n, string &src)
@@ -311,6 +522,7 @@ struct proc_dlatch_db_t
 
 		CellTypes ct;
 		ct.setup_internals();
+		ct.cell_types.erase(ID($barrier));
 
 		for (auto cell : module->cells())
 		for (auto conn : cell->connections()) {
@@ -345,11 +557,11 @@ struct proc_dlatch_db_t
 	}
 };
 
-void proc_dlatch(proc_dlatch_db_t &db, RTLIL::Process *proc)
+void proc_dlatch(proc_dlatch_db_t &db, RTLIL::Process *proc, LatchPolicy policy)
 {
 	RTLIL::SigSig latches_bits, nolatches_bits;
 	dict<SigBit, SigBit> latches_out_in;
-	dict<SigBit, int> latches_hold;
+	dict<SigBit, int> latches_hold, latches_rst, latches_set;
 	std::string src = proc->get_src_attribute();
 
 	for (auto sr : proc->syncs)
@@ -360,7 +572,7 @@ void proc_dlatch(proc_dlatch_db_t &db, RTLIL::Process *proc)
 
 		if (proc->get_bool_attribute(ID::always_ff))
 			log_error("Found non edge/level sensitive event in always_ff process `%s.%s'.\n",
-					db.module->name.c_str(), proc->name.c_str());
+					db.module->name, proc->name);
 
 		for (auto ss : sr->actions)
 		{
@@ -379,32 +591,64 @@ void proc_dlatch(proc_dlatch_db_t &db, RTLIL::Process *proc)
 		sr->actions.clear();
 	}
 
+	bool may_drop_latch = !proc->get_bool_attribute(ID::always_latch);
+
 	latches_out_in.sort();
 	for (auto &it : latches_out_in) {
-		int n = db.find_mux_feedback(it.second, it.first, true);
-		if (n == db.false_node) {
+		if (db.find_mux_feedback(it.second, it.first, false) == db.false_node) {
 			nolatches_bits.first.append(it.first);
 			nolatches_bits.second.append(it.second);
-		} else {
-			latches_bits.first.append(it.first);
-			latches_bits.second.append(it.second);
-			latches_hold[it.first] = n;
+			continue;
 		}
+
+		// cut the hold path and leave the output undriven
+		if (may_drop_latch && db.is_unused_latch(it.first, it.second)) {
+			db.find_mux_feedback(it.second, it.first, true, true);
+			db.initvals.remove_init(it.first);
+			continue;
+		}
+
+		latches_bits.first.append(it.first);
+		latches_bits.second.append(it.second);
+		int nrst = db.find_mux_constant(it.second, State::S0, false);
+		int nset = db.find_mux_constant(it.second, State::S1, false);
+		bool has_rst = (nrst != db.false_node);
+		bool has_set = (nset != db.false_node);
+
+		if (has_rst && !has_set)
+			nrst = db.find_mux_constant(it.second, State::S0, true);
+		else if (has_set && !has_rst)
+			nset = db.find_mux_constant(it.second, State::S1, true);
+		else
+			nrst = nset = db.false_node;
+
+		int n = db.find_mux_feedback(it.second, it.first, true);
+		log_assert(n != db.false_node);
+		latches_hold[it.first] = n;
+		latches_rst[it.first] = nrst;
+		latches_set[it.first] = nset;
 	}
 
 	int offset = 0;
 	for (auto chunk : nolatches_bits.first.chunks()) {
 		SigSpec lhs = chunk, rhs = nolatches_bits.second.extract(offset, chunk.width);
-		if (proc->get_bool_attribute(ID::always_latch))
+		bool is_nosync = true;
+		for (auto bit : lhs)
+			if (bit.wire == nullptr || !bit.wire->get_bool_attribute(ID::nosync)) {
+				is_nosync = false;
+				break;
+			}
+
+		if (proc->get_bool_attribute(ID::always_latch) && !is_nosync)
 			log_error("No latch inferred for signal `%s.%s' from always_latch process `%s.%s'.\n",
-					db.module->name.c_str(), log_signal(lhs), db.module->name.c_str(), proc->name.c_str());
-		else
+					db.module->name, log_signal(lhs), db.module->name, proc->name);
+		else if (!is_nosync)
 			log("No latch inferred for signal `%s.%s' from process `%s.%s'.\n",
-					db.module->name.c_str(), log_signal(lhs), db.module->name.c_str(), proc->name.c_str());
+					db.module->name, log_signal(lhs), db.module->name, proc->name);
 		for (auto &bit : lhs) {
 			State val = db.initvals(bit);
 			if (db.initvals(bit) != State::Sx) {
-				log("Removing init bit %s for non-memory siginal `%s.%s` in process `%s.%s`.\n", log_signal(val), db.module->name.c_str(), log_signal(bit), db.module->name.c_str(), proc->name.c_str());
+				log("Removing init bit %s for non-memory siginal `%s.%s` in process `%s.%s`.\n", log_signal(val), db.module->name, log_signal(bit), db.module->name, proc->name);
 			}
 			db.initvals.remove_init(bit);
 		}
@@ -416,29 +660,55 @@ void proc_dlatch(proc_dlatch_db_t &db, RTLIL::Process *proc)
 	while (offset < GetSize(latches_bits.first))
 	{
 		int width = 1;
-		int n = latches_hold[latches_bits.first[offset]];
-		Wire *w = latches_bits.first[offset].wire;
+		SigBit obit = latches_bits.first[offset];
+		int n = latches_hold[obit];
+		int nrst = latches_rst[obit];
+		int nset = latches_set[obit];
+		Wire *w = obit.wire;
 
 		if (w != nullptr)
 		{
 			while (offset+width < GetSize(latches_bits.first) &&
 					n == latches_hold[latches_bits.first[offset+width]] &&
+					nrst == latches_rst[latches_bits.first[offset+width]] &&
+					nset == latches_set[latches_bits.first[offset+width]] &&
 					w == latches_bits.first[offset+width].wire)
 				width++;
 
 			SigSpec lhs = latches_bits.first.extract(offset, width);
 			SigSpec rhs = latches_bits.second.extract(offset, width);
 
-			Cell *cell = db.module->addDlatch(NEW_ID, db.module->Not(NEW_ID, db.make_hold(n, src)), rhs, lhs);
+			SigBit en = db.module->Not(NEW_ID, db.make_hold(n, src));
+			bool has_rst = (nrst != db.false_node);
+			bool has_set = (nset != db.false_node);
+
+			Cell *cell;
+			if (has_rst)
+				cell = db.module->addAdlatch(NEW_ID, en, db.make_hold(nrst, src), rhs, lhs, RTLIL::Const(State::S0, width));
+			else if (has_set)
+				cell = db.module->addAdlatch(NEW_ID, en, db.make_hold(nset, src), rhs, lhs, RTLIL::Const(State::S1, width));
+			else
+				cell = db.module->addDlatch(NEW_ID, en, rhs, lhs);
 			cell->set_src_attribute(src);
+			if (proc->get_bool_attribute(ID::always_latch))
+				cell->set_bool_attribute(ID::always_latch);
 			db.generated_dlatches.insert(cell);
 
 			if (proc->get_bool_attribute(ID::always_comb))
 				log_error("Latch inferred for signal `%s.%s' from always_comb process `%s.%s'.\n",
-						db.module->name.c_str(), log_signal(lhs), db.module->name.c_str(), proc->name.c_str());
+						db.module->name, log_signal(lhs), db.module->name, proc->name);
+			else if (proc->get_bool_attribute(ID::always_latch))
+				log("Latch inferred for signal `%s.%s' from always_latch process `%s.%s': %s\n",
+						db.module->name, log_signal(lhs), db.module->name, proc->name, cell);
+			else if (policy == LatchPolicy::Error)
+				log_error("Latch inferred for signal `%s.%s' from process `%s.%s': %s\n",
+						db.module->name, log_signal(lhs), db.module->name, proc->name, cell);
+			else if (policy == LatchPolicy::Warn)
+				log_warning("Latch inferred for signal `%s.%s' from process `%s.%s': %s\n",
+						db.module->name, log_signal(lhs), db.module->name, proc->name, cell);
 			else
 				log("Latch inferred for signal `%s.%s' from process `%s.%s': %s\n",
-						db.module->name.c_str(), log_signal(lhs), db.module->name.c_str(), proc->name.c_str(), log_id(cell));
+						db.module->name, log_signal(lhs), db.module->name, proc->name, cell);
 		}
 
 		offset += width;
@@ -451,22 +721,46 @@ struct ProcDlatchPass : public Pass {
 	{
 		//   |---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|
 		log("\n");
-		log("    proc_dlatch [selection]\n");
+		log("    proc_dlatch [options] [selection]\n");
 		log("\n");
 		log("This pass identifies latches in the processes and converts them to\n");
 		log("d-type latches.\n");
+		log("\n");
+		log("    -latches <info|warn|error>\n");
+		log("        controls how the inference of a latch is reported. Alternatively, one\n");
+		log("        can use the 'proc.latches' scratchpad variable. Defaults to 'warn'.\n");
+		log("        Latches requested explicitly with 'always_latch' processes are exempt\n");
+		log("        from this policy and always reported at info level. The generated\n");
+		log("        latch cells carry the 'always_latch' attribute.\n");
 		log("\n");
 	}
 	void execute(std::vector<std::string> args, RTLIL::Design *design) override
 	{
 		log_header(design, "Executing PROC_DLATCH pass (convert process syncs to latches).\n");
 
-		extra_args(args, 1, design);
+		std::string policy_str;
+
+		size_t argidx;
+		for (argidx = 1; argidx < args.size(); argidx++) {
+			if (args[argidx] == "-latches" && argidx+1 < args.size()) {
+				policy_str = args[++argidx];
+				continue;
+			}
+			break;
+		}
+		extra_args(args, argidx, design);
+
+		if (policy_str.empty())
+			policy_str = design->scratchpad_get_string("proc.latches", "warn");
+
+		LatchPolicy policy;
+		if (!latch_policy_from_string(policy_str, policy))
+			log_cmd_error("Invalid value '%s' for -latches (expected info|warn|error).\n", policy_str);
 
 		for (auto mod : design->all_selected_modules()) {
 			proc_dlatch_db_t db(mod);
 			for (auto proc : mod->selected_processes())
-				proc_dlatch(db, proc);
+				proc_dlatch(db, proc, policy);
 			db.fixup_muxes();
 		}
 	}

@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <limits>
 #include "kernel/rtlil.h"
 
 YOSYS_NAMESPACE_BEGIN
@@ -18,7 +19,10 @@ namespace RTLIL {
 	class KernelRtlilTest : public testing::Test {
 	protected:
 		KernelRtlilTest() {
-			if (log_files.empty()) log_files.emplace_back(stdout);
+			if (logger().empty()) logger().add_sink<ConsoleLogSink>();
+		}
+		virtual void SetUp() override {
+			StaticTwines::init();
 		}
 	};
 
@@ -30,6 +34,39 @@ namespace RTLIL {
 		Const c3(c2);
 		EXPECT_TRUE(c2 == c3);
 		EXPECT_FALSE(c2 < c3);
+	}
+
+	TEST_F(KernelRtlilTest, ConstConvertibleToInt) {
+		// A Const whose minimal unsigned size is exactly 32 bits (bit 31 set)
+		// but whose full width is larger must not be reported as convertible
+		// to a (signed) int when treated as unsigned
+		{
+			// 33 bits: bits 0..31 = 1, bit 32 = 0 => value 0xffffffff
+			std::vector<State> v(33, S1);
+			v[32] = S0;
+			Const c(v);
+			EXPECT_FALSE(c.convertible_to_int(false));
+			EXPECT_EQ(c.as_int_saturating(false), std::numeric_limits<int>::max());
+			EXPECT_FALSE(c.convertible_to_int(true));
+			EXPECT_EQ(c.as_int_saturating(true), std::numeric_limits<int>::max());
+		}
+
+		{
+			// 32-bit unsigned 0x7fffffff fits in a signed int
+			std::vector<State> v(32, S1);
+			v[31] = S0;
+			Const c(v);
+			EXPECT_TRUE(c.convertible_to_int(false));
+			EXPECT_EQ(c.as_int(false), 0x7fffffff);
+		}
+
+		{
+			// 32-bit unsigned 0xffffffff does not fit in a signed int
+			std::vector<State> v(32, S1);
+			Const c(v);
+			EXPECT_FALSE(c.convertible_to_int(false));
+			EXPECT_EQ(c.as_int_saturating(false), std::numeric_limits<int>::max());
+		}
 	}
 
 	TEST_F(KernelRtlilTest, ConstStr) {
@@ -80,14 +117,322 @@ namespace RTLIL {
 			EXPECT_EQ(i, 16);
 			EXPECT_TRUE(cs1.is_str());
 
-			// It can be mutated with the bits() view
-			// and decays into unpacked
-			for (auto& bit : cs1.bits()) {
-				bit = State::Sx;
+			// It can be mutated via bit iteration and decays into unpacked
+			// when an non-defined bit is set.
+			for (auto b : cs1) {
+				b = State::Sx;
 			}
 			EXPECT_TRUE(cs1.is_bits());
 		}
 
+		{
+			Const c(0x12345678);
+			EXPECT_TRUE(c.is_str());
+			EXPECT_EQ(c.as_int(), 0x12345678);
+			EXPECT_TRUE(c.is_str());
+		}
+
+		{
+			Const c(0xab, 8);
+			EXPECT_TRUE(c.is_str());
+			EXPECT_EQ(c.as_int(), 0xab);
+			EXPECT_TRUE(c.is_str());
+		}
+
+		{
+			Const c(0x12345678, 80);
+			EXPECT_TRUE(c.is_str());
+			EXPECT_EQ(c.as_int(), 0x12345678);
+			EXPECT_EQ(c[79], S0);
+			EXPECT_TRUE(c.is_str());
+		}
+
+		{
+			Const c(-1, 80);
+			EXPECT_TRUE(c.is_str());
+			EXPECT_EQ(c.as_int(), -1);
+			EXPECT_EQ(c[79], S1);
+			EXPECT_TRUE(c.is_str());
+		}
+
+		{
+			Const c(1 << 24);
+			EXPECT_TRUE(c.is_str());
+			EXPECT_TRUE(c.as_bool());
+			EXPECT_TRUE(c.is_str());
+		}
+
+		{
+			Const c(0x2, 8);
+			EXPECT_TRUE(c.is_str());
+			EXPECT_EQ(c.as_string(), "00000010");
+			EXPECT_TRUE(c.is_str());
+		}
+
+		{
+			Const c(" ");
+			EXPECT_TRUE(c.is_str());
+			EXPECT_EQ(c.decode_string(), " ");
+			EXPECT_TRUE(c.is_str());
+		}
+
+		{
+			Const c(" ");
+			EXPECT_TRUE(c.is_str());
+			EXPECT_EQ(c.decode_string(), " ");
+			EXPECT_TRUE(c.is_str());
+		}
+
+		{
+			std::vector<State> v = {S0, S0, S0, S0, S0, S1, S0, S0};
+			Const c(v);
+			EXPECT_EQ(c.decode_string(), " ");
+		}
+
+		{
+			std::vector<State> v = {S0, S0, S0, S0, S0, S1, S0, Sx};
+			Const c(v);
+			EXPECT_EQ(c.decode_string(), " ");
+		}
+
+		{
+			Const c(" ");
+			EXPECT_TRUE(c.is_str());
+			EXPECT_FALSE(c.is_fully_zero());
+			EXPECT_TRUE(c.is_str());
+		}
+
+		{
+			Const c(" ");
+			EXPECT_TRUE(c.is_str());
+			EXPECT_FALSE(c.is_fully_ones());
+			EXPECT_TRUE(c.is_str());
+		}
+
+		{
+			Const c(" ");
+			EXPECT_TRUE(c.is_str());
+			EXPECT_TRUE(c.is_fully_def());
+			EXPECT_TRUE(c.is_str());
+		}
+
+		{
+			Const c(" ");
+			EXPECT_TRUE(c.is_str());
+			EXPECT_FALSE(c.is_fully_undef());
+			EXPECT_TRUE(c.is_str());
+		}
+
+		{
+			Const c(" ");
+			EXPECT_TRUE(c.is_str());
+			EXPECT_FALSE(c.is_fully_undef_x_only());
+			EXPECT_TRUE(c.is_str());
+		}
+
+		{
+			Const c(" ");
+			EXPECT_TRUE(c.is_str());
+			int pos;
+			EXPECT_TRUE(c.is_onehot(&pos));
+			EXPECT_EQ(pos, 5);
+			EXPECT_TRUE(c.is_str());
+		}
+	}
+
+	TEST_F(KernelRtlilTest, ConstConstIteratorWorks) {
+		const Const c(0x2, 2);
+		Const::const_iterator it = c.begin();
+		ASSERT_NE(it, c.end());
+		EXPECT_EQ(*it, State::S0);
+		++it;
+		ASSERT_NE(it, c.end());
+		EXPECT_EQ(*it, State::S1);
+		++it;
+		EXPECT_EQ(it, c.end());
+	}
+
+	TEST_F(KernelRtlilTest, ConstConstIteratorPreincrement) {
+		const Const c(0x2, 2);
+		Const::const_iterator it = c.begin();
+		EXPECT_EQ(*++it, State::S1);
+	}
+
+	TEST_F(KernelRtlilTest, ConstConstIteratorPostincrement) {
+		const Const c(0x2, 2);
+		Const::const_iterator it = c.begin();
+		EXPECT_EQ(*it++, State::S0);
+	}
+
+	TEST_F(KernelRtlilTest, ConstIteratorWorks) {
+		Const c(0x2, 2);
+		Const::iterator it = c.begin();
+		ASSERT_NE(it, c.end());
+		EXPECT_EQ(*it, State::S0);
+		++it;
+		ASSERT_NE(it, c.end());
+		EXPECT_EQ(*it, State::S1);
+		++it;
+		ASSERT_EQ(it, c.end());
+	}
+
+	TEST_F(KernelRtlilTest, ConstIteratorPreincrement) {
+		Const c(0x2, 2);
+		Const::iterator it = c.begin();
+		EXPECT_EQ(*++it, State::S1);
+	}
+
+	TEST_F(KernelRtlilTest, ConstIteratorPostincrement) {
+		Const c(0x2, 2);
+		Const::iterator it = c.begin();
+		EXPECT_EQ(*it++, State::S0);
+	}
+
+	TEST_F(KernelRtlilTest, ConstIteratorWriteWorks) {
+		Const c(0x2, 2);
+		Const::iterator it = c.begin();
+		EXPECT_EQ(*it, State::S0);
+		*it = State::S1;
+		EXPECT_EQ(*it, State::S1);
+	}
+
+	TEST_F(KernelRtlilTest, ConstBuilder) {
+		Const::Builder b;
+		EXPECT_EQ(GetSize(b), 0);
+		b.push_back(S0);
+		EXPECT_EQ(GetSize(b), 1);
+		b.push_back(S1);
+		EXPECT_EQ(GetSize(b), 2);
+		EXPECT_EQ(b.build(), Const(0x2, 2));
+	}
+
+	TEST_F(KernelRtlilTest, ConstSet) {
+		Const c(0x2, 2);
+		c.set(0, S1);
+		EXPECT_EQ(c, Const(0x3, 2));
+	}
+
+	TEST_F(KernelRtlilTest, ConstResize) {
+		Const c(0x2, 2);
+		c.resize(4, S1);
+		EXPECT_EQ(c, Const(0xe, 4));
+	}
+
+	TEST_F(KernelRtlilTest, ConstResizeWidthLimit) {
+		Const c;
+		EXPECT_DEATH(c.resize(RTLIL::WIDTH_LIMIT, Sx), "");
+		EXPECT_NO_FATAL_FAILURE(c.resize(RTLIL::WIDTH_LIMIT - 1, Sx));
+	}
+
+	TEST_F(KernelRtlilTest, ConstFromLongLongWidthLimit) {
+		EXPECT_DEATH(Const(0, RTLIL::WIDTH_LIMIT), "");
+		EXPECT_NO_FATAL_FAILURE(Const(0, RTLIL::WIDTH_LIMIT - 1));
+	}
+
+	TEST_F(KernelRtlilTest, ConstFromStateWidthLimit) {
+		EXPECT_DEATH(Const(Sx, RTLIL::WIDTH_LIMIT), "");
+		EXPECT_NO_FATAL_FAILURE(Const(Sx, RTLIL::WIDTH_LIMIT - 1));
+	}
+
+	TEST_F(KernelRtlilTest, ModuleAddWireWidthLimit) {
+		std::unique_ptr<Design> design = std::make_unique<Design>();
+		Module *mod = design->addModule("$test_mod");
+		EXPECT_DEATH(mod->addWire("\\test", RTLIL::WIDTH_LIMIT), "");
+		EXPECT_NO_FATAL_FAILURE(mod->addWire("\\test2", RTLIL::WIDTH_LIMIT - 1));
+	}
+
+	TEST_F(KernelRtlilTest, ConstEqualStr) {
+		EXPECT_EQ(Const("abc"), Const("abc"));
+		EXPECT_NE(Const("abc"), Const("def"));
+	}
+
+	TEST_F(KernelRtlilTest, ConstEqualBits) {
+		std::vector<State> v1 = {S0, S1};
+		std::vector<State> v2 = {S1, S0};
+		EXPECT_EQ(Const(v1), Const(v1));
+		EXPECT_NE(Const(v1), Const(v2));
+	}
+
+	TEST_F(KernelRtlilTest, ConstEqualStrBits) {
+		std::vector<State> v1 = {S0, S0, S0, S0, S0, S1, S0, S0};
+		EXPECT_EQ(Const(v1), Const(" "));
+		EXPECT_NE(Const(v1), Const("a"));
+	}
+
+	static Hasher::hash_t hash(const Const &c) {
+		Hasher h;
+		h = c.hash_into(h);
+		return h.yield();
+	}
+
+	TEST_F(KernelRtlilTest, ConstEqualHashStrBits) {
+		std::vector<State> v1 = {S0, S0, S0, S0, S0, S1, S0, S0};
+		EXPECT_EQ(hash(Const(v1)), hash(Const(" ")));
+		EXPECT_NE(hash(Const(v1)), hash(Const("a")));
+	}
+
+	TEST_F(KernelRtlilTest, ConstIsFullyZero) {
+		EXPECT_TRUE(Const(0, 8).is_fully_zero());
+		EXPECT_FALSE(Const(8, 8).is_fully_zero());
+		EXPECT_TRUE(Const().is_fully_zero());
+	}
+
+	TEST_F(KernelRtlilTest, ConstIsFullyOnes) {
+		EXPECT_TRUE(Const(0xf, 4).is_fully_ones());
+		EXPECT_FALSE(Const(3, 4).is_fully_ones());
+		EXPECT_TRUE(Const().is_fully_ones());
+	}
+
+	TEST_F(KernelRtlilTest, ConstIsFullyDef) {
+		EXPECT_TRUE(Const(0xf, 4).is_fully_def());
+		std::vector<State> v1 = {S0, Sx};
+		EXPECT_FALSE(Const(v1).is_fully_def());
+		EXPECT_TRUE(Const().is_fully_def());
+	}
+
+	TEST_F(KernelRtlilTest, ConstIsFullyUndef) {
+		std::vector<State> v1 = {S0, Sx};
+		EXPECT_FALSE(Const(v1).is_fully_undef());
+		EXPECT_TRUE(Const(Sz, 2).is_fully_undef());
+		EXPECT_TRUE(Const().is_fully_undef());
+	}
+
+	TEST_F(KernelRtlilTest, ConstIsFullyUndefXOnly) {
+		std::vector<State> v1 = {Sx, Sz};
+		EXPECT_FALSE(Const(v1).is_fully_undef_x_only());
+		EXPECT_TRUE(Const(Sx, 2).is_fully_undef_x_only());
+		EXPECT_TRUE(Const().is_fully_undef_x_only());
+	}
+
+	TEST_F(KernelRtlilTest, ConstIsOnehot) {
+		int pos;
+		EXPECT_TRUE(Const(0x80, 8).is_onehot(&pos));
+		EXPECT_EQ(pos, 7);
+		EXPECT_FALSE(Const(0x82, 8).is_onehot(&pos));
+		EXPECT_FALSE(Const(0, 8).is_onehot(&pos));
+		EXPECT_TRUE(Const(1, 1).is_onehot(&pos));
+		EXPECT_EQ(pos, 0);
+		EXPECT_FALSE(Const(Sx, 1).is_onehot(&pos));
+		std::vector<State> v1 = {Sx, S1};
+		EXPECT_FALSE(Const(v1).is_onehot(&pos));
+		EXPECT_FALSE(Const().is_onehot(&pos));
+	}
+
+	TEST_F(KernelRtlilTest, LookupAutoidxId) {
+		TwinePool twines;
+		IdString id = twines.add(NEW_ID);
+		EXPECT_EQ(twines.find(twines.str(id)), id);
+	}
+
+	TEST_F(KernelRtlilTest, NewIdBeginsWith) {
+		TwinePool twines;
+		std::string id = twines.str(twines.add(NEW_ID));
+		EXPECT_TRUE(id.starts_with("$auto"));
+		EXPECT_FALSE(id.starts_with("xyz"));
+		EXPECT_TRUE(id.starts_with("$auto$"));
+		EXPECT_FALSE(id.starts_with("abcdefghijklmn"));
+		EXPECT_TRUE(id.starts_with("$auto$rtlilTest"));
+		EXPECT_FALSE(id.starts_with("$auto$rtlilX"));
 	}
 
 	class WireRtlVsHdlIndexConversionTest :
@@ -116,8 +461,9 @@ namespace RTLIL {
 	);
 
 	TEST_P(WireRtlVsHdlIndexConversionTest, WireRtlVsHdlIndexConversion) {
-		std::unique_ptr<Module> mod = std::make_unique<Module>();
-		Wire *wire = mod->addWire(ID(test), 10);
+		std::unique_ptr<Design> design = std::make_unique<Design>();
+		Module *mod = design->addModule("$test_mod");
+		Wire *wire = mod->addWire("\\test", 10);
 
 		auto [upto, start_offset, width] = GetParam();
 

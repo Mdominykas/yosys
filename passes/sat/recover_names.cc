@@ -23,6 +23,7 @@
 #include "kernel/celltypes.h"
 #include "kernel/utils.h"
 #include "kernel/satgen.h"
+#include "kernel/log_help.h"
 
 #include <algorithm>
 #include <queue>
@@ -206,7 +207,7 @@ struct RecoverModuleWorker {
     void compute_depths(const dict<IdBit, IdBit> &anchor_bits)
     {
         dict<SigBit, pool<IdString>> bit_drivers, bit_users;
-        TopoSort<IdString, RTLIL::sort_by_id_str> toposort;
+        TopoSort<IdString, RTLIL::sort_by_id_str> toposort(RTLIL::sort_by_id_str(flat->twines()));
 
         for (auto cell : flat->cells())
         for (auto conn : cell->connections())
@@ -379,11 +380,11 @@ struct RecoverModuleWorker {
             if (root2buffered.count(gate_bit)) {
                 int buf_idx = 0;
                 for (auto buf_bit : root2buffered.at(gate_bit)) {
-                    std::string buf_name_str = stringf("%s_buf_%d", pair.second.bit.name.c_str(), ++buf_idx);
+                    std::string buf_name_str = stringf("%s_buf_%d", design->twines().str(pair.second.bit.name), ++buf_idx);
                     if (buf_name_str[0] == '\\')
                         buf_name_str[0] = '$';
                     rename_map[buf_bit] = std::make_pair(
-                        InvBit(IdBit(IdString(buf_name_str), pair.second.bit.bit), pair.second.inverted), gold_wire);
+                        InvBit(IdBit(design->twines().add(buf_name_str), pair.second.bit.bit), pair.second.inverted), gold_wire);
                 }
             }
         }
@@ -395,11 +396,11 @@ struct RecoverModuleWorker {
             bool must_invert_name = rule.second.first.inverted;
             while (must_invert_name ||
                     (mod->wire(new_name.name) && !unused_bits.count(SigBit(mod->wire(new_name.name), new_name.bit)))) {
-                std::string new_name_str = stringf("%s_%s_%d", rule.second.first.bit.name.c_str(),
+                std::string new_name_str = stringf("%s_%s_%d", design->twines().str(rule.second.first.bit.name),
                     rule.second.first.inverted ? "inv" : "dup", ++dup_idx);
                 if (new_name_str[0] == '\\')
                     new_name_str[0] = '$';
-                new_name.name = IdString(new_name_str);
+                new_name.name = design->twines().add(new_name_str);
                 must_invert_name = false;
             }
             // Create the wire if needed
@@ -444,7 +445,8 @@ struct RecoverModuleWorker {
 };
 
 struct RecoverNamesWorker {
-    Design *design, *gold_design = nullptr;
+    Design *design;
+    Design gold_design;
     CellTypes ct_all;
     RecoverNamesWorker(Design *design) : design(design) {}
 
@@ -563,7 +565,7 @@ struct RecoverNamesWorker {
 
     void analyse_mod(Module *gate_mod)
     {
-        Module *gold_mod = gold_design->module(gate_mod->name);
+        Module *gold_mod = gold_design.module(gate_mod->name);
         if (!gold_mod)
             return;
 
@@ -640,8 +642,8 @@ struct RecoverNamesWorker {
                 for (auto gate_bit : gate_bits) {
                     if (solved_gate.count(gate_bit.bit))
                         continue;
-                    log_debug("   attempting to prove %s[%d] == %s%s[%d]\n", log_id(gold_bit.name), gold_bit.bit,
-                        gate_bit.inverted ? "" : "!", log_id(gate_bit.bit.name), gate_bit.bit.bit);
+                    log_debug("   attempting to prove %s[%d] == %s%s[%d]\n", PooledName(design, gold_bit.name).unescape(), gold_bit.bit,
+                        gate_bit.inverted ? "" : "!", PooledName(design, gate_bit.bit.name).unescape(), gate_bit.bit.bit);
                     if (!prove_equiv(gold_worker, gate_worker, gold_anchors, gate_anchors, gold_bit, gate_bit.bit, gate_bit.inverted))
                         continue;
                     log_debug("       success!\n");
@@ -659,17 +661,15 @@ struct RecoverNamesWorker {
                     break;
             }
         }
-        log("Recovered %d net name pairs in module `%s' out.\n", GetSize(gate2gold), log_id(gate_mod));
+        log("Recovered %d net name pairs in module `%s' out.\n", GetSize(gate2gold), gate_mod);
         gate_worker.do_rename(gold_mod, gate2gold, buffer_types);
     }
 
     void operator()(string command)
     {
         // Make a backup copy of the pre-mapping design for later
-        gold_design = new RTLIL::Design;
-
         for (auto mod : design->modules())
-            gold_design->add(mod->clone());
+            gold_design.add(mod->clone());
 
         run_pass(command, design);
 
@@ -683,13 +683,15 @@ struct RecoverNamesWorker {
         for (auto mod : to_analyse)
             analyse_mod(mod);
     }
-    ~RecoverNamesWorker() {
-        delete gold_design;
-    }
 };
 
 struct RecoverNamesPass : public Pass {
     RecoverNamesPass() : Pass("recover_names", "Execute a lossy mapping command and recover original netnames") { }
+	bool formatted_help() override {
+		auto *help = PrettyHelp::get_current();
+		help->set_group("passes/opt");
+		return false;
+	}
     void help() override
     {
         //   |---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|

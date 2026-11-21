@@ -24,12 +24,15 @@ warn_iverilog_git=false
 firrtl2verilog=""
 xfirrtl="../xfirrtl"
 abcprog="$toolsdir/../../yosys-abc"
+yosysprog="$toolsdir/../../yosys"
 
+exec {lock}<"$toolsdir"; flock "$lock" 1>&2
 if [ ! -f "$toolsdir/cmp_tbdata" -o "$toolsdir/cmp_tbdata.c" -nt "$toolsdir/cmp_tbdata" ]; then
-	( set -ex; ${CC:-gcc} -Wall -o "$toolsdir/cmp_tbdata" "$toolsdir/cmp_tbdata.c"; ) || exit 1
+	( set -ex; ${CXX:-g++} -Wall ${CPPFLAGS} ${CXXFLAGS:-} -o "$toolsdir/cmp_tbdata" "$toolsdir/cmp_tbdata.c"; ) || exit 1
 fi
+flock -u "$lock"; exec {lock}>&-
 
-while getopts xmGl:wkjvref:s:p:n:S:I:A:-: opt; do
+while getopts xmGl:wkjvref:s:p:n:S:I:A:Y:-: opt; do
 	case "$opt" in
 		x)
 			use_xsim=true ;;
@@ -68,6 +71,8 @@ while getopts xmGl:wkjvref:s:p:n:S:I:A:-: opt; do
 			minclude_opts="$minclude_opts +incdir+$OPTARG" ;;
 		A)
 			abcprog="$OPTARG" ;;
+		Y)
+			yosysprog="$OPTARG" ;;
 		-)
 			case "${OPTARG}" in
 			    xfirrtl)
@@ -148,7 +153,7 @@ do
 
 		rm -f ${bn}_ref.fir
 		if [[ "$ext" == "v" ]]; then
-			egrep -v '^\s*`timescale' ../$fn > ${bn}_ref.${ext}
+			grep -Ev '^\s*`timescale' ../$fn > ${bn}_ref.${ext}
 		elif [[ "$ext" == "aig" ]] || [[ "$ext" == "aag" ]]; then
 			$abcprog -c "read_aiger ../${fn}; write ${bn}_ref.${refext}"
 		else
@@ -157,25 +162,29 @@ do
 		fi
 
 		if [ ! -f ../${bn}_tb.v ]; then
-			"$toolsdir"/../../yosys -f "$frontend $include_opts -D_AUTOTB" -b "test_autotb $autotb_opts" -o ${bn}_tb.v ${bn}_ref.${refext}
+			$yosysprog -f "$frontend $include_opts -D_AUTOTB" -b "test_autotb $autotb_opts" -o ${bn}_tb.v ${bn}_ref.${refext}
 		else
 			cp ../${bn}_tb.v ${bn}_tb.v
 		fi
 		if $genvcd; then sed -i 's,// \$dump,$dump,g' ${bn}_tb.v; fi
+		touch ${bn}.iverilog
 		compile_and_run ${bn}_tb_ref ${bn}_out_ref ${bn}_tb.v ${bn}_ref.${refext} "${libs[@]}" \
 					"$toolsdir"/../../techlibs/common/simlib.v \
 					"$toolsdir"/../../techlibs/common/simcells.v
+		rm ${bn}.iverilog
 		if $genvcd; then mv testbench.vcd ${bn}_ref.vcd; fi
 
 		test_count=0
 		test_passes() {
-			"$toolsdir"/../../yosys -b "verilog $backend_opts" -o ${bn}_syn${test_count}.v "$@"
+			$yosysprog -b "verilog $backend_opts" -o ${bn}_syn${test_count}.v "$@"
+			touch ${bn}.iverilog
 			compile_and_run ${bn}_tb_syn${test_count} ${bn}_out_syn${test_count} \
 					${bn}_tb.v ${bn}_syn${test_count}.v "${libs[@]}" \
 					"$toolsdir"/../../techlibs/common/simlib.v \
 					"$toolsdir"/../../techlibs/common/simcells.v
 			if $genvcd; then mv testbench.vcd ${bn}_syn${test_count}.vcd; fi
 			"$toolsdir/cmp_tbdata" ${bn}_out_ref ${bn}_out_syn${test_count}
+			rm ${bn}.iverilog
 			test_count=$(( test_count + 1 ))
 		}
 
@@ -197,7 +206,7 @@ do
 			test_passes -f "$frontend $include_opts" -p "hierarchy; synth -run coarse; techmap; opt; abc -dff" ${bn}_ref.${refext}
 			if [ -n "$firrtl2verilog" ]; then
 			    if test -z "$xfirrtl" || ! grep "$fn" "$xfirrtl" ; then
-				"$toolsdir"/../../yosys -b "firrtl" -o ${bn}_ref.fir -f "$frontend $include_opts" -p "prep; proc; opt -nodffe -nosdff; fsm; opt; memory; opt -full -fine; pmuxtree" ${bn}_ref.${refext}
+				$yosysprog -b "firrtl" -o ${bn}_ref.fir -f "$frontend $include_opts" -p "prep; proc; opt -nodffe -nosdff; fsm; opt; memory; opt -full -fine; pmuxtree" ${bn}_ref.${refext}
 				$firrtl2verilog -i ${bn}_ref.fir -o ${bn}_ref.fir.v
 				test_passes -f "$frontend $include_opts" -p "hierarchy; proc; opt -nodffe -nosdff; fsm; opt; memory; opt -full -fine" ${bn}_ref.fir.v
 			    fi
@@ -227,8 +236,11 @@ do
 	else
 		echo "${status_prefix}${did_firrtl}-> ERROR!"
 		if $warn_iverilog_git; then
-			echo "Note: Make sure that 'iverilog' is an up-to-date git checkout of Icarus Verilog."
+			if [ -f ${bn}.out/${bn}.iverilog ]; then
+				echo "Note: Make sure that 'iverilog' is an up-to-date git checkout of Icarus Verilog."
+			fi
 		fi
+		sed -e "s,^,${bn}: ," ${bn}.err
 		$keeprunning || exit 1
 	fi
 done

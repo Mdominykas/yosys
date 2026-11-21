@@ -74,11 +74,10 @@ struct DffunmapPass : public Pass {
 
 			for (auto cell : mod->selected_cells())
 			{
-				if (!RTLIL::builtin_ff_cell_types().count(cell->type))
+				if (!cell->is_builtin_ff())
 					continue;
 
 				FfData ff(&initvals, cell);
-				IdString name = cell->name;
 
 				if (!ff.has_clk)
 					continue;

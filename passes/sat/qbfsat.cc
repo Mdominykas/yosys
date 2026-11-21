@@ -18,6 +18,7 @@
  */
 
 #include "kernel/yosys.h"
+#include "kernel/log_help.h"
 #include "kernel/consteval.h"
 #include "qbfsat.h"
 
@@ -46,11 +47,11 @@ pool<std::string> validate_design_and_get_inputs(RTLIL::Module *module, bool ass
 			found_1bit_output = true;
 	}
 	for (auto cell : module->cells()) {
-		if (cell->type == "$allconst")
+		if (cell->type == ID($allconst))
 			found_input = true;
-		if (cell->type == "$anyconst")
+		if (cell->type == ID($anyconst))
 			found_hole = true;
-		if (cell->type.in("$assert", "$assume"))
+		if (cell->type.in(ID($assert), ID($assume)))
 			found_assert_assume = true;
 	}
 	if (!found_input)
@@ -86,7 +87,7 @@ void specialize_from_file(RTLIL::Module *module, const std::string &file) {
 		if (!std::regex_search(buf, bit_m, hole_bit_assn_regex)) {
 			bit_assn = false;
 			if (!std::regex_search(buf, m, hole_assn_regex))
-				log_cmd_error("solution file is not formatted correctly: \"%s\"\n", buf.c_str());
+				log_cmd_error("solution file is not formatted correctly: \"%s\"\n", buf);
 		}
 
 		std::string hole_loc = bit_assn? bit_m[1].str() : m[1].str();
@@ -107,7 +108,7 @@ void specialize_from_file(RTLIL::Module *module, const std::string &file) {
 			pool<std::string> hole_loc_pool(locs.begin(), locs.end());
 			auto hole_cell_it = anyconst_loc_to_cell.find(hole_loc_pool);
 			if (hole_cell_it == anyconst_loc_to_cell.end())
-				log_cmd_error("cannot find matching wire name or $anyconst cell location for hole spec \"%s\"\n", buf.c_str());
+				log_cmd_error("cannot find matching wire name or $anyconst cell location for hole spec \"%s\"\n", buf);
 
 			RTLIL::Cell *hole_cell = hole_cell_it->second;
 			hole_sigbit = hole_cell->getPort(ID::Y)[hole_bit];
@@ -121,7 +122,7 @@ void specialize_from_file(RTLIL::Module *module, const std::string &file) {
 	for (auto &it : hole_assignments) {
 		RTLIL::SigSpec lhs(it.first);
 		RTLIL::SigSpec rhs(it.second);
-		log("Specializing %s from file with %s = %d.\n", module->name.c_str(), log_signal(it.first), it.second == RTLIL::State::S1? 1 : 0);
+		log("Specializing %s from file with %s = %d.\n", module->name, log_signal(it.first), it.second == RTLIL::State::S1? 1 : 0);
 		module->connect(lhs, rhs);
 	}
 }
@@ -150,7 +151,7 @@ void specialize(RTLIL::Module *module, const QbfSolutionType &sol, bool quiet = 
 			RTLIL::SigSpec lhs(hole_sigbit.wire, hole_sigbit.offset, 1);
 			RTLIL::State hole_bit_val = hole_value[bit_idx] == '1'? RTLIL::State::S1 : RTLIL::State::S0;
 			if (!quiet)
-				log("Specializing %s with %s = %d.\n", module->name.c_str(), log_signal(hole_sigbit), hole_bit_val == RTLIL::State::S0? 0 : 1)
+				log("Specializing %s with %s = %d.\n", module->name, log_signal(hole_sigbit), hole_bit_val == RTLIL::State::S0? 0 : 1)
 ;
 			module->connect(lhs, hole_bit_val);
 		}
@@ -162,12 +163,12 @@ void allconstify_inputs(RTLIL::Module *module, const pool<std::string> &input_wi
 		RTLIL::Wire *input = module->wire(n);
 		log_assert(input != nullptr);
 
-		RTLIL::Cell *allconst = module->addCell("$allconst$" + n, "$allconst");
+		RTLIL::Cell *allconst = module->addCell("$allconst$" + n, ID($allconst));
 		allconst->setParam(ID(WIDTH), input->width);
 		allconst->setPort(ID::Y, input);
 		allconst->set_src_attribute(input->get_src_attribute());
 		input->port_input = false;
-		log("Replaced input %s with $allconst cell.\n", n.c_str());
+		log("Replaced input %s with $allconst cell.\n", n);
 	}
 	module->fixup_ports();
 }
@@ -181,10 +182,10 @@ void assume_miter_outputs(RTLIL::Module *module, bool assume_neg) {
 	if (wires_to_assume.size() == 0)
 		return;
 	else {
-		log("Adding $assume cell for output(s): ");
+		std::string message = "Adding $assume cell for output(s): ";
 		for (auto w : wires_to_assume)
-			log("\"%s\" ", w->name.c_str());
-		log("\n");
+			message += stringf("\"%s\" ", w->name);
+		log("%s\n", message);
 	}
 
 	if (assume_neg) {
@@ -217,28 +218,28 @@ QbfSolutionType call_qbf_solver(RTLIL::Module *mod, const QbfSolveOptions &opt, 
 	const std::string yosys_smtbmc_exe = proc_self_dirname() + "yosys-smtbmc";
 	const std::string smtbmc_warning = "z3: WARNING:";
 	const std::string smtbmc_cmd = stringf("\"%s\" -s %s %s -t 1 -g --binary %s %s/problem%d.smt2 2>&1",
-			yosys_smtbmc_exe.c_str(), opt.get_solver_name().c_str(),
-			(opt.timeout != 0? stringf("--timeout %d", opt.timeout) : "").c_str(),
-			(opt.dump_final_smt2? "--dump-smt2 " + opt.dump_final_smt2_file : "").c_str(),
-			tempdir_name.c_str(), iter_num);
+			yosys_smtbmc_exe, opt.get_solver_name(),
+			(opt.timeout != 0? stringf("--timeout %d", opt.timeout) : ""),
+			(opt.dump_final_smt2? "--dump-smt2 " + opt.dump_final_smt2_file : ""),
+			tempdir_name, iter_num);
 
 	std::string smt2_command = "write_smt2 -stbv -wires ";
 	for (auto &solver_opt : opt.solver_options)
-		smt2_command += stringf("-solver-option %s %s ", solver_opt.first.c_str(), solver_opt.second.c_str());
-	smt2_command += stringf("%s/problem%d.smt2", tempdir_name.c_str(), iter_num);
+		smt2_command += stringf("-solver-option %s %s ", solver_opt.first, solver_opt.second);
+	smt2_command += stringf("%s/problem%d.smt2", tempdir_name, iter_num);
 	Pass::call(mod->design, smt2_command);
 
 	auto process_line = [&ret, &smtbmc_warning, &opt, &quiet](const std::string &line) {
 		ret.stdout_lines.push_back(line.substr(0, line.size()-1)); //don't include trailing newline
 		auto warning_pos = line.find(smtbmc_warning);
 		if (warning_pos != std::string::npos)
-			log_warning("%s", line.substr(warning_pos + smtbmc_warning.size() + 1).c_str());
+			log_warning("%s", line.substr(warning_pos + smtbmc_warning.size() + 1));
 		else
 			if (opt.show_smtbmc && !quiet)
-				log("smtbmc output: %s", line.c_str());
+				log("smtbmc output: %s", line);
 	};
 	log_header(mod->design, "Solving QBF-SAT problem.\n");
-	if (!quiet) log("Launching \"%s\".\n", smtbmc_cmd.c_str());
+	if (!quiet) log("Launching \"%s\".\n", smtbmc_cmd);
 	int64_t begin = PerformanceTimer::query();
 	run_command(smtbmc_cmd, process_line);
 	int64_t end = PerformanceTimer::query();
@@ -254,8 +255,8 @@ QbfSolutionType qbf_solve(RTLIL::Module *mod, const QbfSolveOptions &opt) {
 	const std::string tempdir_name = make_temp_dir(get_base_tmpdir() + "/yosys-qbfsat-XXXXXX");
 	RTLIL::Module *module = mod;
 	RTLIL::Design *design = module->design;
-	std::string module_name = module->name.str();
-	RTLIL::IdString wire_to_optimize_name = "";
+	IdString module_name = module->name;
+	RTLIL::IdString wire_to_optimize_name;
 	bool maximize = false;
 	log_assert(module->design != nullptr);
 
@@ -269,14 +270,14 @@ QbfSolutionType qbf_solve(RTLIL::Module *mod, const QbfSolveOptions &opt) {
 
 	//Find the wire to be optimized, if any:
 	for (auto wire : module->wires()) {
-		if (wire->get_bool_attribute("\\maximize") || wire->get_bool_attribute("\\minimize")) {
+		if (wire->get_bool_attribute(ID::maximize) || wire->get_bool_attribute(ID::minimize)) {
 			wire_to_optimize_name = wire->name;
-			maximize = wire->get_bool_attribute("\\maximize");
+			maximize = wire->get_bool_attribute(ID::maximize);
 			if (opt.nooptimize) {
 				if (maximize)
-					wire->set_bool_attribute("\\maximize", false);
+					wire->set_bool_attribute(ID::maximize, false);
 				else
-					wire->set_bool_attribute("\\minimize", false);
+					wire->set_bool_attribute(ID::minimize, false);
 			}
 		}
 	}
@@ -291,7 +292,7 @@ QbfSolutionType qbf_solve(RTLIL::Module *mod, const QbfSolveOptions &opt) {
 		Pass::call(module->design, "opt");
 	}
 
-	if (opt.nobisection || opt.nooptimize || wire_to_optimize_name == "") {
+	if (opt.nobisection || opt.nooptimize || wire_to_optimize_name == IdString::Null) {
 		ret = call_qbf_solver(module, opt, tempdir_name, false, 0);
 	} else {
 		//Do the iterated bisection method:
@@ -300,9 +301,9 @@ QbfSolutionType qbf_solve(RTLIL::Module *mod, const QbfSolveOptions &opt) {
 		unsigned int failure = 0;
 		unsigned int cur_thresh = 0;
 
-		log_assert(wire_to_optimize_name != "");
+		log_assert(wire_to_optimize_name != IdString::Null);
 		log_assert(module->wire(wire_to_optimize_name) != nullptr);
-		log("%s wire \"%s\".\n", (maximize? "Maximizing" : "Minimizing"), wire_to_optimize_name.c_str());
+		log("%s wire \"%s\".\n", (maximize? "Maximizing" : "Minimizing"), design->twines().str(wire_to_optimize_name));
 
 		//If maximizing, grow until we get a failure.  Then bisect success and failure.
 		while (failure == 0 || difference(success, failure) > 1) {
@@ -314,8 +315,8 @@ QbfSolutionType qbf_solve(RTLIL::Module *mod, const QbfSolveOptions &opt) {
 				RTLIL::SigSpec comparator = maximize? module->Ge(NEW_ID, module->wire(wire_to_optimize_name), RTLIL::Const(cur_thresh), false)
 				                                    : module->Le(NEW_ID, module->wire(wire_to_optimize_name), RTLIL::Const(cur_thresh), false);
 
-				module->addAssume(wire_to_optimize_name.str() + "__threshold", comparator, RTLIL::Const(1, 1));
-				log("Trying to solve with %s %s %d.\n", wire_to_optimize_name.c_str(), (maximize? ">=" : "<="), cur_thresh);
+				module->addAssume(design->twines().str(wire_to_optimize_name) + "__threshold", comparator, RTLIL::Const(1, 1));
+				log("Trying to solve with %s %s %d.\n", design->twines().str(wire_to_optimize_name), (maximize? ">=" : "<="), cur_thresh);
 			}
 
 			ret = call_qbf_solver(module, opt, tempdir_name, false, iter_num);
@@ -327,16 +328,17 @@ QbfSolutionType qbf_solve(RTLIL::Module *mod, const QbfSolveOptions &opt) {
 				specialize(module, ret, true);
 
 				RTLIL::SigSpec wire, value, undef;
-				RTLIL::SigSpec::parse_sel(wire, design, module, wire_to_optimize_name.str());
+				RTLIL::SigSpec::parse_sel(wire, design, module, design->twines().str(wire_to_optimize_name));
 
 				ConstEval ce(module);
+				ce.model_barriers = true;
 				value = wire;
 				if (!ce.eval(value, undef))
 					log_cmd_error("Failed to evaluate signal %s: Missing value for %s.\n", log_signal(wire), log_signal(undef));
 				log_assert(value.is_fully_const());
 				success = value.as_const().as_int();
 				best_soln = ret;
-				log("Problem is satisfiable with %s = %d.\n", wire_to_optimize_name.c_str(), success);
+				log("Problem is satisfiable with %s = %d.\n", design->twines().str(wire_to_optimize_name), success);
 				Pass::call(design, "design -pop");
 				module = design->module(module_name);
 
@@ -354,7 +356,7 @@ QbfSolutionType qbf_solve(RTLIL::Module *mod, const QbfSolveOptions &opt) {
 					break;
 				}
 				else
-					log("Problem is NOT satisfiable with %s %s %d.\n", wire_to_optimize_name.c_str(), (maximize? ">=" : "<="), failure);
+					log("Problem is NOT satisfiable with %s %s %d.\n", design->twines().str(wire_to_optimize_name), (maximize? ">=" : "<="), failure);
 			}
 
 			iter_num++;
@@ -366,7 +368,7 @@ QbfSolutionType qbf_solve(RTLIL::Module *mod, const QbfSolveOptions &opt) {
 				cur_thresh = (success + failure) / 2; //bisection
 		}
 		if (success != 0 || failure != 0) {
-			log("Wire %s is %s at %d.\n", wire_to_optimize_name.c_str(), (maximize? "maximized" : "minimized"), success);
+			log("Wire %s is %s at %d.\n", design->twines().str(wire_to_optimize_name), (maximize? "maximized" : "minimized"), success);
 			ret = best_soln;
 		}
 	}
@@ -419,7 +421,7 @@ QbfSolveOptions parse_args(const std::vector<std::string> &args) {
 				else if (args[opt.argidx+1] == "cvc5")
 					opt.solver = opt.Solver::CVC5;
 				else
-					log_cmd_error("Unknown solver \"%s\".\n", args[opt.argidx+1].c_str());
+					log_cmd_error("Unknown solver \"%s\".\n", args[opt.argidx+1]);
 				opt.argidx++;
 			}
 			continue;
@@ -456,7 +458,7 @@ QbfSolveOptions parse_args(const std::vector<std::string> &args) {
 					opt.oflag = opt.OptimizationLevel::O2;
 				break;
 				default:
-					log_cmd_error("unknown argument %s\n", args[opt.argidx].c_str());
+					log_cmd_error("unknown argument %s\n", args[opt.argidx]);
 			}
 			continue;
 		}
@@ -504,6 +506,11 @@ QbfSolveOptions parse_args(const std::vector<std::string> &args) {
 
 struct QbfSatPass : public Pass {
 	QbfSatPass() : Pass("qbfsat", "solve a 2QBF-SAT problem in the circuit") { }
+	bool formatted_help() override {
+		auto *help = PrettyHelp::get_current();
+		help->set_group("formal");
+		return false;
+	}
 	void help() override
 	{
 		//   |---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|
@@ -591,7 +598,7 @@ struct QbfSatPass : public Pass {
 		RTLIL::Module *module = nullptr;
 		for (auto mod : design->selected_modules()) {
 			if (module)
-				log_cmd_error("Only one module must be selected for the QBF-SAT pass! (selected: %s and %s)\n", log_id(module), log_id(mod));
+				log_cmd_error("Only one module must be selected for the QBF-SAT pass! (selected: %s and %s)\n", module, mod);
 			module = mod;
 		}
 		if (module == nullptr)
@@ -600,7 +607,7 @@ struct QbfSatPass : public Pass {
 		log_push();
 		if (!opt.specialize_from_file) {
 			//Save the design to restore after modiyfing the current module.
-			std::string module_name = module->name.str();
+			IdString module_name = module->name;
 
 			QbfSolutionType ret = qbf_solve(module, opt);
 			module = design->module(module_name);

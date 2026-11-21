@@ -321,11 +321,12 @@ struct Pmux2ShiftxPass : public Pass {
 
 					bits.sort();
 					pair<SigSpec, Const> entry;
-
+					RTLIL::Const::Builder entry_bits_builder(GetSize(bits));
 					for (auto it : bits) {
 						entry.first.append(it.first);
-						entry.second.bits().push_back(it.second);
+						entry_bits_builder.push_back(it.second);
 					}
+					entry.second = entry_bits_builder.build();
 
 					eqdb[sigmap(cell->getPort(ID::Y)[0])] = entry;
 					goto next_cell;
@@ -342,11 +343,12 @@ struct Pmux2ShiftxPass : public Pass {
 
 					bits.sort();
 					pair<SigSpec, Const> entry;
-
+					RTLIL::Const::Builder entry_bits_builder(GetSize(bits));
 					for (auto it : bits) {
 						entry.first.append(it.first);
-						entry.second.bits().push_back(it.second);
+						entry_bits_builder.push_back(it.second);
 					}
+					entry.second = entry_bits_builder.build();
 
 					eqdb[sigmap(cell->getPort(ID::Y)[0])] = entry;
 					goto next_cell;
@@ -388,7 +390,7 @@ struct Pmux2ShiftxPass : public Pass {
 
 				if (verbose) {
 					printed_pmux_header = true;
-					log("Inspecting $pmux cell %s/%s.\n", log_id(module), log_id(cell));
+					log("Inspecting $pmux cell %s/%s.\n", module, cell);
 					log("  data width: %d (next power-of-2 = %d, log2 = %d)\n", width, extwidth, width_bits);
 				}
 
@@ -439,7 +441,7 @@ struct Pmux2ShiftxPass : public Pass {
 
 					if (!printed_pmux_header) {
 						printed_pmux_header = true;
-						log("Inspecting $pmux cell %s/%s.\n", log_id(module), log_id(cell));
+						log("Inspecting $pmux cell %s/%s.\n", module, cell);
 						log("  data width: %d (next power-of-2 = %d, log2 = %d)\n", width, extwidth, width_bits);
 					}
 
@@ -591,7 +593,7 @@ struct Pmux2ShiftxPass : public Pass {
 
 							used_src_columns[best_src_col] = true;
 							perm_new_from_old[dst_col] = best_src_col;
-							perm_xormask.bits()[dst_col] = best_inv ? State::S1 : State::S0;
+							perm_xormask.set(dst_col, best_inv ? State::S1 : State::S0);
 						}
 					}
 
@@ -614,7 +616,7 @@ struct Pmux2ShiftxPass : public Pass {
 						Const new_c(State::S0, GetSize(old_c));
 
 						for (int i = 0; i < GetSize(old_c); i++)
-							new_c.bits()[i] = old_c[perm_new_from_old[i]];
+							new_c.set(i, old_c[perm_new_from_old[i]]);
 
 						Const new_c_before_xor = new_c;
 						new_c = const_xor(new_c, perm_xormask, false, false, GetSize(new_c));
@@ -687,7 +689,7 @@ struct Pmux2ShiftxPass : public Pass {
 					if (!full_case) {
 						Const enable_mask(State::S0, max_choice+1);
 						for (auto &it : perm_choices)
-							enable_mask.bits()[it.first.as_int()] = State::S1;
+							enable_mask.set(it.first.as_int(), State::S1);
 						en = module->addWire(NEW_ID);
 						module->addShift(NEW_ID, enable_mask, cmp, en, false, src);
 					}
@@ -712,7 +714,7 @@ struct Pmux2ShiftxPass : public Pass {
 					Cell *c = module->addShiftx(NEW_ID, data, shifted_cmp, outsig, false, src);
 					updated_S.append(en);
 					updated_B.append(outsig);
-					log("    created $shiftx cell %s.\n", log_id(c));
+					log("    created $shiftx cell %s.\n", c);
 
 					// remove this sig and continue with the next block
 					seldb.erase(sig);
@@ -797,7 +799,7 @@ struct OnehotPass : public Pass {
 					continue;
 
 				if (verbose)
-					log("Checking $eq(%s, %s) cell %s/%s.\n", log_signal(A), log_signal(B), log_id(module), log_id(cell));
+					log("Checking $eq(%s, %s) cell %s/%s.\n", log_signal(A), log_signal(B), module, cell);
 
 				if (!onehot_db.query(A)) {
 					if (verbose)
@@ -829,7 +831,7 @@ struct OnehotPass : public Pass {
 					if (verbose)
 						log("  replacing with constant 0 driver.\n");
 					else
-						log("Replacing one-hot $eq(%s, %s) cell %s/%s with constant 0 driver.\n", log_signal(A), log_signal(B), log_id(module), log_id(cell));
+						log("Replacing one-hot $eq(%s, %s) cell %s/%s with constant 0 driver.\n", log_signal(A), log_signal(B), module, cell);
 					module->connect(Y, SigSpec(1, GetSize(Y)));
 				}
 				else
@@ -838,7 +840,7 @@ struct OnehotPass : public Pass {
 					if (verbose)
 						log("  replacing with signal %s.\n", log_signal(sig));
 					else
-						log("Replacing one-hot $eq(%s, %s) cell %s/%s with signal %s.\n",log_signal(A), log_signal(B), log_id(module), log_id(cell), log_signal(sig));
+						log("Replacing one-hot $eq(%s, %s) cell %s/%s with signal %s.\n",log_signal(A), log_signal(B), module, cell, log_signal(sig));
 					sig.extend_u0(GetSize(Y));
 					module->connect(Y, sig);
 				}

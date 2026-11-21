@@ -140,7 +140,7 @@ void xilinx_simd_pack(Module *module, const std::vector<Cell*> &selected_cells)
 				}
 			}
 
-			log("Analysing %s.%s for Xilinx DSP SIMD12 packing.\n", log_id(module), log_id(lane1));
+			log("Analysing %s.%s for Xilinx DSP SIMD12 packing.\n", module, lane1);
 
 			Cell *cell = addDsp(module);
 			cell->setParam(ID(USE_SIMD), Const("FOUR12"));
@@ -221,7 +221,7 @@ void xilinx_simd_pack(Module *module, const std::vector<Cell*> &selected_cells)
 			Cell *lane2 = simd24.front();
 			simd24.pop_front();
 
-			log("Analysing %s.%s for Xilinx DSP SIMD24 packing.\n", log_id(module), log_id(lane1));
+			log("Analysing %s.%s for Xilinx DSP SIMD24 packing.\n", module, lane1);
 
 			Cell *cell = addDsp(module);
 			cell->setParam(ID(USE_SIMD), Const("TWO24"));
@@ -260,35 +260,45 @@ void xilinx_dsp_pack(xilinx_dsp_pm &pm)
 {
 	auto &st = pm.st_xilinx_dsp_pack;
 
-	log("Analysing %s.%s for Xilinx DSP packing.\n", log_id(pm.module), log_id(st.dsp));
+	log("Analysing %s.%s for Xilinx DSP packing.\n", pm.module, st.dsp);
 
-	log_debug("preAdd:     %s\n", log_id(st.preAdd, "--"));
-	log_debug("ffAD:       %s\n", log_id(st.ffAD, "--"));
-	log_debug("ffA2:       %s\n", log_id(st.ffA2, "--"));
-	log_debug("ffA1:       %s\n", log_id(st.ffA1, "--"));
-	log_debug("ffB2:       %s\n", log_id(st.ffB2, "--"));
-	log_debug("ffB1:       %s\n", log_id(st.ffB1, "--"));
-	log_debug("ffD:        %s\n", log_id(st.ffD, "--"));
-	log_debug("dsp:        %s\n", log_id(st.dsp, "--"));
-	log_debug("ffM:        %s\n", log_id(st.ffM, "--"));
-	log_debug("postAdd:    %s\n", log_id(st.postAdd, "--"));
-	log_debug("postAddMux: %s\n", log_id(st.postAddMux, "--"));
-	log_debug("ffP:        %s\n", log_id(st.ffP, "--"));
-	log_debug("overflow:   %s\n", log_id(st.overflow, "--"));
+	log_debug("preAdd:     %s\n", st.preAdd ? st.preAdd->name.unescape() : "--");
+	log_debug("preSub:     %s\n", st.preSub ? st.preSub->name.unescape() : "--");
+	log_debug("ffAD:       %s\n", st.ffAD ? st.ffAD->name.unescape() : "--");
+	log_debug("ffA2:       %s\n", st.ffA2 ? st.ffA2->name.unescape() : "--");
+	log_debug("ffA1:       %s\n", st.ffA1 ? st.ffA1->name.unescape() : "--");
+	log_debug("ffB2:       %s\n", st.ffB2 ? st.ffB2->name.unescape() : "--");
+	log_debug("ffB1:       %s\n", st.ffB1 ? st.ffB1->name.unescape() : "--");
+	log_debug("ffD:        %s\n", st.ffD ? st.ffD->name.unescape() : "--");
+	log_debug("dsp:        %s\n", st.dsp ? st.dsp->name.unescape() : "--");
+	log_debug("ffM:        %s\n", st.ffM ? st.ffM->name.unescape() : "--");
+	log_debug("postAdd:    %s\n", st.postAdd ? st.postAdd->name.unescape() : "--");
+	log_debug("postAddMux: %s\n", st.postAddMux ? st.postAddMux->name.unescape() : "--");
+	log_debug("ffP:        %s\n", st.ffP ? st.ffP->name.unescape() : "--");
+	log_debug("overflow:   %s\n", st.overflow ? st.overflow->name.unescape() : "--");
 
 	Cell *cell = st.dsp;
 
-	if (st.preAdd) {
-		log("  preadder %s (%s)\n", log_id(st.preAdd), log_id(st.preAdd->type));
-		bool A_SIGNED = st.preAdd->getParam(ID::A_SIGNED).as_bool();
-		bool D_SIGNED = st.preAdd->getParam(ID::B_SIGNED).as_bool();
-		if (st.sigA == st.preAdd->getPort(ID::B))
+	if (st.preAdd || st.preSub) {
+		Cell* preAdder = st.preAdd ? st.preAdd : st.preSub;
+
+		log("  preadder %s (%s)\n", preAdder, preAdder->type.unescape());
+		bool A_SIGNED = preAdder->getParam(ID::A_SIGNED).as_bool();
+		bool D_SIGNED = preAdder->getParam(ID::B_SIGNED).as_bool();
+		if (st.sigA == preAdder->getPort(ID::B))
 			std::swap(A_SIGNED, D_SIGNED);
-		st.sigA.extend_u0(30, A_SIGNED);
-		st.sigD.extend_u0(25, D_SIGNED);
-		cell->setPort(ID::A, st.sigA);
-		cell->setPort(ID::D, st.sigD);
-		cell->setPort(ID(INMODE), Const::from_string("00100"));
+		// The pre-adder inputs, before the A and D registers: those are
+		// folded in below, as on the path without a pre-adder.
+		SigSpec A = pm.sigmap(preAdder->getPort(st.preAdd ? ID::A : ID::B));
+		SigSpec D = pm.sigmap(preAdder->getPort(st.preAdd ? ID::B : ID::A));
+		A.extend_u0(30, A_SIGNED);
+		D.extend_u0(25, D_SIGNED);
+		cell->setPort(ID::A, A);
+		cell->setPort(ID::D, D);
+		if (preAdder->type == ID($add))
+			cell->setPort(ID(INMODE), Const::from_string("00100"));
+		else
+			cell->setPort(ID(INMODE), Const::from_string("01100"));
 
 		if (st.ffAD) {
 			if (st.ffAD->type.in(ID($dffe), ID($sdffe))) {
@@ -303,10 +313,10 @@ void xilinx_dsp_pack(xilinx_dsp_pm &pm)
 
 		cell->setParam(ID(USE_DPORT), Const("TRUE"));
 
-		pm.autoremove(st.preAdd);
+		pm.autoremove(preAdder);
 	}
 	if (st.postAdd) {
-		log("  postadder %s (%s)\n", log_id(st.postAdd), log_id(st.postAdd->type));
+		log("  postadder %s (%s)\n", st.postAdd, st.postAdd->type.unescape());
 
 		SigSpec &opmode = cell->connections_.at(ID(OPMODE));
 		if (st.postAddMux) {
@@ -332,7 +342,7 @@ void xilinx_dsp_pack(xilinx_dsp_pm &pm)
 		pm.autoremove(st.postAdd);
 	}
 	if (st.overflow) {
-		log("  overflow %s (%s)\n", log_id(st.overflow), log_id(st.overflow->type));
+		log("  overflow %s (%s)\n", st.overflow, st.overflow->type.unescape());
 		cell->setParam(ID(USE_PATTERN_DETECT), Const("PATDET"));
 		cell->setParam(ID(SEL_PATTERN), Const("PATTERN"));
 		cell->setParam(ID(SEL_MASK), Const("MASK"));
@@ -343,7 +353,7 @@ void xilinx_dsp_pack(xilinx_dsp_pm &pm)
 			// Since B is an exact power of 2, subtract 1
 			//   by inverting all bits up until hitting
 			//   that one hi bit
-			for (auto &b : B.bits())
+			for (auto b : B)
 				if (b == State::S0) b = State::S1;
 				else if (b == State::S1) {
 					b = State::S0;
@@ -369,7 +379,7 @@ void xilinx_dsp_pack(xilinx_dsp_pm &pm)
 			SigSpec Q = pm.sigmap(ff->getPort(ID::Q));
 			if (!A.empty())
 				A.replace(Q, D);
-			if (rstport != IdString()) {
+			if (rstport != IdString::Null) {
 				if (ff->type.in(ID($sdff), ID($sdffe))) {
 					SigSpec srst = ff->getPort(ID::SRST);
 					bool rstpol = ff->getParam(ID::SRST_POLARITY).as_bool();
@@ -385,23 +395,13 @@ void xilinx_dsp_pack(xilinx_dsp_pm &pm)
 			}
 			else
 				cell->setPort(ceport, State::S1);
-
-			for (auto c : Q.chunks()) {
-				auto it = c.wire->attributes.find(ID::init);
-				if (it == c.wire->attributes.end())
-					continue;
-				for (int i = c.offset; i < c.offset+c.width; i++) {
-					log_assert(it->second[i] == State::S0 || it->second[i] == State::Sx);
-					it->second.bits()[i] = State::Sx;
-				}
-			}
 		};
 
 		if (st.ffA2) {
 			SigSpec A = cell->getPort(ID::A);
 			f(A, st.ffA2, ID(CEA2), ID(RSTA));
 			if (st.ffA1) {
-				f(A, st.ffA1, ID(CEA1), IdString());
+				f(A, st.ffA1, ID(CEA1), IdString::Null);
 				cell->setParam(ID(AREG), 2);
 				cell->setParam(ID(ACASCREG), 2);
 			}
@@ -416,7 +416,7 @@ void xilinx_dsp_pack(xilinx_dsp_pm &pm)
 			SigSpec B = cell->getPort(ID::B);
 			f(B, st.ffB2, ID(CEB2), ID(RSTB));
 			if (st.ffB1) {
-				f(B, st.ffB1, ID(CEB1), IdString());
+				f(B, st.ffB1, ID(CEB1), IdString::Null);
 				cell->setParam(ID(BREG), 2);
 				cell->setParam(ID(BCASCREG), 2);
 			}
@@ -437,41 +437,57 @@ void xilinx_dsp_pack(xilinx_dsp_pm &pm)
 		if (st.ffM) {
 			SigSpec M; // unused
 			f(M, st.ffM, ID(CEM), ID(RSTM));
+			// The DSP drives these bits now and powers up as 0. Input
+			// registers keep their init: their FF stays in the fabric.
+			for (auto bit : st.sigM) {
+				auto it = bit.wire->attributes.find(ID::init);
+				if (it == bit.wire->attributes.end())
+					continue;
+				log_assert(it->second[bit.offset] == State::S0 || it->second[bit.offset] == State::Sx);
+				it->second.set(bit.offset, State::Sx);
+			}
 			st.ffM->connections_.at(ID::Q).replace(st.sigM, pm.module->addWire(NEW_ID, GetSize(st.sigM)));
 			cell->setParam(ID(MREG), State::S1);
 		}
 		if (st.ffP) {
 			SigSpec P; // unused
 			f(P, st.ffP, ID(CEP), ID(RSTP));
+			for (auto bit : st.sigP) {
+				auto it = bit.wire->attributes.find(ID::init);
+				if (it == bit.wire->attributes.end())
+					continue;
+				log_assert(it->second[bit.offset] == State::S0 || it->second[bit.offset] == State::Sx);
+				it->second.set(bit.offset, State::Sx);
+			}
 			st.ffP->connections_.at(ID::Q).replace(st.sigP, pm.module->addWire(NEW_ID, GetSize(st.sigP)));
 			cell->setParam(ID(PREG), State::S1);
 		}
 
-		log("  clock: %s (%s)", log_signal(st.clock), "posedge");
+		log("  clock: %s (%s)\n", log_signal(st.clock), "posedge");
 
 		if (st.ffA2) {
-			log(" ffA2:%s", log_id(st.ffA2));
+			log(" ffA2:%s\n", st.ffA2);
 			if (st.ffA1)
-				log(" ffA1:%s", log_id(st.ffA1));
+				log(" ffA1:%s\n", st.ffA1);
 		}
 
 		if (st.ffAD)
-			log(" ffAD:%s", log_id(st.ffAD));
+			log(" ffAD:%s\n", st.ffAD);
 
 		if (st.ffB2) {
-			log(" ffB2:%s", log_id(st.ffB2));
+			log(" ffB2:%s\n", st.ffB2);
 			if (st.ffB1)
-				log(" ffB1:%s", log_id(st.ffB1));
+				log(" ffB1:%s\n", st.ffB1);
 		}
 
 		if (st.ffD)
-			log(" ffD:%s", log_id(st.ffD));
+			log(" ffD:%s\n", st.ffD);
 
 		if (st.ffM)
-			log(" ffM:%s", log_id(st.ffM));
+			log(" ffM:%s\n", st.ffM);
 
 		if (st.ffP)
-			log(" ffP:%s", log_id(st.ffP));
+			log(" ffP:%s\n", st.ffP);
 	}
 	log("\n");
 
@@ -487,31 +503,35 @@ void xilinx_dsp48a_pack(xilinx_dsp48a_pm &pm)
 {
 	auto &st = pm.st_xilinx_dsp48a_pack;
 
-	log("Analysing %s.%s for Xilinx DSP48A/DSP48A1 packing.\n", log_id(pm.module), log_id(st.dsp));
+	log("Analysing %s.%s for Xilinx DSP48A/DSP48A1 packing.\n", pm.module, st.dsp);
 
-	log_debug("preAdd:     %s\n", log_id(st.preAdd, "--"));
-	log_debug("ffA1:       %s\n", log_id(st.ffA1, "--"));
-	log_debug("ffA0:       %s\n", log_id(st.ffA0, "--"));
-	log_debug("ffB1:       %s\n", log_id(st.ffB1, "--"));
-	log_debug("ffB0:       %s\n", log_id(st.ffB0, "--"));
-	log_debug("ffD:        %s\n", log_id(st.ffD, "--"));
-	log_debug("dsp:        %s\n", log_id(st.dsp, "--"));
-	log_debug("ffM:        %s\n", log_id(st.ffM, "--"));
-	log_debug("postAdd:    %s\n", log_id(st.postAdd, "--"));
-	log_debug("postAddMux: %s\n", log_id(st.postAddMux, "--"));
-	log_debug("ffP:        %s\n", log_id(st.ffP, "--"));
+	log_debug("preAdd:     %s\n", st.preAdd ? st.preAdd->name.unescape() : "--");
+	log_debug("ffA1:       %s\n", st.ffA1 ? st.ffA1->name.unescape() : "--");
+	log_debug("ffA0:       %s\n", st.ffA0 ? st.ffA0->name.unescape() : "--");
+	log_debug("ffB1:       %s\n", st.ffB1 ? st.ffB1->name.unescape() : "--");
+	log_debug("ffB0:       %s\n", st.ffB0 ? st.ffB0->name.unescape() : "--");
+	log_debug("ffD:        %s\n", st.ffD ? st.ffD->name.unescape() : "--");
+	log_debug("dsp:        %s\n", st.dsp ? st.dsp->name.unescape() : "--");
+	log_debug("ffM:        %s\n", st.ffM ? st.ffM->name.unescape() : "--");
+	log_debug("postAdd:    %s\n", st.postAdd ? st.postAdd->name.unescape() : "--");
+	log_debug("postAddMux: %s\n", st.postAddMux ? st.postAddMux->name.unescape() : "--");
+	log_debug("ffP:        %s\n", st.ffP ? st.ffP->name.unescape() : "--");
 
 	Cell *cell = st.dsp;
 	SigSpec &opmode = cell->connections_.at(ID(OPMODE));
 
 	if (st.preAdd) {
-		log("  preadder %s (%s)\n", log_id(st.preAdd), log_id(st.preAdd->type));
+		log("  preadder %s (%s)\n", st.preAdd, st.preAdd->type.unescape());
 		bool D_SIGNED = st.preAdd->getParam(ID::A_SIGNED).as_bool();
 		bool B_SIGNED = st.preAdd->getParam(ID::B_SIGNED).as_bool();
-		st.sigB.extend_u0(18, B_SIGNED);
-		st.sigD.extend_u0(18, D_SIGNED);
-		cell->setPort(ID::B, st.sigB);
-		cell->setPort(ID::D, st.sigD);
+		// The pre-adder inputs, before the B0 and D registers: those are
+		// folded in below, as on the path without a pre-adder.
+		SigSpec B = pm.sigmap(st.preAdd->getPort(ID::B));
+		SigSpec D = pm.sigmap(st.preAdd->getPort(ID::A));
+		B.extend_u0(18, B_SIGNED);
+		D.extend_u0(18, D_SIGNED);
+		cell->setPort(ID::B, B);
+		cell->setPort(ID::D, D);
 		opmode[4] = State::S1;
 		if (st.preAdd->type == ID($add))
 			opmode[6] = State::S0;
@@ -523,7 +543,7 @@ void xilinx_dsp48a_pack(xilinx_dsp48a_pm &pm)
 		pm.autoremove(st.preAdd);
 	}
 	if (st.postAdd) {
-		log("  postadder %s (%s)\n", log_id(st.postAdd), log_id(st.postAdd->type));
+		log("  postadder %s (%s)\n", st.postAdd, st.postAdd->type.unescape());
 
 		if (st.postAddMux) {
 			log_assert(st.ffP);
@@ -556,7 +576,7 @@ void xilinx_dsp48a_pack(xilinx_dsp48a_pm &pm)
 			SigSpec Q = pm.sigmap(ff->getPort(ID::Q));
 			if (!A.empty())
 				A.replace(Q, D);
-			if (rstport != IdString()) {
+			if (rstport != IdString::Null) {
 				if (ff->type.in(ID($sdff), ID($sdffe))) {
 					SigSpec srst = ff->getPort(ID::SRST);
 					bool rstpol = ff->getParam(ID::SRST_POLARITY).as_bool();
@@ -572,16 +592,6 @@ void xilinx_dsp48a_pack(xilinx_dsp48a_pm &pm)
 			}
 			else
 				cell->setPort(ceport, State::S1);
-
-			for (auto c : Q.chunks()) {
-				auto it = c.wire->attributes.find(ID::init);
-				if (it == c.wire->attributes.end())
-					continue;
-				for (int i = c.offset; i < c.offset+c.width; i++) {
-					log_assert(it->second[i] == State::S0 || it->second[i] == State::Sx);
-					it->second.bits()[i] = State::Sx;
-				}
-			}
 		};
 
 		if (st.ffA0 || st.ffA1) {
@@ -620,38 +630,55 @@ void xilinx_dsp48a_pack(xilinx_dsp48a_pm &pm)
 		if (st.ffM) {
 			SigSpec M; // unused
 			f(M, st.ffM, ID(CEM), ID(RSTM));
+			// The DSP drives these bits now and powers up as 0. Input
+			// registers keep their init: their FF stays in the fabric.
+			for (auto bit : st.sigM) {
+				auto it = bit.wire->attributes.find(ID::init);
+				if (it == bit.wire->attributes.end())
+					continue;
+				log_assert(it->second[bit.offset] == State::S0 || it->second[bit.offset] == State::Sx);
+				it->second.set(bit.offset, State::Sx);
+			}
 			st.ffM->connections_.at(ID::Q).replace(st.sigM, pm.module->addWire(NEW_ID, GetSize(st.sigM)));
 			cell->setParam(ID(MREG), State::S1);
 		}
 		if (st.ffP) {
 			SigSpec P; // unused
 			f(P, st.ffP, ID(CEP), ID(RSTP));
+			for (auto bit : st.sigP) {
+				auto it = bit.wire->attributes.find(ID::init);
+				if (it == bit.wire->attributes.end())
+					continue;
+				log_assert(it->second[bit.offset] == State::S0 || it->second[bit.offset] == State::Sx);
+				it->second.set(bit.offset, State::Sx);
+			}
 			st.ffP->connections_.at(ID::Q).replace(st.sigP, pm.module->addWire(NEW_ID, GetSize(st.sigP)));
 			cell->setParam(ID(PREG), State::S1);
 		}
 
-		log("  clock: %s (%s)", log_signal(st.clock), "posedge");
+		std::string message = stringf("  clock: %s (%s)", log_signal(st.clock), "posedge");
 
 		if (st.ffA0)
-			log(" ffA0:%s", log_id(st.ffA0));
+			message += stringf(" ffA0:%s", st.ffA0);
 		if (st.ffA1)
-			log(" ffA1:%s", log_id(st.ffA1));
+			message += stringf(" ffA1:%s", st.ffA1);
 
 		if (st.ffB0)
-			log(" ffB0:%s", log_id(st.ffB0));
+			message += stringf(" ffB0:%s", st.ffB0);
 		if (st.ffB1)
-			log(" ffB1:%s", log_id(st.ffB1));
+			message += stringf(" ffB1:%s", st.ffB1);
 
 		if (st.ffD)
-			log(" ffD:%s", log_id(st.ffD));
+			message += stringf(" ffD:%s", st.ffD);
 
 		if (st.ffM)
-			log(" ffM:%s", log_id(st.ffM));
+			message += stringf(" ffM:%s", st.ffM);
 
 		if (st.ffP)
-			log(" ffP:%s", log_id(st.ffP));
+			message += stringf(" ffP:%s", st.ffP);
+
+		log("%s\n", message);
 	}
-	log("\n");
 
 	SigSpec P = st.sigP;
 	if (GetSize(P) < 48)
@@ -665,8 +692,8 @@ void xilinx_dsp_packC(xilinx_dsp_CREG_pm &pm)
 {
 	auto &st = pm.st_xilinx_dsp_packC;
 
-	log_debug("Analysing %s.%s for Xilinx DSP packing (CREG).\n", log_id(pm.module), log_id(st.dsp));
-	log_debug("ffC:        %s\n", log_id(st.ffC, "--"));
+	log_debug("Analysing %s.%s for Xilinx DSP packing (CREG).\n", pm.module, st.dsp);
+	log_debug("ffC:        %s\n", st.ffC ? st.ffC->name.unescape() : "--");
 
 	Cell *cell = st.dsp;
 
@@ -679,7 +706,7 @@ void xilinx_dsp_packC(xilinx_dsp_CREG_pm &pm)
 			SigSpec Q = pm.sigmap(ff->getPort(ID::Q));
 			if (!A.empty())
 				A.replace(Q, D);
-			if (rstport != IdString()) {
+			if (rstport != IdString::Null) {
 				if (ff->type.in(ID($sdff), ID($sdffe))) {
 					SigSpec srst = ff->getPort(ID::SRST);
 					bool rstpol = ff->getParam(ID::SRST_POLARITY).as_bool();
@@ -695,16 +722,6 @@ void xilinx_dsp_packC(xilinx_dsp_CREG_pm &pm)
 			}
 			else
 				cell->setPort(ceport, State::S1);
-
-			for (auto c : Q.chunks()) {
-				auto it = c.wire->attributes.find(ID::init);
-				if (it == c.wire->attributes.end())
-					continue;
-				for (int i = c.offset; i < c.offset+c.width; i++) {
-					log_assert(it->second[i] == State::S0 || it->second[i] == State::Sx);
-					it->second.bits()[i] = State::Sx;
-				}
-			}
 		};
 
 		if (st.ffC) {
@@ -715,11 +732,11 @@ void xilinx_dsp_packC(xilinx_dsp_CREG_pm &pm)
 			cell->setParam(ID(CREG), 1);
 		}
 
-		log("  clock: %s (%s)", log_signal(st.clock), "posedge");
+		std::string message = stringf("  clock: %s (%s)", log_signal(st.clock), "posedge");
 
 		if (st.ffC)
-			log(" ffC:%s", log_id(st.ffC));
-		log("\n");
+			message += stringf(" ffC:%s", st.ffC);
+		log("%s\n", message);
 	}
 
 	pm.blacklist(cell);

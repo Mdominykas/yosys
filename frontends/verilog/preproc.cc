@@ -34,6 +34,7 @@
 
 #include "preproc.h"
 #include "verilog_frontend.h"
+#include "frontends/verilog/verilog_parser.tab.hh"
 #include "kernel/log.h"
 #include <assert.h>
 #include <stack>
@@ -241,7 +242,7 @@ struct arg_map_t
 	void add_arg(const std::string &name, const char *default_value)
 	{
 		if (find(name)) {
-			log_error("Duplicate macro arguments with name `%s'.\n", name.c_str());
+			log_error("Duplicate macro arguments with name `%s'.\n", name);
 		}
 
 		name_to_pos[name] = args.size();
@@ -264,7 +265,7 @@ struct arg_map_t
 	// (something like macro_foobar_arg2). This doesn't include the leading backtick.
 	static std::string str_token(const std::string &macro_name, int pos)
 	{
-		return stringf("macro_%s_arg%d", macro_name.c_str(), pos);
+		return stringf("macro_%s_arg%d", macro_name, pos);
 	}
 
 	// Return definitions for the macro arguments (so that substituting in the macro body and
@@ -302,7 +303,7 @@ struct arg_map_t
 			else
 				log_error("Cannot expand macro `%s by giving only %d argument%s "
 				          "(argument %d has no default).\n",
-				          macro_name.c_str(), GetSize(arg_vals),
+				          macro_name, GetSize(arg_vals),
 				          (GetSize(arg_vals) == 1 ? "" : "s"), i + 1);
 
 			assert(val);
@@ -381,7 +382,7 @@ void define_map_t::log() const
 		const std::string &name = it.first;
 		const define_body_t &body = *it.second;
 		Yosys::log("`define %s%s %s\n",
-		           name.c_str(), body.has_args ? "()" : "", body.body.c_str());
+		           name, body.has_args ? "()" : "", body.body);
 	}
 }
 
@@ -401,21 +402,31 @@ static void input_file(std::istream &f, std::string filename)
 	input_buffer.insert(it, "\n`file_pop\n");
 }
 
+static bool is_blank_token(const std::string &tok)
+{
+	return tok.empty() || tok[0] == ' ' || tok[0] == '\t' || tok.compare(0, 2, "/*") == 0;
+}
+
 // Read tokens to get one argument (either a macro argument at a callsite or a default argument in a
 // macro definition). Writes the argument to dest. Returns true if we finished with ')' (the end of
 // the argument list); false if we finished with ','.
 static bool read_argument(std::string &dest)
 {
-	skip_spaces();
 	std::vector<char> openers;
+	bool pending_space = false;
 	for (;;) {
 		std::string tok = next_token(true);
+		if (is_blank_token(tok)) {
+			pending_space = !dest.empty();
+			continue;
+		}
+		if (openers.empty() && (tok == ")" || tok == ","))
+			return tok == ")";
+		if (pending_space)
+			dest += ' ';
+		pending_space = false;
+
 		if (tok == ")") {
-			if (openers.empty()) {
-				while (dest.size() && (dest.back() == ' ' || dest.back() == '\t'))
-					dest = dest.substr(0, dest.size() - 1);
-				return true;
-			}
 			if (openers.back() != '(')
 				log_error("Mismatched brackets in macro argument: %c and %c.\n",
 				          openers.back(), tok[0]);
@@ -443,10 +454,6 @@ static bool read_argument(std::string &dest)
 			openers.pop_back();
 			dest += tok;
 			continue;
-		}
-
-		if (tok == "," && openers.empty()) {
-			return false;
 		}
 
 		if (tok == "(" || tok == "[" || tok == "{")
@@ -511,7 +518,7 @@ static bool try_expand_macro(define_map_t &defines, macro_arg_stack_t &macro_arg
 				tok = buf;
 			}
 			log_error("Expected to find '(' to begin macro arguments for '%s', but instead found '%s'\n",
-				name.c_str(), tok.c_str());
+				name, tok);
 		}
 		std::vector<std::string> args;
 		bool done = false;
@@ -628,7 +635,7 @@ read_define_args()
 			}
 			log_error("Trailing contents after identifier in macro argument `%s': "
 				  "expected '=', ',' or ')'.\n",
-				  arg_name.c_str());
+				  arg_name);
 
 		default:
 			// The only FSM states are 0-2 and we dealt with 2 at the start of the loop.
@@ -740,7 +747,7 @@ read_define(const std::string &filename,
 		defines_map.add(name, value, (state == 2) ? &args : nullptr);
 		global_defines_cache.add(name, value, (state == 2) ? &args : nullptr);
 	} else {
-		log_file_error(filename, 0, "Invalid name for macro definition: >>%s<<.\n", name.c_str());
+		log_file_error(LogSourceLocation(filename), "Invalid name for macro definition: >>%s<<.\n", name);
 	}
 }
 
@@ -749,7 +756,8 @@ frontend_verilog_preproc(std::istream                 &f,
                          std::string                   filename,
                          const define_map_t           &pre_defines,
                          define_map_t                 &global_defines_cache,
-                         const std::list<std::string> &include_dirs)
+                         const std::list<std::string> &include_dirs,
+                         ParseMode                    &parse_mode)
 {
 	define_map_t defines;
 	defines.merge(pre_defines);
@@ -786,14 +794,14 @@ frontend_verilog_preproc(std::istream                 &f,
 			else if (ifdef_pass_level > 0)
 				ifdef_pass_level--;
 			else
-				log_error("Found %s outside of macro conditional branch!\n", tok.c_str());
+				log_error("Found %s outside of macro conditional branch!\n", tok);
 			continue;
 		}
 
 		if (tok == "`else") {
 			if (ifdef_fail_level == 0) {
 				if (ifdef_pass_level == 0)
-					log_error("Found %s outside of macro conditional branch!\n", tok.c_str());
+					log_error("Found %s outside of macro conditional branch!\n", tok);
 				ifdef_pass_level--;
 				ifdef_fail_level = 1;
 				ifdef_already_satisfied = true;
@@ -810,7 +818,7 @@ frontend_verilog_preproc(std::istream                 &f,
 			std::string name = next_token(true);
 			if (ifdef_fail_level == 0) {
 				if (ifdef_pass_level == 0)
-					log_error("Found %s outside of macro conditional branch!\n", tok.c_str());
+					log_error("Found %s outside of macro conditional branch!\n", tok);
 				ifdef_pass_level--;
 				ifdef_fail_level = 1;
 				ifdef_already_satisfied = true;
@@ -892,11 +900,7 @@ frontend_verilog_preproc(std::istream                 &f,
 				// if the include file was not found, it is not given with an absolute path, and the
 				// currently read file is given with a path, then try again relative to its directory
 				ff.clear();
-#ifdef _WIN32
-				fixed_fn = filename.substr(0, filename.find_last_of("/\\")+1) + fn;
-#else
-				fixed_fn = filename.substr(0, filename.rfind('/')+1) + fn;
-#endif
+				fixed_fn = parent_from_file_path(filename) + fn;
 				ff.open(fixed_fn);
 			}
 			if (ff.fail() && fn.size() > 0 && fn_relative) {
@@ -961,11 +965,13 @@ frontend_verilog_preproc(std::istream                 &f,
 		}
 
 		if (tok == "`resetall") {
-			default_nettype_wire = true;
+			// `resetall is consumed here and never reaches the lexer, which owns
+			// `default_nettype during parsing.
+			output_code.push_back("\n`default_nettype wire\n");
 			continue;
 		}
 
-		if (tok == "`undefineall" && sv_mode) {
+		if (tok == "`undefineall" && parse_mode.sv) {
 			defines.clear();
 			global_defines_cache.clear();
 			continue;

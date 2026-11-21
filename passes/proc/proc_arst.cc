@@ -204,7 +204,7 @@ void proc_arst(RTLIL::Module *mod, RTLIL::Process *proc, SigMap &assign_map)
 			bool polarity = sync->type == RTLIL::SyncType::STp;
 			if (check_signal(mod, root_sig, sync->signal, polarity)) {
 				if (edge_syncs.size() > 1) {
-					log("Found async reset %s in `%s.%s'.\n", log_signal(sync->signal), mod->name.c_str(), proc->name.c_str());
+					log("Found async reset %s in `%s.%s'.\n", log_signal(sync->signal), mod->name, proc->name);
 					sync->type = sync->type == RTLIL::SyncType::STp ? RTLIL::SyncType::ST1 : RTLIL::SyncType::ST0;
 					arst_syncs.push_back(sync);
 					edge_syncs.erase(it);
@@ -215,7 +215,7 @@ void proc_arst(RTLIL::Module *mod, RTLIL::Process *proc, SigMap &assign_map)
 						RTLIL::SigSpec en = apply_reset(mod, proc, sync, assign_map, root_sig, polarity, memwr.enable, memwr.enable);
 						if (!en.is_fully_zero()) {
 							log_error("Async reset %s causes memory write to %s.\n",
-									log_signal(sync->signal), log_id(memwr.memid));
+									log_signal(sync->signal), PooledName(mod, memwr.memid).unescape());
 						}
 						apply_reset(mod, proc, sync, assign_map, root_sig, polarity, memwr.address, memwr.address);
 						apply_reset(mod, proc, sync, assign_map, root_sig, polarity, memwr.data, memwr.data);
@@ -223,7 +223,7 @@ void proc_arst(RTLIL::Module *mod, RTLIL::Process *proc, SigMap &assign_map)
 					sync->mem_write_actions.clear();
 					eliminate_const(mod, &proc->root_case, root_sig, polarity);
 				} else {
-					log("Found VHDL-style edge-trigger %s in `%s.%s'.\n", log_signal(sync->signal), mod->name.c_str(), proc->name.c_str());
+					log("Found VHDL-style edge-trigger %s in `%s.%s'.\n", log_signal(sync->signal), mod->name, proc->name);
 					eliminate_const(mod, &proc->root_case, root_sig, !polarity);
 				}
 				did_something = true;
@@ -288,11 +288,14 @@ struct ProcArstPass : public Pass {
 		extra_args(args, argidx, design);
 		pool<Wire*> delete_initattr_wires;
 
+		IdString global_arst_ref = global_arst.empty() ? IdString::Null
+				: design->twines().find(global_arst);
+
 		for (auto mod : design->all_selected_modules()) {
 			SigMap assign_map(mod);
 			for (auto proc : mod->selected_processes()) {
 				proc_arst(mod, proc, assign_map);
-				if (global_arst.empty() || mod->wire(global_arst) == nullptr)
+				if (global_arst_ref == IdString::Null || mod->wire(global_arst_ref) == nullptr)
 					continue;
 				std::vector<RTLIL::SigSig> arst_actions;
 				for (auto sync : proc->syncs)
@@ -309,14 +312,14 @@ struct ProcArstPass : public Pass {
 								}
 							if (arst_sig.size()) {
 								log("Added global reset to process %s: %s <- %s\n",
-										proc->name.c_str(), log_signal(arst_sig), log_signal(arst_val));
+										proc->name, log_signal(arst_sig), log_signal(arst_val));
 								arst_actions.push_back(RTLIL::SigSig(arst_sig, arst_val));
 							}
 						}
 				if (!arst_actions.empty()) {
 					RTLIL::SyncRule *sync = new RTLIL::SyncRule;
 					sync->type = global_arst_neg ? RTLIL::SyncType::ST0 : RTLIL::SyncType::ST1;
-					sync->signal = mod->wire(global_arst);
+					sync->signal = mod->wire(global_arst_ref);
 					sync->actions = arst_actions;
 					proc->syncs.push_back(sync);
 				}

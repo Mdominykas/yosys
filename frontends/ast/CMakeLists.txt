@@ -1,0 +1,11 @@
+yosys_core(ast
+	ast.cc
+	ast.h
+	dpicall.cc
+	genrtlil.cc
+	simplify.cc
+	LIBRARIES
+		$<${YOSYS_ENABLE_LIBFFI}:${Dlfcn_LIBRARIES};PkgConfig::libffi>
+	REQUIRES
+		sha1
+)

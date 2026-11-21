@@ -64,7 +64,7 @@ const char *fn_to_string(Fn fn) {
 	case Fn::memory_read: return "memory_read";
 	case Fn::memory_write: return "memory_write";
 	}
-	log_error("fn_to_string: unknown Functional::Fn value %d", (int)fn);
+	log_error("fn_to_string: unknown Functional::Fn value %d\n", (int)fn);
 }
 
 vector<IRInput const*> IR::inputs(IdString kind) const {
@@ -120,8 +120,8 @@ struct PrintVisitor : DefaultVisitor<std::string> {
 	std::string zero_extend(Node, Node a, int out_width) override { return "zero_extend(" + np(a) + ", " + std::to_string(out_width) + ")"; }
 	std::string sign_extend(Node, Node a, int out_width) override { return "sign_extend(" + np(a) + ", " + std::to_string(out_width) + ")"; }
 	std::string constant(Node, RTLIL::Const const& value) override { return "constant(" + value.as_string() + ")"; }
-	std::string input(Node, IdString name, IdString kind) override { return "input(" + name.str() + ", " + kind.str() + ")"; }
-	std::string state(Node, IdString name, IdString kind) override { return "state(" + name.str() + ", " + kind.str() + ")"; }
+	std::string input(Node self, IdString name, IdString kind) override { return "input(" + self.design->twines().str(name) + ", " + self.design->twines().str(kind) + ")"; }
+	std::string state(Node self, IdString name, IdString kind) override { return "state(" + self.design->twines().str(name) + ", " + self.design->twines().str(kind) + ")"; }
 	std::string default_handler(Node self) override {
 		std::string ret = fn_to_string(self.fn());
 		ret += "(";
@@ -136,7 +136,7 @@ struct PrintVisitor : DefaultVisitor<std::string> {
 
 std::string Node::to_string()
 {
-	return to_string([](Node n) { return RTLIL::unescape_id(n.name()); });
+	return to_string([](Node n) { return n.name().unescape(); });
 }
 
 std::string Node::to_string(std::function<std::string(Node)> np)
@@ -302,6 +302,8 @@ public:
 			return factory.bitwise_not(a);
 		}else if(cellType == ID($pos)){
 			return factory.extend(inputs.at(ID(A)), y_width, a_signed);
+		}else if(cellType == ID($barrier)){
+			return inputs.at(ID(A));
 		}else if(cellType == ID($neg)){
 			Node a = factory.extend(inputs.at(ID(A)), y_width, a_signed);
 			return factory.unary_minus(a);
@@ -395,7 +397,7 @@ public:
 					Node y = neg_if(y_flipped, sign(b));
 					return factory.extend(y, y_width, true);
 				} else
-					log_error("unhandled cell in CellSimplifier %s\n", cellType.c_str());
+					log_error("unhandled cell in CellSimplifier %s\n", factory.ir().design->twines().str(cellType));
 			} else {
 				if(cellType.in(ID($mod), ID($modfloor)))
 					return factory.extend(factory.unsigned_mod(a, b), y_width, false);
@@ -458,9 +460,9 @@ public:
 				return factory.value(state);
 			}
 		} else if(cellType == ID($check)) {
-			log_error("The design contains a $check cell `%s'. This is not supported by the functional backend. Call `chformal -lower' to avoid this error.\n", cellName.c_str());
+			log_error("The design contains a $check cell `%s'. This is not supported by the functional backend. Call `chformal -lower' to avoid this error.\n", factory.ir().design->twines().str(cellName));
 		} else {
-			log_error("`%s' cells are not supported by the functional backend\n", cellType.c_str());
+			log_error("`%s' cells are not supported by the functional backend\n", factory.ir().design->twines().str(cellType));
 		}
 	}
 };
@@ -497,7 +499,7 @@ class FunctionalIRConstruction {
 			for(auto const &[name, sigspec] : cell->connections())
 				if(driver_map.celltypes.cell_output(cell->type, name)) {
 					auto node = factory.create_pending(sigspec.size());
-					factory.suggest_name(node, cell->name.str() + "$" + name.str());
+					factory.suggest_name(node, cell->name.str() + "$" + PooledName(cell->module, name).str());
 					cell_outputs.emplace({cell, name}, node);
 					if(name == port_name)
 						rv = node;
@@ -518,10 +520,13 @@ public:
 			if (cell->type.in(ID($assert), ID($assume), ID($live), ID($fair), ID($cover), ID($check)))
 				queue.emplace_back(cell);
 		}
-		for (auto wire : module->wires()) {
-			if (wire->port_input)
+		// we are relying here on unsorted pools iterating last-in-first-out
+		for (auto riter = module->ports.rbegin(); riter != module->ports.rend(); ++riter) {
+			auto *wire = module->wire(*riter);
+			if (wire && wire->port_input) {
 				factory.add_input(wire->name, ID($input), Sort(wire->width));
-			if (wire->port_output) {
+			}
+			if (wire && wire->port_output) {
 				auto &output = factory.add_output(wire->name, ID($output), Sort(wire->width));
 				output.set_value(enqueue(DriveChunk(DriveChunkWire(wire, 0, wire->width))));
 			}
@@ -569,7 +574,7 @@ private:
 			const auto &wr = mem->wr_ports[i];
 			if (wr.clk_enable)
 				log_error("Write port %zd of memory %s.%s is clocked. This is not supported by the functional backend. "
-					"Call async2sync or clk2fflogic to avoid this error.\n", i, log_id(mem->module), log_id(mem->memid));
+					"Call async2sync or clk2fflogic to avoid this error.\n", i, mem->module, PooledName(mem->module, mem->memid).unescape());
 			Node en = enqueue(driver_map(DriveSpec(wr.en)));
 			Node addr = enqueue(driver_map(DriveSpec(wr.addr)));
 			Node new_data = enqueue(driver_map(DriveSpec(wr.data)));
@@ -579,12 +584,12 @@ private:
 		}
 		if (mem->rd_ports.empty())
 			log_error("Memory %s.%s has no read ports. This is not supported by the functional backend. "
-				"Call opt_clean to remove it.", log_id(mem->module), log_id(mem->memid));
+				"Call opt_clean to remove it.", mem->module, PooledName(mem->module, mem->memid).unescape());
 		for (size_t i = 0; i < mem->rd_ports.size(); i++) {
 			const auto &rd = mem->rd_ports[i];
 			if (rd.clk_enable)
 				log_error("Read port %zd of memory %s.%s is clocked. This is not supported by the functional backend. "
-					"Call memory_nordff to avoid this error.\n", i, log_id(mem->module), log_id(mem->memid));
+					"Call memory_nordff to avoid this error.\n", i, mem->module, PooledName(mem->module, mem->memid).unescape());
 			Node addr = enqueue(driver_map(DriveSpec(rd.addr)));
 			read_results.push_back(factory.memory_read(node, addr));
 		}
@@ -602,11 +607,11 @@ private:
 			}
 			Node node = handle_memory(mem);
 			factory.update_pending(cell_outputs.at({cell, ID(RD_DATA)}), node);
-		} else if (RTLIL::builtin_ff_cell_types().count(cell->type)) {
+		} else if (cell->is_builtin_ff()) {
 			FfData ff(&ff_initvals, cell);
 			if (!ff.has_gclk)
 				log_error("The design contains a %s flip-flop at %s. This is not supported by the functional backend. "
-					"Call async2sync or clk2fflogic to avoid this error.\n", log_id(cell->type), log_id(cell));
+					"Call async2sync or clk2fflogic to avoid this error.\n", cell->type.unescape(), cell);
 			auto &state = factory.add_state(ff.name, ID($state), Sort(ff.width));
 			Node q_value = factory.value(state);
 			factory.suggest_name(q_value, ff.name);
@@ -635,7 +640,7 @@ private:
 			}
 		}
 	}
-	void undriven(const char *name) {
+	void undriven(const std::string& name) {
 		log_error("The design contains an undriven signal %s. This is not supported by the functional backend. "
 			"Call setundef with appropriate options to avoid this error.\n", name);
 	}
@@ -643,7 +648,7 @@ private:
 	void check_undriven(DriveSpec const& spec, std::string const& name) {
 		for(auto const &chunk : spec.chunks())
 			if(chunk.is_none())
-				undriven(name.c_str());
+				undriven(name);
 	}
 public:
 	void process_queue()
@@ -674,7 +679,7 @@ public:
 							factory.update_pending(pending, node);
 						} else {
 							DriveSpec driver = driver_map(DriveSpec(wire_chunk));
-							check_undriven(driver, RTLIL::unescape_id(wire_chunk.wire->name));
+							check_undriven(driver, wire_chunk.wire->name.unescape());
 							Node node = enqueue(driver);
 							factory.suggest_name(node, wire_chunk.wire->name);
 							factory.update_pending(pending, node);
@@ -692,7 +697,7 @@ public:
 							factory.update_pending(pending, node);
 						} else {
 							DriveSpec driver = driver_map(DriveSpec(port_chunk));
-							check_undriven(driver, RTLIL::unescape_id(port_chunk.cell->name) + " port " + RTLIL::unescape_id(port_chunk.port));
+							check_undriven(driver, port_chunk.cell->name.unescape() + " port " + PooledName(port_chunk.cell->module, port_chunk.port).unescape());
 							factory.update_pending(pending, enqueue(driver));
 						}
 					} else {
@@ -722,6 +727,7 @@ public:
 
 IR IR::from_module(Module *module) {
 	IR ir;
+    ir.design = module->design;
     auto factory = ir.factory();
     FunctionalIRConstruction ctor(module, factory);
     ctor.process_queue();
@@ -740,8 +746,8 @@ void IR::topological_sort() {
         {
             log_warning("Combinational loop:\n");
             for (int *i = begin; i != end; ++i) {
-				Node node(_graph[*i]);
-                log("- %s = %s\n", RTLIL::unescape_id(node.name()).c_str(), node.to_string().c_str());
+				Node node(_graph[*i], design);
+                log("- %s = %s\n", node.name().unescape(), node.to_string());
 			}
             log("\n");
             scc = true;
@@ -760,7 +766,7 @@ void IR::topological_sort() {
 }
 
 static IdString merge_name(IdString a, IdString b) {
-	if(a[0] == '$' && b[0] == '\\')
+	if(!a.isPublic() && b.isPublic())
 		return b;
 	else
 		return a;
@@ -826,14 +832,14 @@ void Writer::print_impl(const char *fmt, vector<std::function<void()>> &fns)
 				size_t index = strtoul(p, &pe, 10);
 				if(*pe != '}')
 					log_error("invalid format string: expected {<number>}, {} or {{, got \"%s\": \"%s\"\n",
-						quote_fmt(std::string(p - 1, pe - p + 2).c_str()).c_str(),
-						quote_fmt(fmt).c_str());
+						quote_fmt(std::string(p - 1, pe - p + 2).c_str()),
+						quote_fmt(fmt));
 				if(p == pe)
 					index = next_index;
 				else
 					p = pe;
 				if(index >= fns.size())
-					log_error("invalid format string: index %zu out of bounds (%zu): \"%s\"\n", index, fns.size(), quote_fmt(fmt).c_str());
+					log_error("invalid format string: index %zu out of bounds (%zu): \"%s\"\n", index, fns.size(), quote_fmt(fmt));
 				fns[index]();
 				next_index = index + 1;
 			}
@@ -841,7 +847,7 @@ void Writer::print_impl(const char *fmt, vector<std::function<void()>> &fns)
 		case '}':
 			p++;
 			if(*p != '}')
-				log_error("invalid format string: unescaped }: \"%s\"\n", quote_fmt(fmt).c_str());
+				log_error("invalid format string: unescaped }: \"%s\"\n", quote_fmt(fmt));
 			*os << '}';
 			break;
 		default:

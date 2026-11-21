@@ -51,7 +51,7 @@ YOSYS_NAMESPACE_BEGIN
 
 void yosys_setup();
 
-#ifdef WITH_PYTHON
+#ifdef YOSYS_ENABLE_PYTHON
 bool yosys_already_setup();
 #endif
 
@@ -61,13 +61,13 @@ void yosys_shutdown();
 Tcl_Interp *yosys_get_tcl_interp();
 #endif
 
-extern RTLIL::Design *yosys_design;
+extern std::shared_ptr<RTLIL::Design> yosys_design;
 
 RTLIL::Design *yosys_get_design();
 std::string proc_self_dirname();
 std::string proc_share_dirname();
 std::string proc_program_prefix();
-const char *create_prompt(RTLIL::Design *design, int recursion_counter);
+const char *create_prompt(RTLIL::Design *design, int recursion_counter, bool newline = true);
 std::vector<std::string> glob_filename(const std::string &filename_pattern);
 void rewrite_filename(std::string &filename);
 
@@ -81,15 +81,17 @@ extern std::set<std::string> yosys_input_files, yosys_output_files;
 
 // from kernel/version_*.o (cc source generated from Makefile)
 extern const char *yosys_version_str;
+extern const char *yosys_git_hash_str;
+extern const char *yosys_build_datetime_str;
 const char* yosys_maybe_version();
 
 // from passes/cmds/design.cc
-extern std::map<std::string, RTLIL::Design*> saved_designs;
-extern std::vector<RTLIL::Design*> pushed_designs;
+extern std::map<std::string, std::shared_ptr<RTLIL::Design>> saved_designs;
+extern std::vector<std::shared_ptr<RTLIL::Design>> pushed_designs;
 
 // from passes/cmds/pluginc.cc
 extern std::map<std::string, void*> loaded_plugins;
-#ifdef WITH_PYTHON
+#ifdef YOSYS_ENABLE_PYTHON
 extern std::map<std::string, void*> loaded_python_plugins;
 #endif
 extern std::map<std::string, std::string> loaded_plugin_aliases;

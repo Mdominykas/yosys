@@ -91,7 +91,7 @@ struct MemInit : RTLIL::AttrObject {
 
 struct Mem : RTLIL::AttrObject {
 	Module *module;
-	IdString memid;
+	PooledName memid;
 	bool packed;
 	RTLIL::Memory *mem;
 	Cell *cell;
@@ -222,7 +222,9 @@ struct Mem : RTLIL::AttrObject {
 	// in the same clock domain.
 	void emulate_read_first(FfInitVals *initvals);
 
-	Mem(Module *module, IdString memid, int width, int start_offset, int size) : module(module), memid(memid), packed(false), mem(nullptr), cell(nullptr), width(width), start_offset(start_offset), size(size) {}
+	Mem(Module *module, IdString memid, int width, int start_offset, int size) : module(module), memid(module->design, memid), packed(false), mem(nullptr), cell(nullptr), width(width), start_offset(start_offset), size(size) {}
+	Mem(Module *module, TwineSpec &&memid, int width, int start_offset, int size)
+			: Mem(module, module->twines().add(std::move(memid)), width, start_offset, size) {}
 };
 
 // MemContents efficiently represents the contents of a potentially sparse memory by storing only those segments that are actually defined
@@ -255,11 +257,13 @@ private:
 	// return the offset the addr would have in the range at `it`
 	size_t _range_offset(std::map<addr_t, RTLIL::Const>::iterator it, addr_t addr) const { return (addr - it->first) * _data_width; }
 	// assuming _range_contains(it, addr), return an iterator pointing to the data at addr
-	std::vector<State>::iterator _range_data(std::map<addr_t, RTLIL::Const>::iterator it, addr_t addr) { return it->second.bits().begin() + _range_offset(it, addr); }
+	RTLIL::Const::iterator _range_data(std::map<addr_t, RTLIL::Const>::iterator it, addr_t addr) {
+		return RTLIL::Const::iterator(it->second, _range_offset(it, addr));
+	}
 	// internal version of reserve_range that returns an iterator to the range
 	std::map<addr_t, RTLIL::Const>::iterator _reserve_range(addr_t begin_addr, addr_t end_addr);
 	// write a single word at addr, return iterator to next word
-	std::vector<State>::iterator _range_write(std::vector<State>::iterator it, RTLIL::Const const &data);
+	RTLIL::Const::iterator _range_write(RTLIL::Const::iterator it, RTLIL::Const const &data);
 public:
 	class range {
 		int _data_width;

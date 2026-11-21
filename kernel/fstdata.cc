@@ -22,20 +22,22 @@
 USING_YOSYS_NAMESPACE
 
 
+#if defined(YOSYS_ENABLE_SPAWN)
 static std::string file_base_name(std::string const & path)
 {
 	return path.substr(path.find_last_of("/\\") + 1);
 }
+#endif
 
 FstData::FstData(std::string filename) : ctx(nullptr)
 {
-	#if !defined(YOSYS_DISABLE_SPAWN)
+	#if defined(YOSYS_ENABLE_SPAWN)
 	std::string filename_trim = file_base_name(filename);
 	if (filename_trim.size() > 4 && filename_trim.compare(filename_trim.size()-4, std::string::npos, ".vcd") == 0) {
 		filename_trim.erase(filename_trim.size()-4);
-		tmp_file = stringf("%s/converted_%s.fst", get_base_tmpdir().c_str(), filename_trim.c_str());
-		std::string cmd = stringf("vcd2fst %s %s", filename.c_str(), tmp_file.c_str());
-		log("Exec: %s\n", cmd.c_str());
+		tmp_file = stringf("%s/converted_%s.fst", get_base_tmpdir(), filename_trim);
+		std::string cmd = stringf("vcd2fst %s %s", filename, tmp_file);
+		log("Exec: %s\n", cmd);
 		if (run_command(cmd) != 0)
 			log_cmd_error("Shell command failed!\n");
 		filename = tmp_file;
@@ -44,9 +46,8 @@ FstData::FstData(std::string filename) : ctx(nullptr)
 	const std::vector<std::string> g_units = { "s", "ms", "us", "ns", "ps", "fs", "as", "zs" };
 	ctx = (fstReaderContext *)fstReaderOpen(filename.c_str());
 	if (!ctx)
-		log_error("Error opening '%s' as FST file\n", filename.c_str());
-	int scale = (int)fstReaderGetTimescale(ctx);	
-	timescale = pow(10.0, scale);
+		log_error("Error opening '%s' as FST file\n", filename);
+	scale = (int)fstReaderGetTimescale(ctx);
 	timescale_str = "";
 	int unit = 0;
 	int zeros = 0;
@@ -88,18 +89,18 @@ static void normalize_brackets(std::string &str)
 	}
 }
 
-fstHandle FstData::getHandle(std::string name) { 
+fstHandle FstData::getHandle(std::string name) {
 	normalize_brackets(name);
 	if (name_to_handle.find(name) != name_to_handle.end())
 		return name_to_handle[name];
-	else 
+	else
 		return 0;
 };
 
-dict<int,fstHandle> FstData::getMemoryHandles(std::string name) { 
+dict<int,fstHandle> FstData::getMemoryHandles(std::string name) {
 	if (memory_to_handle.find(name) != memory_to_handle.end())
 		return memory_to_handle[name];
-	else 
+	else
 		return dict<int,fstHandle>();
 };
 
@@ -138,7 +139,7 @@ void FstData::extractVarNames()
 					handle_to_var[h->u.var.handle] = var;
 				std::string clean_name;
 				bool has_space = false;
-				for(size_t i=0;i<strlen(h->u.var.name);i++) 
+				for(size_t i=0;i<strlen(h->u.var.name);i++)
 				{
 					char c = h->u.var.name[i];
 					if(c==' ') { has_space = true; break; }
@@ -162,7 +163,7 @@ void FstData::extractVarNames()
 					char *endptr;
 					int mem_addr = strtol(addr.c_str(), &endptr, 16);
 					if (*endptr) {
-						log_debug("Error parsing memory address in : %s\n", clean_name.c_str());
+						log_debug("Error parsing memory address in : %s\n", clean_name);
 					} else {
 						memory_to_handle[var.scope+"."+mem_cell][mem_addr] = var.id;
 					}
@@ -176,7 +177,7 @@ void FstData::extractVarNames()
 					char *endptr;
 					int mem_addr = strtol(addr.c_str(), &endptr, 10);
 					if (*endptr) {
-						log_debug("Error parsing memory address in : %s\n", clean_name.c_str());
+						log_debug("Error parsing memory address in : %s\n", clean_name);
 					} else {
 						memory_to_handle[var.scope+"."+mem_cell][mem_addr] = var.id;
 					}
@@ -211,7 +212,7 @@ void FstData::reconstruct_callback_attimes(uint64_t pnt_time, fstHandle pnt_faci
 	bool is_clock = false;
 	if (!all_samples) {
 		for(auto &s : clk_signals) {
-			if (s==pnt_facidx)  { 
+			if (s==pnt_facidx)  {
 				is_clock=true;
 				break;
 			}

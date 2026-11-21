@@ -18,7 +18,7 @@
  */
 
 #include "kernel/register.h"
-#include "kernel/rtlil.h"
+#include "kernel/yosys_common.h"
 #include "kernel/utils.h"
 
 USING_YOSYS_NAMESPACE
@@ -27,7 +27,8 @@ PRIVATE_NAMESPACE_BEGIN
 std::vector<Module*> order_modules(Design *design, std::vector<Module *> modules)
 {
 	std::set<Module *> modules_set(modules.begin(), modules.end());
-	TopoSort<Module*> sort;
+	using Order = IdString::compare_ptr_by_name<RTLIL::Module>;
+	TopoSort<Module*, Order> sort;
 
 	for (auto m : modules) {
 		sort.node(m);
@@ -38,7 +39,8 @@ std::vector<Module*> order_modules(Design *design, std::vector<Module *> modules
 				sort.edge(submodule, m);
 		}
 	}
-	log_assert(sort.sort());
+	bool is_sorted = sort.sort();
+	log_assert(is_sorted);
 	return sort.sorted;
 }
 
@@ -46,6 +48,17 @@ struct AbcNewPass : public ScriptPass {
 	AbcNewPass() : ScriptPass("abc_new", "(experimental) use ABC for SC technology mapping (new)")
 	{
 		experimental();
+	}
+
+	void on_register() override
+	{
+		RTLIL::constpad["abc_new.script.speed"] = "+&st; &dch -r;" \
+			"&nf; &st; &syn2; &if -g -K 6; &synch2 -r;" \
+			"&nf; &st; &syn2; &if -g -K 6; &synch2 -r;" \
+			"&nf; &st; &syn2; &if -g -K 6; &synch2 -r;" \
+			"&nf; &st; &syn2; &if -g -K 6; &synch2 -r;" \
+			"&nf; &st; &syn2; &if -g -K 6; &synch2 -r;" \
+			"&nf";
 	}
 
 	void help() override
@@ -86,6 +99,7 @@ struct AbcNewPass : public ScriptPass {
 	{
 		std::string run_from, run_to;
 		cleanup = true;
+		abc_exe_options.clear();
 		size_t argidx;
 		for (argidx = 1; argidx < args.size(); argidx++) {
 			if (args[argidx] == "-exe" || args[argidx] == "-script" ||
@@ -108,6 +122,11 @@ struct AbcNewPass : public ScriptPass {
 		}
 		extra_args(args, argidx, d);
 
+		// If no script provided, use a default.
+		if (abc_exe_options.find("-script") == std::string::npos) {
+			d->scratchpad_set_string("abc9.script", RTLIL::constpad["abc_new.script.speed"]);
+		}
+
 		log_header(d, "Executing ABC_NEW pass.\n");
 		log_push();
 		run_script(d, run_from, run_to);
@@ -117,7 +136,7 @@ struct AbcNewPass : public ScriptPass {
 	void script() override
 	{
 		if (check_label("check")) {
-			run("abc9_ops -check");	
+			run("abc9_ops -check");
 		}
 
 		if (check_label("prep_boxes")) {
@@ -141,12 +160,17 @@ struct AbcNewPass : public ScriptPass {
 				selected_modules = order_modules(active_design,
 												 active_design->selected_whole_modules_warn());
 				active_design->push_empty_selection();
-			} else {
+			}
+
+			run("abc9_ops -replace_zbufs");
+
+			if (help_mode) {
 				selected_modules = {nullptr};
 				run("foreach module in selection");
 			}
 
 			for (auto mod : selected_modules) {
+				GarbageCollectionGuard gc_guard(false);
 				std::string tmpdir = "<abc-temp-dir>";
 				std::string modname = "<module>";
 				std::string exe_options = "[options]";
@@ -156,7 +180,7 @@ struct AbcNewPass : public ScriptPass {
 					tmpdir = make_temp_dir(tmpdir);
 					modname = mod->name.str();
 					exe_options = abc_exe_options;
-					log_header(active_design, "Mapping module '%s'.\n", log_id(mod));
+					log_header(active_design, "Mapping module '%s'.\n", mod);
 					log_push();
 					active_design->select(mod);
 				}
@@ -168,12 +192,12 @@ struct AbcNewPass : public ScriptPass {
 						mod->get_string_attribute(ID(abc9_script)));
 				}
 
-				run(stringf("  abc9_ops -write_box %s/input.box", tmpdir.c_str()));
-				run(stringf("  write_xaiger2 -mapping_prep -map2 %s/input.map2 %s/input.xaig", tmpdir.c_str(), tmpdir.c_str()));
-				run(stringf("  abc9_exe %s -cwd %s -box %s/input.box", exe_options.c_str(), tmpdir.c_str(), tmpdir.c_str()));
-				run(stringf("  read_xaiger2 -sc_mapping -module_name %s -map2 %s/input.map2 %s/output.aig",
-							modname.c_str(), tmpdir.c_str(), tmpdir.c_str()));
-
+				run(stringf("  abc9_ops -write_box %s/input.box", tmpdir));
+				run(stringf("  write_xaiger2 -mapping_prep -map2 %s/input.map2 %s/input.xaig", tmpdir, tmpdir));
+				run(stringf("  abc9_exe %s -cwd %s -box %s/input.box", exe_options, tmpdir, tmpdir));
+				run(stringf("  read_aiger -xaiger -module_name %s$abc9 %s/output.aig",
+							modname, tmpdir));
+				run(stringf("  abc_ops_reintegrate -stdcell -map %s/input.map2", tmpdir));
 				if (!help_mode && mod->has_attribute(ID(abc9_script))) {
 					if (script_save.empty())
 						active_design->scratchpad_unset("abc9.script");
@@ -193,6 +217,8 @@ struct AbcNewPass : public ScriptPass {
 					}
 				}
 			}
+
+			run("abc9_ops -restore_zbufs");
 
 			if (!help_mode) {
 				active_design->pop_selection();

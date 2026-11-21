@@ -8,11 +8,11 @@ USING_YOSYS_NAMESPACE
 PRIVATE_NAMESPACE_BEGIN
 
 struct ClockGateCell {
-	IdString name;
-	IdString ce_pin;
-	IdString clk_in_pin;
-	IdString clk_out_pin;
-	std::vector<IdString> tie_lo_pins;
+	std::string name;
+	std::string ce_pin;
+	std::string clk_in_pin;
+	std::string clk_out_pin;
+	std::vector<std::string> tie_lo_pins;
 };
 
 ClockGateCell icg_from_arg(std::string& name, std::string& str) {
@@ -21,13 +21,13 @@ ClockGateCell icg_from_arg(std::string& name, std::string& str) {
 	char delimiter = ':';
 	size_t pos1 = str.find(delimiter);
 	if (pos1 == std::string::npos)
-		log_cmd_error("Not enough ports in descriptor string");
+		log_cmd_error("Not enough ports in descriptor string\n");
 	size_t pos2 = str.find(delimiter, pos1 + 1);
 	if (pos2 == std::string::npos)
-		log_cmd_error("Not enough ports in descriptor string");
+		log_cmd_error("Not enough ports in descriptor string\n");
 	size_t pos3 = str.find(delimiter, pos2 + 1);
 	if (pos3 != std::string::npos)
-		log_cmd_error("Too many ports in descriptor string");
+		log_cmd_error("Too many ports in descriptor string\n");
 
 	std::string ce = str.substr(0, pos1);
 	c.ce_pin = RTLIL::escape_id(ce);
@@ -81,11 +81,11 @@ static std::pair<std::optional<ClockGateCell>, std::optional<ClockGateCell>>
 		} else if (icg_kind == "latch_negedge" || starts_with("latch_negedge_")) {
 			clk_pol = false;
 		} else {
-			log("Ignoring ICG primitive %s of kind '%s'\n", cell_name.c_str(), icg_kind.c_str());
+			log("Ignoring ICG primitive %s of kind '%s'\n", cell_name, icg_kind);
 			continue;
 		}
 
-		log_debug("maybe valid icg: %s\n", cell_name.c_str());
+		log_debug("maybe valid icg: %s\n", cell_name);
 		ClockGateCell icg_interface;
 		icg_interface.name = RTLIL::escape_id(cell_name);
 
@@ -96,21 +96,21 @@ static std::pair<std::optional<ClockGateCell>, std::optional<ClockGateCell>>
 			if (pin->find("clock_gate_clock_pin")) {
 				if (!icg_interface.clk_in_pin.empty()) {
 					log_warning("Malformed liberty file - multiple clock_gate_clock_pin in cell %s\n",
-						cell_name.c_str());
+						cell_name);
 					continue;
 				} else
 					icg_interface.clk_in_pin = RTLIL::escape_id(pin->args[0]);
 			} else if (pin->find("clock_gate_out_pin")) {
 				if (!icg_interface.clk_out_pin.empty()) {
 					log_warning("Malformed liberty file - multiple clock_gate_out_pin in cell %s\n",
-						cell_name.c_str());
+						cell_name);
 					continue;
 				} else
 					icg_interface.clk_out_pin = RTLIL::escape_id(pin->args[0]);
 			} else if (pin->find("clock_gate_enable_pin")) {
 				if (!icg_interface.ce_pin.empty()) {
 					log_warning("Malformed liberty file - multiple clock_gate_enable_pin in cell %s\n",
-						cell_name.c_str());
+						cell_name);
 					continue;
 				} else
 					icg_interface.ce_pin = RTLIL::escape_id(pin->args[0]);
@@ -122,24 +122,24 @@ static std::pair<std::optional<ClockGateCell>, std::optional<ClockGateCell>>
 					continue;
 
 				log_warning("Malformed liberty file - extra pin %s in cell %s\n",
-					pin->args[0].c_str(), cell_name.c_str());
+					pin->args[0], cell_name);
 				continue;
 			}
 		}
 
 		if (icg_interface.clk_in_pin.empty()) {
-			log_warning("Malformed liberty file - missing clock_gate_clock_pin in cell %s",
-				cell_name.c_str());
+			log_warning("Malformed liberty file - missing clock_gate_clock_pin in cell %s\n",
+				cell_name);
 			continue;
 		}
 		if (icg_interface.clk_out_pin.empty()) {
-			log_warning("Malformed liberty file - missing clock_gate_out_pin in cell %s",
-				cell_name.c_str());
+			log_warning("Malformed liberty file - missing clock_gate_out_pin in cell %s\n",
+				cell_name);
 			continue;
 		}
 		if (icg_interface.ce_pin.empty()) {
-			log_warning("Malformed liberty file - missing clock_gate_enable_pin in cell %s",
-				cell_name.c_str());
+			log_warning("Malformed liberty file - missing clock_gate_enable_pin in cell %s\n",
+				cell_name);
 			continue;
 		}
 
@@ -162,9 +162,9 @@ static std::pair<std::optional<ClockGateCell>, std::optional<ClockGateCell>>
 			winning = cost < goal;
 
 			if (winning)
-				log_debug("%s beats %s\n", icg_interface.name.c_str(), icg_to_beat->name.c_str());
+				log_debug("%s beats %s\n", icg_interface.name, icg_to_beat->name);
 		} else {
-			log_debug("%s is the first of its polarity\n", icg_interface.name.c_str());
+			log_debug("%s is the first of its polarity\n", icg_interface.name);
 			winning = true;
 		}
 		if (winning) {
@@ -176,11 +176,11 @@ static std::pair<std::optional<ClockGateCell>, std::optional<ClockGateCell>>
 	std::optional<ClockGateCell> pos;
 	std::optional<ClockGateCell> neg;
 	if (best_pos) {
-		log("Selected rising edge ICG %s from Liberty file\n", best_pos->name.c_str());
+		log("Selected rising edge ICG %s from Liberty file\n", best_pos->name);
 		pos.emplace(*best_pos);
 	}
 	if (best_neg) {
-		log("Selected falling edge ICG %s from Liberty file\n", best_neg->name.c_str());
+		log("Selected falling edge ICG %s from Liberty file\n", best_neg->name);
 		neg.emplace(*best_neg);
 	}
 	return std::make_pair(pos, neg);
@@ -290,9 +290,7 @@ struct ClockgatePass : public Pass {
 				continue;
 			}
 			if (args[argidx] == "-liberty" && argidx+1 < args.size()) {
-				std::string liberty_file = args[++argidx];
-				rewrite_filename(liberty_file);
-				liberty_files.push_back(liberty_file);
+				append_globbed(liberty_files, args[++argidx]);
 				continue;
 			}
 			if (args[argidx] == "-dont_use" && argidx+1 < args.size()) {
@@ -310,7 +308,7 @@ struct ClockgatePass : public Pass {
 			LibertyMergedCells merged;
 			for (auto path : liberty_files) {
 				std::istream* f = uncompressed(path);
-				LibertyParser p(*f, path);
+				LibertyParser p(*f, path, liberty_synth_filter);
 				merged.merge(p);
 				delete f;
 			}
@@ -333,12 +331,14 @@ struct ClockgatePass : public Pass {
 		int gated_flop_count = 0;
 		for (auto module : design->selected_unboxed_whole_modules()) {
 			for (auto cell : module->cells()) {
-				if (!RTLIL::builtin_ff_cell_types().count(cell->type))
+				if (!cell->is_builtin_ff())
 					continue;
 
 				FfData ff(nullptr, cell);
 				// It would be odd to get constants, but we better handle it
 				if (ff.has_ce) {
+					if (ff.has_srst && !ff.ce_over_srst)
+						continue;
 					if (!ff.sig_clk.is_bit() || !ff.sig_ce.is_bit())
 						continue;
 					if (!ff.sig_clk[0].is_wire() || !ff.sig_ce[0].is_wire())
@@ -371,7 +371,8 @@ struct ClockgatePass : public Pass {
 				if (!matching_icg_desc)
 					continue;
 
-				Cell* icg = module->addCell(NEW_ID, matching_icg_desc->name);
+				auto& twines = module->twines();
+				Cell* icg = module->addCell(NEW_ID, twines.add(matching_icg_desc->name));
 				icg->setPort(matching_icg_desc->ce_pin, clk.ce_bit);
 				icg->setPort(matching_icg_desc->clk_in_pin, clk.clk_bit);
 				gclk.new_net = module->addWire(NEW_ID);
@@ -395,7 +396,7 @@ struct ClockgatePass : public Pass {
 				if (!it->second.new_net)
 					continue;
 
-				log_debug("Fix up FF %s\n", cell->name.c_str());
+				log_debug("Fix up FF %s\n", cell->name);
 				// Now we start messing with the design
 				ff.has_ce = false;
 				// Construct the clock gate

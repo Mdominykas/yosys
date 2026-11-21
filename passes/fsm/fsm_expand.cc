@@ -22,6 +22,7 @@
 #include "kernel/sigtools.h"
 #include "kernel/consteval.h"
 #include "kernel/celltypes.h"
+#include "kernel/unused_bits.h"
 #include "fsmdata.h"
 #include <string.h>
 
@@ -32,6 +33,7 @@ struct FsmExpand
 {
 	RTLIL::Module *module;
 	RTLIL::Cell *fsm_cell;
+	UnusedBits& unused_bits;
 	bool full_mode;
 
 	SigMap assign_map;
@@ -127,7 +129,7 @@ struct FsmExpand
 		if (trans_num > limit_transitions)
 		{
 			log("  grown transition table to %d entries -> optimize.\n", trans_num);
-			FsmData::optimize_fsm(fsm_cell, module);
+			FsmData::optimize_fsm(fsm_cell, module, unused_bits);
 			already_optimized = true;
 
 			trans_num = fsm_cell->parameters[ID::TRANS_NUM].as_int();
@@ -140,7 +142,7 @@ struct FsmExpand
 	{
 		optimze_as_needed();
 
-		log("  merging %s cell %s.\n", cell->type.c_str(), cell->name.c_str());
+		log("  merging %s cell %s.\n", cell->type, cell->name);
 		merged_set.insert(cell);
 		already_optimized = false;
 
@@ -189,12 +191,12 @@ struct FsmExpand
 
 		if (GetSize(input_sig) > 10)
 			log_warning("Cell %s.%s (%s) has %d input bits, merging into FSM %s.%s might be problematic.\n",
-					log_id(cell->module), log_id(cell), log_id(cell->type),
-					GetSize(input_sig), log_id(fsm_cell->module), log_id(fsm_cell));
+					cell->module, cell, cell->type.unescape(),
+					GetSize(input_sig), fsm_cell->module, fsm_cell);
 
 		if (GetSize(fsm_data.transition_table) > 10000)
 			log_warning("Transition table for FSM %s.%s already has %d rows, merging more cells "
-					"into this FSM might be problematic.\n", log_id(fsm_cell->module), log_id(fsm_cell),
+					"into this FSM might be problematic.\n", fsm_cell->module, fsm_cell,
 					GetSize(fsm_data.transition_table));
 
 		std::vector<FsmData::transition_t> new_transition_table;
@@ -218,7 +220,7 @@ struct FsmExpand
 		fsm_data.copy_to_cell(fsm_cell);
 	}
 
-	FsmExpand(RTLIL::Cell *cell, RTLIL::Design *design, RTLIL::Module *mod, bool full)
+	FsmExpand(RTLIL::Cell *cell, RTLIL::Design *design, RTLIL::Module *mod, UnusedBits& unused_bits, bool full) : unused_bits(unused_bits)
 	{
 		module = mod;
 		fsm_cell = cell;
@@ -227,6 +229,7 @@ struct FsmExpand
 		assign_map.set(module);
 		ct.setup_internals();
 		ct.setup_stdcells();
+		ct.cell_types.erase(ID($barrier)); // never merge through a barrier
 
 		for (auto &cell_it : module->cells_) {
 			RTLIL::Cell *c = cell_it.second;
@@ -243,7 +246,7 @@ struct FsmExpand
 	void execute()
 	{
 		log("\n");
-		log("Expanding FSM `%s' from module `%s':\n", fsm_cell->name.c_str(), module->name.c_str());
+		log("Expanding FSM `%s' from module `%s':\n", fsm_cell->name, module->name);
 
 		already_optimized = false;
 		limit_transitions =  16 * fsm_cell->parameters[ID::TRANS_NUM].as_int();
@@ -257,7 +260,7 @@ struct FsmExpand
 			module->remove(c);
 
 		if (merged_set.size() > 0 && !already_optimized)
-			FsmData::optimize_fsm(fsm_cell, module);
+			FsmData::optimize_fsm(fsm_cell, module, unused_bits);
 
 		log("  merged %d cells into FSM.\n", GetSize(merged_set));
 	}
@@ -296,12 +299,13 @@ struct FsmExpandPass : public Pass {
 		extra_args(args, argidx, design);
 
 		for (auto mod : design->selected_modules()) {
+			UnusedBits unused_bits(mod);
 			std::vector<RTLIL::Cell*> fsm_cells;
 			for (auto cell : mod->selected_cells())
 				if (cell->type == ID($fsm))
 					fsm_cells.push_back(cell);
 			for (auto c : fsm_cells) {
-				FsmExpand fsm_expand(c, design, mod, full_mode);
+				FsmExpand fsm_expand(c, design, mod, unused_bits, full_mode);
 				fsm_expand.execute();
 			}
 		}

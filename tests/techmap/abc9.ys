@@ -17,7 +17,8 @@ design -save gold
 abc9 -lut 4
 
 design -load gold
-abc9 -lut 4 -fast
+scratchpad -copy abc9.script.default.fast abc9.script
+abc9 -lut 4
 
 design -load gold
 scratchpad -copy abc9.script.default.area abc9.script
@@ -65,8 +66,7 @@ EOT
 simplemap
 equiv_opt -assert abc9 -lut 4
 design -load postopt
-select -assert-count 1 t:$lut
-select -assert-count 1 t:$_AND_
+select -assert-count 2 t:$lut
 
 
 design -reset

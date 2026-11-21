@@ -29,6 +29,31 @@ PRIVATE_NAMESPACE_BEGIN
 struct SynthIntelPass : public ScriptPass {
 	SynthIntelPass() : ScriptPass("synth_intel", "synthesis for Intel (Altera) FPGAs.") { experimental(); }
 
+	void on_register() override
+	{
+		target_register.emplace("intel", Target{
+			"Intel (Altera)",
+			{
+				{"max10", {
+					"MAX 10",
+					{"+/intel/max10/cells_sim.v", "+/intel/common/m9k_bb.v", "+/intel/common/altpll_bb.v"}
+				}},
+				{"cycloneiv", {
+					"Cyclone IV",
+					{"+/intel/cycloneiv/cells_sim.v", "+/intel/common/m9k_bb.v", "+/intel/common/altpll_bb.v"}
+				}},
+				{"cycloneive", {
+					"Cyclone IVe",
+					{"+/intel/cycloneive/cells_sim.v", "+/intel/common/m9k_bb.v", "+/intel/common/altpll_bb.v"}
+				}},
+				{"cyclone10lp", {
+					"Cyclone 10LP",
+					{"+/intel/cyclone10lp/cells_sim.v", "+/intel/common/m9k_bb.v", "+/intel/common/altpll_bb.v"}
+				}}
+			}
+		});
+	}
+
 	void help() override
 	{
 		//   |---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|
@@ -79,16 +104,13 @@ struct SynthIntelPass : public ScriptPass {
 		log("    -noflatten\n");
 		log("        do not flatten design before synthesis\n");
 		log("\n");
-		log("    -retime\n");
-		log("        run 'abc' with '-dff -D 1' options\n");
-		log("\n");
 		log("The following commands are executed by this synthesis command:\n");
 		help_script();
 		log("\n");
 	}
 
 	string top_opt, family_opt, vout_file, blif_file;
-	bool retime, flatten, nobram, dff, nodsp, iopads;
+	bool flatten, nobram, dff, nodsp, iopads;
 
 	void clear_flags() override
 	{
@@ -96,7 +118,6 @@ struct SynthIntelPass : public ScriptPass {
 		family_opt = "max10";
 		vout_file = "";
 		blif_file = "";
-		retime = false;
 		flatten = true;
 		nobram = false;
 		dff = false;
@@ -157,7 +178,7 @@ struct SynthIntelPass : public ScriptPass {
 				continue;
 			}
 			if (args[argidx] == "-retime") {
-				retime = true;
+				// Removed: ABC9 does not support retiming.
 				continue;
 			}
 			break;
@@ -174,7 +195,10 @@ struct SynthIntelPass : public ScriptPass {
 		    family_opt != "cycloneiv" &&
 		    family_opt != "cycloneive" &&
 		    family_opt != "cyclone10lp")
-			log_cmd_error("Invalid or no family specified: '%s'\n", family_opt.c_str());
+			log_cmd_error("Invalid or no family specified: '%s'\n", family_opt);
+
+		if (family_opt != "max10")
+			nodsp = true;
 
 		log_header(design, "Executing SYNTH_INTEL pass.\n");
 		log_push();
@@ -188,23 +212,25 @@ struct SynthIntelPass : public ScriptPass {
 	{
 		if (check_label("begin")) {
 			if (check_label("family"))
-				run(stringf("read_verilog -sv -lib +/intel/%s/cells_sim.v", family_opt.c_str()));
+				run(stringf("read_verilog -sv -lib +/intel/%s/cells_sim.v", family_opt));
 
 			// Misc and common cells
 			run("read_verilog -sv -lib +/intel/common/m9k_bb.v");
 			run("read_verilog -sv -lib +/intel/common/altpll_bb.v");
-			run(stringf("hierarchy -check %s", help_mode ? "-top <top>" : top_opt.c_str()));
+			run(stringf("hierarchy -check %s", help_mode ? "-top <top>" : top_opt));
 		}
 
 		if (check_label("coarse")) {
 			run("proc");
-			if (flatten || help_mode)
+			if (flatten || help_mode) {
+				run("check");
 				run("flatten", "(skip if -noflatten)");
-                        run("tribuf -logic");
+			}
+			run("tribuf -logic");
 			run("deminout");
 			run("opt_expr");
-			run("opt_clean");
 			run("check");
+			run("opt_clean");
 			run("opt -nodffe -nosdff");
 			run("fsm");
 			run("opt");
@@ -225,7 +251,7 @@ struct SynthIntelPass : public ScriptPass {
 					run("techmap -map +/mul2dsp.v -D DSP_A_MAXWIDTH=9 -D DSP_B_MAXWIDTH=9  -D DSP_A_MINWIDTH=4 -D DSP_B_MINWIDTH=4 -D DSP_NAME=$__MUL9X9");
 					run("chtype -set $mul t:$__soft_mul");
 				run("alumacc");
-				run(stringf("techmap -map +/intel/%s/dsp_map.v", family_opt.c_str()));
+				run(stringf("techmap -map +/intel/%s/dsp_map.v", family_opt));
 			} else {
 				run("alumacc");
 			}
@@ -242,7 +268,7 @@ struct SynthIntelPass : public ScriptPass {
 				run("memory_bram -rules +/intel/common/brams_m9k.txt", "(if applicable for family)");
 				run("techmap -map +/intel/common/brams_map_m9k.v", "(if applicable for family)");
 			} else {
-				log_warning("BRAM mapping is not currently supported for %s.\n", family_opt.c_str());
+				log_warning("BRAM mapping is not currently supported for %s.\n", family_opt);
 			}
 		}
 
@@ -254,8 +280,6 @@ struct SynthIntelPass : public ScriptPass {
 			run("opt -full");
 			run("clean -purge");
 			run("setundef -undriven -zero");
-			if (retime || help_mode)
-				run("abc -markgroups -dff -D 1", "(only if -retime)");
 		}
 
 		if (check_label("map_ffs")) {
@@ -273,8 +297,8 @@ struct SynthIntelPass : public ScriptPass {
 
 		if (check_label("map_cells")) {
 			if (iopads || help_mode)
-				run("iopadmap -bits -outpad $__outpad I:O -inpad $__inpad O:I", "(if -iopads)");
-			run(stringf("techmap -map +/intel/%s/cells_map.v", family_opt.c_str()));
+				run("iopadmap -bits -outpad $__outpad I:O -inpad $__inpad O:I A:top", "(if -iopads)");
+			run(stringf("techmap -map +/intel/%s/cells_map.v", family_opt));
 			run("clean -purge");
 		}
 
@@ -288,13 +312,13 @@ struct SynthIntelPass : public ScriptPass {
 		if (check_label("vqm")) {
 			if (!vout_file.empty() || help_mode)
 				run(stringf("write_verilog -attr2comment -defparam -nohex -decimal -renameprefix syn_ %s",
-					    help_mode ? "<file-name>" : vout_file.c_str()));
+					    help_mode ? "<file-name>" : vout_file));
 		}
 
 		if (check_label("vpr")) {
 			if (!blif_file.empty() || help_mode) {
 				run(stringf("opt_clean -purge"));
-				run(stringf("write_blif %s", help_mode ? "<file-name>" : blif_file.c_str()));
+				run(stringf("write_blif %s", help_mode ? "<file-name>" : blif_file));
 			}
 		}
 	}

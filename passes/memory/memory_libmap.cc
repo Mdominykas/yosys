@@ -39,6 +39,7 @@ struct PassOptions {
 	bool no_auto_distributed;
 	bool no_auto_block;
 	bool no_auto_huge;
+	bool force_params;
 	double logic_cost_rom;
 	double logic_cost_ram;
 };
@@ -129,6 +130,11 @@ struct MemConfig {
 
 typedef std::vector<MemConfig> MemConfigs;
 
+static void set_ram_port(RTLIL::Cell *cell, const std::string &port_name, const RTLIL::SigSpec &sig)
+{
+	cell->setPort(cell->twines().add(port_name), sig);
+}
+
 struct MapWorker {
 	Module *module;
 	ModWalker modwalker;
@@ -203,7 +209,7 @@ struct MemMapping {
 			if (!check_init(rdef))
 				continue;
 			if (rdef.prune_rom && mem.wr_ports.empty()) {
-				log_debug("memory %s.%s: rejecting mapping to %s: ROM mapping disabled (prune_rom set)\n", log_id(mem.module->name), log_id(mem.memid), log_id(rdef.id));
+				log_debug("memory %s.%s: rejecting mapping to %s: ROM mapping disabled (prune_rom set)\n", mem.module, mem.memid.unescape(), RTLIL::unescape_id(rdef.id));
 				continue;
 			}
 			MemConfig cfg;
@@ -322,7 +328,7 @@ struct MemMapping {
 
 	void log_reject(const Ram &ram, std::string message) {
 		if(ys_debug(1)) {
-			rejected_cfg_debug_msgs += stringf("can't map to to %s: ", log_id(ram.id));
+			rejected_cfg_debug_msgs += stringf("can't map to to %s: ", RTLIL::unescape_id(ram.id));
 			rejected_cfg_debug_msgs += message;
 			rejected_cfg_debug_msgs += "\n";
 		}
@@ -337,12 +343,12 @@ struct MemMapping {
 				rejected_cfg_debug_msgs += portname;
 				first = false;
 			}
-			rejected_cfg_debug_msgs += stringf("] of %s: ", log_id(ram.id));
+			rejected_cfg_debug_msgs += stringf("] of %s: ", RTLIL::unescape_id(ram.id));
 			rejected_cfg_debug_msgs += message;
 			rejected_cfg_debug_msgs += "\n";
 		}
 	}
-	
+
 	void log_reject(const Ram &ram, const PortGroup &pg, int pvi, std::string message) {
 		if(ys_debug(1)) {
 			rejected_cfg_debug_msgs += stringf("can't map to option selection [");
@@ -360,7 +366,7 @@ struct MemMapping {
 				rejected_cfg_debug_msgs += portname;
 				first = false;
 			}
-			rejected_cfg_debug_msgs += stringf("] of %s: ", log_id(ram.id));
+			rejected_cfg_debug_msgs += stringf("] of %s: ", RTLIL::unescape_id(ram.id));
 			rejected_cfg_debug_msgs += message;
 			rejected_cfg_debug_msgs += "\n";
 		}
@@ -379,7 +385,7 @@ void MemMapping::dump_configs(int stage) {
 		default:
 			abort();
 	}
-	log_debug("Memory %s.%s mapping candidates (%s):\n", log_id(mem.module->name), log_id(mem.memid), stage_name);
+	log_debug("Memory %s.%s mapping candidates (%s):\n", mem.module, mem.memid.unescape(), stage_name);
 	if (logic_ok) {
 		log_debug("- logic fallback\n");
 		log_debug("  - cost: %f\n", logic_cost);
@@ -390,9 +396,9 @@ void MemMapping::dump_configs(int stage) {
 }
 
 void MemMapping::dump_config(MemConfig &cfg) {
-	log_debug("- %s:\n", log_id(cfg.def->id));
+	log_debug("- %s:\n", RTLIL::unescape_id(cfg.def->id));
 	for (auto &it: cfg.def->options)
-		log_debug("  - option %s %s\n", it.first.c_str(), log_const(it.second));
+		log_debug("  - option %s %s\n", it.first, log_const(it.second));
 	log_debug("  - emulation score: %d\n", cfg.score_emu);
 	log_debug("  - replicates (for ports): %d\n", cfg.repl_port);
 	log_debug("  - replicates (for data): %d\n", cfg.repl_d);
@@ -403,7 +409,7 @@ void MemMapping::dump_config(MemConfig &cfg) {
 	for (int x: cfg.def->dbits)
 		os << " " << x;
 	std::string dbits_s = os.str();
-	log_debug("  - abits %d dbits%s\n", cfg.def->abits, dbits_s.c_str());
+	log_debug("  - abits %d dbits%s\n", cfg.def->abits, dbits_s);
 	if (cfg.def->byte != 0)
 		log_debug("  - byte width %d\n", cfg.def->byte);
 	log_debug("  - chosen base width %d\n", cfg.def->dbits[cfg.base_width_log2]);
@@ -414,25 +420,25 @@ void MemMapping::dump_config(MemConfig &cfg) {
 		else
 			os << " " << x;
 	std::string swizzle_s = os.str();
-	log_debug("  - swizzle%s\n", swizzle_s.c_str());
+	log_debug("  - swizzle%s\n", swizzle_s);
 	os.str("");
 	for (int i = 0; (1 << i) <= cfg.hard_wide_mask; i++)
 		if (cfg.hard_wide_mask & 1 << i)
 			os << " " << i;
 	std::string wide_s = os.str();
 	if (cfg.hard_wide_mask)
-		log_debug("  - hard wide bits%s\n", wide_s.c_str());
+		log_debug("  - hard wide bits%s\n", wide_s);
 	if (cfg.emu_read_first)
 		log_debug("  - emulate read-first behavior\n");
 	for (int i = 0; i < GetSize(mem.wr_ports); i++) {
 		auto &pcfg = cfg.wr_ports[i];
 		if (pcfg.rd_port == -1)
-			log_debug("  - write port %d: port group %s\n", i, cfg.def->port_groups[pcfg.port_group].names[0].c_str());
+			log_debug("  - write port %d: port group %s\n", i, cfg.def->port_groups[pcfg.port_group].names[0]);
 		else
-			log_debug("  - write port %d: port group %s (shared with read port %d)\n", i, cfg.def->port_groups[pcfg.port_group].names[0].c_str(), pcfg.rd_port);
+			log_debug("  - write port %d: port group %s (shared with read port %d)\n", i, cfg.def->port_groups[pcfg.port_group].names[0], pcfg.rd_port);
 
 		for (auto &it: pcfg.def->options)
-			log_debug("    - option %s %s\n", it.first.c_str(), log_const(it.second));
+			log_debug("    - option %s %s\n", it.first, log_const(it.second));
 		if (cfg.def->width_mode == WidthMode::PerPort) {
 			std::stringstream os;
 			for (int i = pcfg.def->min_wr_wide_log2; i <= pcfg.def->max_wr_wide_log2; i++)
@@ -441,7 +447,7 @@ void MemMapping::dump_config(MemConfig &cfg) {
 			const char *note = "";
 			if (pcfg.rd_port != -1)
 				note = pcfg.def->width_tied ? " (tied)" : " (independent)";
-			log_debug("    - widths%s%s\n", widths_s.c_str(), note);
+			log_debug("    - widths%s%s\n", widths_s, note);
 		}
 		for (auto i: pcfg.emu_prio)
 			log_debug("    - emulate priority over write port %d\n", i);
@@ -449,11 +455,11 @@ void MemMapping::dump_config(MemConfig &cfg) {
 	for (int i = 0; i < GetSize(mem.rd_ports); i++) {
 		auto &pcfg = cfg.rd_ports[i];
 		if (pcfg.wr_port == -1)
-			log_debug("  - read port %d: port group %s\n", i, cfg.def->port_groups[pcfg.port_group].names[0].c_str());
+			log_debug("  - read port %d: port group %s\n", i, cfg.def->port_groups[pcfg.port_group].names[0]);
 		else
-			log_debug("  - read port %d: port group %s (shared with write port %d)\n", i, cfg.def->port_groups[pcfg.port_group].names[0].c_str(), pcfg.wr_port);
+			log_debug("  - read port %d: port group %s (shared with write port %d)\n", i, cfg.def->port_groups[pcfg.port_group].names[0], pcfg.wr_port);
 		for (auto &it: pcfg.def->options)
-			log_debug("    - option %s %s\n", it.first.c_str(), log_const(it.second));
+			log_debug("    - option %s %s\n", it.first, log_const(it.second));
 		if (cfg.def->width_mode == WidthMode::PerPort) {
 			std::stringstream os;
 			for (int i = pcfg.def->min_rd_wide_log2; i <= pcfg.def->max_rd_wide_log2; i++)
@@ -462,7 +468,7 @@ void MemMapping::dump_config(MemConfig &cfg) {
 			const char *note = "";
 			if (pcfg.wr_port != -1)
 				note = pcfg.def->width_tied ? " (tied)" : " (independent)";
-			log_debug("    - widths%s%s\n", widths_s.c_str(), note);
+			log_debug("    - widths%s%s\n", widths_s, note);
 		}
 		if (pcfg.emu_sync)
 			log_debug("    - emulate data register\n");
@@ -515,7 +521,7 @@ std::pair<bool, Const> search_for_attribute(Mem mem, IdString attr) {
 		for (SigBit bit: port.addr)
 			if (bit.is_wire() && bit.wire->has_attribute(attr))
 				return std::make_pair(true, bit.wire->attributes.at(attr));
-	
+
 	return std::make_pair(false, Const());
 }
 
@@ -526,7 +532,7 @@ void MemMapping::determine_style() {
 	auto find_attr = search_for_attribute(mem, ID::lram);
 	if (find_attr.first && find_attr.second.as_bool()) {
 		kind = RamKind::Huge;
-		log("found attribute 'lram' on memory %s.%s, forced mapping to huge RAM\n", log_id(mem.module->name), log_id(mem.memid));
+		log("found attribute 'lram' on memory %s.%s, forced mapping to huge RAM\n", mem.module, mem.memid.unescape());
 		return;
 	}
 	for (auto attr: {ID::ram_block, ID::rom_block, ID::ram_style, ID::rom_style, ID::ramstyle, ID::romstyle, ID::syn_ramstyle, ID::syn_romstyle}) {
@@ -535,7 +541,7 @@ void MemMapping::determine_style() {
 			Const val = find_attr.second;
 			if (val == 1) {
 				kind = RamKind::NotLogic;
-				log("found attribute '%s = 1' on memory %s.%s, disabled mapping to FF\n", log_id(attr), log_id(mem.module->name), log_id(mem.memid));
+				log("found attribute '%s = 1' on memory %s.%s, disabled mapping to FF\n", ID::unescaped_str(attr), mem.module, mem.memid.unescape());
 				return;
 			}
 			std::string val_s = val.decode_string();
@@ -548,20 +554,20 @@ void MemMapping::determine_style() {
 				// Nothing.
 			} else if (val_s == "logic" || val_s == "registers") {
 				kind = RamKind::Logic;
-				log("found attribute '%s = %s' on memory %s.%s, forced mapping to FF\n", log_id(attr), val_s.c_str(), log_id(mem.module->name), log_id(mem.memid));
+				log("found attribute '%s = %s' on memory %s.%s, forced mapping to FF\n", ID::unescaped_str(attr), val_s, mem.module, mem.memid.unescape());
 			} else if (val_s == "distributed") {
 				kind = RamKind::Distributed;
-				log("found attribute '%s = %s' on memory %s.%s, forced mapping to distributed RAM\n", log_id(attr), val_s.c_str(), log_id(mem.module->name), log_id(mem.memid));
+				log("found attribute '%s = %s' on memory %s.%s, forced mapping to distributed RAM\n", ID::unescaped_str(attr), val_s, mem.module, mem.memid.unescape());
 			} else if (val_s == "block" || val_s == "block_ram" || val_s == "ebr") {
 				kind = RamKind::Block;
-				log("found attribute '%s = %s' on memory %s.%s, forced mapping to block RAM\n", log_id(attr), val_s.c_str(), log_id(mem.module->name), log_id(mem.memid));
+				log("found attribute '%s = %s' on memory %s.%s, forced mapping to block RAM\n", ID::unescaped_str(attr), val_s, mem.module, mem.memid.unescape());
 			} else if (val_s == "huge" || val_s == "ultra") {
 				kind = RamKind::Huge;
-				log("found attribute '%s = %s' on memory %s.%s, forced mapping to huge RAM\n", log_id(attr), val_s.c_str(), log_id(mem.module->name), log_id(mem.memid));
+				log("found attribute '%s = %s' on memory %s.%s, forced mapping to huge RAM\n", ID::unescaped_str(attr), val_s, mem.module, mem.memid.unescape());
 			} else {
 				kind = RamKind::NotLogic;
 				style = val_s;
-				log("found attribute '%s = %s' on memory %s.%s, forced mapping to %s RAM\n", log_id(attr), val_s.c_str(), log_id(mem.module->name), log_id(mem.memid), val_s.c_str());
+				log("found attribute '%s = %s' on memory %s.%s, forced mapping to %s RAM\n", ID::unescaped_str(attr), val_s, mem.module, mem.memid.unescape(), val_s);
 			}
 			return;
 		}
@@ -1686,7 +1692,7 @@ std::vector<SigSpec> generate_mux(Mem &mem, int rpidx, const Swizzle &swz) {
 void MemMapping::emit_port(const MemConfig &cfg, std::vector<Cell*> &cells, const PortVariant &pdef, const char *name, int wpidx, int rpidx, const std::vector<int> &hw_addr_swizzle) {
 	for (auto &it: pdef.options)
 		for (auto cell: cells)
-			cell->setParam(stringf("\\PORT_%s_OPTION_%s", name, it.first.c_str()), it.second);
+			cell->setParam(stringf("\\PORT_%s_OPTION_%s", name, it.first), it.second);
 	SigSpec addr = Const(State::Sx, cfg.def->abits);
 	int wide_log2 = 0, wr_wide_log2 = 0, rd_wide_log2 = 0;
 	SigSpec clk = State::S0;
@@ -1754,9 +1760,9 @@ void MemMapping::emit_port(const MemConfig &cfg, std::vector<Cell*> &cells, cons
 					cell->setParam(stringf("\\PORT_%s_CLK_POL", name), clk_pol);
 		}
 		for (auto cell: cells) {
-			cell->setPort(stringf("\\PORT_%s_CLK", name), clk);
+			set_ram_port(cell, stringf("\\PORT_%s_CLK", name), clk);
 			if (pdef.clk_en)
-				cell->setPort(stringf("\\PORT_%s_CLK_EN", name), clk_en);
+				set_ram_port(cell, stringf("\\PORT_%s_CLK_EN", name), clk_en);
 		}
 	}
 
@@ -1818,7 +1824,7 @@ void MemMapping::emit_port(const MemConfig &cfg, std::vector<Cell*> &cells, cons
 	for (int i = 0; i < hw_wr_wide_log2 && i < hw_rd_wide_log2; i++)
 		hw_addr[i] = State::S0;
 	for (auto cell: cells)
-		cell->setPort(stringf("\\PORT_%s_ADDR", name), hw_addr);
+		set_ram_port(cell, stringf("\\PORT_%s_ADDR", name), hw_addr);
 
 	// Write part.
 	if (pdef.kind != PortKind::Ar && pdef.kind != PortKind::Sr) {
@@ -1849,31 +1855,31 @@ void MemMapping::emit_port(const MemConfig &cfg, std::vector<Cell*> &cells, cons
 						hw_wren.append(big_wren[bit.mux_idx][bit.bit]);
 					}
 				}
-				cell->setPort(stringf("\\PORT_%s_WR_DATA", name), hw_wdata);
+				set_ram_port(cell, stringf("\\PORT_%s_WR_DATA", name), hw_wdata);
 				if (pdef.wrbe_separate) {
 					// TODO make some use of it
 					SigSpec en = mem.module->ReduceOr(NEW_ID, hw_wren);
-					cell->setPort(stringf("\\PORT_%s_WR_EN", name), en);
-					cell->setPort(stringf("\\PORT_%s_WR_BE", name), hw_wren);
+					set_ram_port(cell, stringf("\\PORT_%s_WR_EN", name), en);
+					set_ram_port(cell, stringf("\\PORT_%s_WR_BE", name), hw_wren);
 					if (cfg.def->width_mode != WidthMode::Single)
 						cell->setParam(stringf("\\PORT_%s_WR_BE_WIDTH", name), GetSize(hw_wren));
 				} else {
-					cell->setPort(stringf("\\PORT_%s_WR_EN", name), hw_wren);
-					if (cfg.def->byte != 0 && cfg.def->width_mode != WidthMode::Single)
+					set_ram_port(cell, stringf("\\PORT_%s_WR_EN", name), hw_wren);
+					if (cfg.def->byte != 0 && (cfg.def->width_mode != WidthMode::Single || opts.force_params))
 						cell->setParam(stringf("\\PORT_%s_WR_EN_WIDTH", name), GetSize(hw_wren));
 				}
 			}
 		} else {
 			for (auto cell: cells) {
-				cell->setPort(stringf("\\PORT_%s_WR_DATA", name), Const(State::Sx, width));
+				set_ram_port(cell, stringf("\\PORT_%s_WR_DATA", name), Const(State::Sx, width));
 				SigSpec hw_wren = Const(State::S0, width / effective_byte);
 				if (pdef.wrbe_separate) {
-					cell->setPort(stringf("\\PORT_%s_WR_EN", name), State::S0);
-					cell->setPort(stringf("\\PORT_%s_WR_BE", name), hw_wren);
+					set_ram_port(cell, stringf("\\PORT_%s_WR_EN", name), State::S0);
+					set_ram_port(cell, stringf("\\PORT_%s_WR_BE", name), hw_wren);
 					if (cfg.def->width_mode != WidthMode::Single)
 						cell->setParam(stringf("\\PORT_%s_WR_BE_WIDTH", name), GetSize(hw_wren));
 				} else {
-					cell->setPort(stringf("\\PORT_%s_WR_EN", name), hw_wren);
+					set_ram_port(cell, stringf("\\PORT_%s_WR_EN", name), hw_wren);
 					if (cfg.def->byte != 0 && cfg.def->width_mode != WidthMode::Single)
 						cell->setParam(stringf("\\PORT_%s_WR_EN_WIDTH", name), GetSize(hw_wren));
 				}
@@ -1893,11 +1899,11 @@ void MemMapping::emit_port(const MemConfig &cfg, std::vector<Cell*> &cells, cons
 				auto cell = cells[rd];
 				if (pdef.kind == PortKind::Sr || pdef.kind == PortKind::Srsw) {
 					if (pdef.rd_en)
-						cell->setPort(stringf("\\PORT_%s_RD_EN", name), rpcfg.rd_en_to_clk_en ? State::S1 : rport.en);
+						set_ram_port(cell, stringf("\\PORT_%s_RD_EN", name), rpcfg.rd_en_to_clk_en ? State::S1 : rport.en);
 					if (pdef.rdarstval != ResetValKind::None)
-						cell->setPort(stringf("\\PORT_%s_RD_ARST", name), rport.arst);
+						set_ram_port(cell, stringf("\\PORT_%s_RD_ARST", name), rport.arst);
 					if (pdef.rdsrstval != ResetValKind::None)
-						cell->setPort(stringf("\\PORT_%s_RD_SRST", name), rport.srst);
+						set_ram_port(cell, stringf("\\PORT_%s_RD_SRST", name), rport.srst);
 					if (pdef.rdinitval == ResetValKind::Any || pdef.rdinitval == ResetValKind::NoUndef) {
 						Const val = rport.init_value;
 						if (pdef.rdarstval == ResetValKind::Init && rport.arst != State::S0) {
@@ -1948,7 +1954,7 @@ void MemMapping::emit_port(const MemConfig &cfg, std::vector<Cell*> &cells, cons
 					}
 				}
 				SigSpec hw_rdata = mem.module->addWire(NEW_ID, width);
-				cell->setPort(stringf("\\PORT_%s_RD_DATA", name), hw_rdata);
+				set_ram_port(cell, stringf("\\PORT_%s_RD_DATA", name), hw_rdata);
 				SigSpec lhs;
 				SigSpec rhs;
 				for (int i = 0; i < GetSize(hw_rdata); i++) {
@@ -1964,11 +1970,11 @@ void MemMapping::emit_port(const MemConfig &cfg, std::vector<Cell*> &cells, cons
 			for (auto cell: cells) {
 				if (pdef.kind == PortKind::Sr || pdef.kind == PortKind::Srsw) {
 					if (pdef.rd_en)
-						cell->setPort(stringf("\\PORT_%s_RD_EN", name), State::S0);
+						set_ram_port(cell, stringf("\\PORT_%s_RD_EN", name), State::S0);
 					if (pdef.rdarstval != ResetValKind::None)
-						cell->setPort(stringf("\\PORT_%s_RD_ARST", name), State::S0);
+						set_ram_port(cell, stringf("\\PORT_%s_RD_ARST", name), State::S0);
 					if (pdef.rdsrstval != ResetValKind::None)
-						cell->setPort(stringf("\\PORT_%s_RD_SRST", name), State::S0);
+						set_ram_port(cell, stringf("\\PORT_%s_RD_SRST", name), State::S0);
 					if (pdef.rdinitval == ResetValKind::Any)
 						cell->setParam(stringf("\\PORT_%s_RD_INIT_VALUE", name), Const(State::Sx, width));
 					else if (pdef.rdinitval == ResetValKind::NoUndef)
@@ -1983,14 +1989,14 @@ void MemMapping::emit_port(const MemConfig &cfg, std::vector<Cell*> &cells, cons
 						cell->setParam(stringf("\\PORT_%s_RD_SRST_VALUE", name), Const(State::S0, width));
 				}
 				SigSpec hw_rdata = mem.module->addWire(NEW_ID, width);
-				cell->setPort(stringf("\\PORT_%s_RD_DATA", name), hw_rdata);
+				set_ram_port(cell, stringf("\\PORT_%s_RD_DATA", name), hw_rdata);
 			}
 		}
 	}
 }
 
 void MemMapping::emit(const MemConfig &cfg) {
-	log("mapping memory %s.%s via %s\n", log_id(mem.module->name), log_id(mem.memid), log_id(cfg.def->id));
+	log("mapping memory %s.%s via %s\n", mem.module, mem.memid.unescape(), RTLIL::unescape_id(cfg.def->id));
 	// First, handle emulations.
 	if (cfg.emu_read_first)
 		mem.emulate_read_first(&worker.initvals);
@@ -2067,9 +2073,11 @@ void MemMapping::emit(const MemConfig &cfg) {
 	for (int rp = 0; rp < cfg.repl_port; rp++) {
 		std::vector<Cell *> cells;
 		for (int rd = 0; rd < cfg.repl_d; rd++) {
-			Cell *cell = mem.module->addCell(stringf("%s.%d.%d", mem.memid.c_str(), rp, rd), cfg.def->id);
-			if (cfg.def->width_mode == WidthMode::Global)
+			Cell *cell = mem.module->addCell(stringf("%s.%d.%d", mem.memid.str(), rp, rd), mem.module->twines().add(cfg.def->id));
+			if (cfg.def->width_mode == WidthMode::Global || opts.force_params)
 				cell->setParam(ID::WIDTH, cfg.def->dbits[cfg.base_width_log2]);
+			if (opts.force_params)
+				cell->setParam(ID::ABITS, cfg.def->abits);
 			if (cfg.def->widthscale) {
 				std::vector<State> val;
 				for (auto &bit: init_swz.bits[rd])
@@ -2077,18 +2085,18 @@ void MemMapping::emit(const MemConfig &cfg) {
 				cell->setParam(ID::BITS_USED, val);
 			}
 			for (auto &it: cfg.def->options)
-				cell->setParam(stringf("\\OPTION_%s", it.first.c_str()), it.second);
+				cell->setParam(stringf("\\OPTION_%s", it.first), it.second);
 			for (int i = 0; i < GetSize(cfg.def->shared_clocks); i++) {
 				auto &cdef = cfg.def->shared_clocks[i];
 				auto &ccfg = cfg.shared_clocks[i];
 				if (cdef.anyedge) {
-					cell->setParam(stringf("\\CLK_%s_POL", cdef.name.c_str()), ccfg.used ? ccfg.polarity : true);
-					cell->setPort(stringf("\\CLK_%s", cdef.name.c_str()), ccfg.used ? ccfg.clk : State::S0);
+					cell->setParam(stringf("\\CLK_%s_POL", cdef.name), ccfg.used ? ccfg.polarity : true);
+					set_ram_port(cell, stringf("\\CLK_%s", cdef.name), ccfg.used ? ccfg.clk : State::S0);
 				} else {
 					SigSpec sig = ccfg.used ? ccfg.clk : State::S0;
 					if (ccfg.used && ccfg.invert)
 						sig = mem.module->Not(NEW_ID, sig);
-					cell->setPort(stringf("\\CLK_%s", cdef.name.c_str()), sig);
+					set_ram_port(cell, stringf("\\CLK_%s", cdef.name), sig);
 				}
 			}
 			if (cfg.def->init == MemoryInitKind::Any || cfg.def->init == MemoryInitKind::NoUndef) {
@@ -2136,11 +2144,11 @@ void MemMapping::emit(const MemConfig &cfg) {
 				}
 				if (pg.optional)
 					for (auto cell: cells)
-						cell->setParam(stringf("\\PORT_%s_USED", pg.names[pi].c_str()), used);
+						cell->setParam(stringf("\\PORT_%s_USED", pg.names[pi]), used);
 				if (pg.optional_rw)
 					for (auto cell: cells) {
-						cell->setParam(stringf("\\PORT_%s_RD_USED", pg.names[pi].c_str()), used_r);
-						cell->setParam(stringf("\\PORT_%s_WR_USED", pg.names[pi].c_str()), used_w);
+						cell->setParam(stringf("\\PORT_%s_RD_USED", pg.names[pi]), used_r);
+						cell->setParam(stringf("\\PORT_%s_WR_USED", pg.names[pi]), used_w);
 					}
 			}
 		}
@@ -2179,6 +2187,9 @@ struct MemoryLibMapPass : public Pass {
 		log("    Disables automatic mapping of given kind of RAMs.  Manual mapping\n");
 		log("    (using ram_style or other attributes) is still supported.\n");
 		log("\n");
+		log("  -force-params\n");
+		log("    Always generate memories with WIDTH and ABITS parameters.\n");
+		log("\n");
 	}
 	void execute(std::vector<std::string> args, RTLIL::Design *design) override
 	{
@@ -2188,6 +2199,7 @@ struct MemoryLibMapPass : public Pass {
 		opts.no_auto_distributed = false;
 		opts.no_auto_block = false;
 		opts.no_auto_huge = false;
+		opts.force_params = false;
 		opts.logic_cost_ram = 1.0;
 		opts.logic_cost_rom = 1.0/16.0;
 		log_header(design, "Executing MEMORY_LIBMAP pass (mapping memories to cells).\n");
@@ -2212,6 +2224,10 @@ struct MemoryLibMapPass : public Pass {
 			}
 			if (args[argidx] == "-no-auto-huge") {
 				opts.no_auto_huge = true;
+				continue;
+			}
+			if (args[argidx] == "-force-params") {
+				opts.force_params = true;
 				continue;
 			}
 			if (args[argidx] == "-logic-cost-rom" && argidx+1 < args.size()) {
@@ -2241,9 +2257,9 @@ struct MemoryLibMapPass : public Pass {
 				int best = map.logic_cost;
 				if (!map.logic_ok) {
 					if (map.cfgs.empty()) {
-						log_debug("Rejected candidates for mapping memory %s.%s:\n", log_id(module->name), log_id(mem.memid));
-						log_debug("%s", map.rejected_cfg_debug_msgs.c_str());
-						log_error("no valid mapping found for memory %s.%s\n", log_id(module->name), log_id(mem.memid));
+						log_debug("Rejected candidates for mapping memory %s.%s:\n", module, mem.memid.unescape());
+						log_lines(map.rejected_cfg_debug_msgs, LogSeverity::Debug);
+						log_error("no valid mapping found for memory %s.%s\n", module, mem.memid.unescape());
 					}
 					idx = 0;
 					best = map.cfgs[0].cost;
@@ -2255,7 +2271,7 @@ struct MemoryLibMapPass : public Pass {
 					}
 				}
 				if (idx == -1) {
-					log("using FF mapping for memory %s.%s\n", log_id(module->name), log_id(mem.memid));
+					log("using FF mapping for memory %s.%s\n", module, mem.memid.unescape());
 				} else {
 					map.emit(map.cfgs[idx]);
 					// Rebuild indices after modifying module

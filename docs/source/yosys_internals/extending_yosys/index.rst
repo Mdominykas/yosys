@@ -11,6 +11,6 @@ of interest for developers looking to customise Yosys builds.
    extensions
    build_verific
    functional_ir
+   advanced_bugpoint
    contributing
    test_suites
-

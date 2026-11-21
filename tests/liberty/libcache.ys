@@ -1,5 +1,5 @@
 libcache -verbose
-libcache -enable busdef.lib
+libcache -enable bus*f.lib
 
 logger -expect log "Caching is disabled by default." 1
 logger -expect log "Caching is enabled for `busdef.lib'." 1
@@ -63,4 +63,10 @@ logger -check-expected
 
 logger -expect log "Using cached data" 1
 dfflibmap -liberty normal.lib
+logger -check-expected
+
+libcache -disable -all
+
+logger -expect log "Caching is disabled by default." 1
+libcache -list
 logger -check-expected

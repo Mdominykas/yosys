@@ -5,6 +5,9 @@ This is a framework for RTL synthesis tools. It currently has
 extensive Verilog-2005 support and provides a basic set of
 synthesis algorithms for various application domains.
 
+Yosys is using [sv-elab](https://github.com/povik/sv-elab) and [slang](https://github.com/MikePopoloski/slang) libraries to provide comprehensive SystemVerilog support.
+It supports an (informally defined) synthesizable subset of SystemVerilog in version IEEE 1800-2017 or IEEE 1800-2023.
+
 Yosys can be adapted to perform any synthesis job by combining
 the existing passes (algorithms) using synthesis scripts and
 adding additional passes as needed by extending the yosys C++
@@ -60,72 +63,35 @@ Many Linux distributions also provide Yosys binaries, some more up to date than 
 Building from Source
 ====================
 
-For more details, and instructions for other platforms, check [building from
-source](https://yosyshq.readthedocs.io/projects/yosys/en/latest/getting_started/installation.html#building-from-source)
-on Read the Docs.
+### TL;DR
 
-When cloning Yosys, some required libraries are included as git submodules. Make
-sure to call e.g.
+The following libraries are required, this command will install them on Ubuntu Linux 22.04 LTS based systems:
+
+  $ sudo apt-get install gawk git make python3 lld bison clang flex \
+		libffi-dev libfl-dev libreadline-dev pkg-config tcl-dev zlib1g-dev \
+		graphviz xdot
+
+This sequence of commands will build Yosys from source using the default preset:
 
 	$ git clone --recurse-submodules https://github.com/YosysHQ/yosys.git
-
-or
-
-	$ git clone https://github.com/YosysHQ/yosys.git
 	$ cd yosys
-	$ git submodule update --init --recursive
+	$ cmake --preset default
+	$ cmake --build build --parallel $(nproc)
 
-You need a C++ compiler with C++17 support (up-to-date CLANG or GCC is
-recommended) and some standard tools such as GNU Flex, GNU Bison, and GNU Make.
-TCL, readline and libffi are optional (see ``ENABLE_*`` settings in Makefile).
-Xdot (graphviz) is used by the ``show`` command in yosys to display schematics.
+For release builds, substitute the cmake commands with these:
 
-For example on Ubuntu Linux 16.04 LTS the following commands will install all
-prerequisites for building yosys:
+	$ cmake --preset release
+	$ cmake --build build-rel --config Release --parallel $(nproc)
 
-	$ sudo apt-get install build-essential clang lld bison flex \
-		libreadline-dev gawk tcl-dev libffi-dev git \
-		graphviz xdot pkg-config python3 libboost-system-dev \
-		libboost-python-dev libboost-filesystem-dev zlib1g-dev
+To run tests, run the following:
 
-The environment variable `CXX` can be used to control the C++ compiler used, or
-run one of the following to override it:
+  $ export BUILD_DIR=$(realpath build-rel) && make -C tests -j"$(nproc)" vanilla-test
 
-	$ make config-clang
-	$ make config-gcc
+### Detailed instructions
 
-The Makefile has many variables influencing the build process. These can be
-adjusted by modifying the Makefile.conf file which is created at the `make
-config-...` step (see above), or they can be set by passing an option to the
-make command directly:
-
-  $ make CXX=$CXX
-
-For other compilers and build configurations it might be necessary to make some
-changes to the config section of the Makefile. It's also an alternative way to
-set the make variables mentioned above.
-
-	$ vi Makefile            # ..or..
-	$ vi Makefile.conf
-
-To build Yosys simply type 'make' in this directory.
-
-	$ make
-	$ sudo make install
-
-Tests are located in the tests subdirectory and can be executed using the test
-target. Note that you need gawk as well as a recent version of iverilog (i.e.
-build from git). Then, execute tests via:
-
-	$ make test
-
-To use a separate (out-of-tree) build directory, provide a path to the Makefile.
-
-	$ mkdir build; cd build
-	$ make -f ../Makefile
-
-Out-of-tree builds require a clean source tree.
-
+For more details, and instructions for other platforms, check [building from
+source](https://yosyshq.readthedocs.io/projects/yosys/en/latest/getting_started/installation.html#building-from-source) and [running the tests](https://yosyshq.readthedocs.io/projects/yosys/en/latest/yosys_internals/extending_yosys/test_suites.html)
+on Read the Docs.
 
 Getting Started
 ===============
@@ -134,7 +100,7 @@ Yosys can be used with the interactive command shell, with
 synthesis scripts or with command line arguments. Let's perform
 a simple synthesis job using the interactive command shell:
 
-	$ ./yosys
+	$ ./build/yosys
 	yosys>
 
 the command ``help`` can be used to print a list of all available
@@ -246,6 +212,8 @@ Building the documentation
 
 Note that there is no need to build the manual if you just want to read it.
 Simply visit https://yosys.readthedocs.io/en/latest/ instead.
+If you're offline, you can read the sources, replacing `.../en/latest`
+with `docs/source`.
 
 In addition to those packages listed above for building Yosys from source, the
 following are used for building the website:
@@ -254,7 +222,7 @@ following are used for building the website:
 
 Or for MacOS, using homebrew:
 
-  $ brew install pdf2svg libfaketime
+	$ brew install pdf2svg libfaketime
 
 PDFLaTeX, included with most LaTeX distributions, is also needed during the
 build process for the website.  Or, run the following:
@@ -263,16 +231,19 @@ build process for the website.  Or, run the following:
 
 Or for MacOS, using homebrew:
 
-  $ brew install basictex
-  $ sudo tlmgr update --self
-  $ sudo tlmgr install collection-latexextra latexmk tex-gyre
+	$ brew install basictex
+	$ sudo tlmgr update --self
+	$ sudo tlmgr install collection-latexextra latexmk tex-gyre
 
 The Python package, Sphinx, is needed along with those listed in
 `docs/source/requirements.txt`:
 
 	$ pip install -U sphinx -r docs/source/requirements.txt
 
-From the root of the repository, run `make docs`.  This will build/rebuild yosys
-as necessary before generating the website documentation from the yosys help
-commands.  To build for pdf instead of html, call
-`make docs DOC_TARGET=latexpdf`.
+DOCS (e.g.)
+
+	$ cmake --build build --target docs-html --parallel
+
+This will build/rebuild yosys as necessary before generating the website
+documentation from the yosys help commands.  To build for pdf instead of html,
+use the `docs-latexpdf` target.

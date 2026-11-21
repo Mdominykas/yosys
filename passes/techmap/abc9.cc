@@ -38,53 +38,53 @@ struct Abc9Pass : public ScriptPass
 	Abc9Pass() : ScriptPass("abc9", "use ABC9 for technology mapping") { }
 	void on_register() override
 	{
-		RTLIL::constpad["abc9.script.default"] = "+&scorr; &sweep; &dc2; &dch -f; &ps; &if {C} {W} {D} {R} -v; &mfs";
-		RTLIL::constpad["abc9.script.default.area"] = "+&scorr; &sweep; &dc2; &dch -f; &ps; &if {C} {W} {D} {R} -a -v; &mfs";
-		RTLIL::constpad["abc9.script.default.fast"] = "+&if {C} {W} {D} {R} -v";
+		RTLIL::constpad["abc9.script.default"] = "+&scorr; &sweep; &dc2; &dch -f -r; &ps; &if {W} {D} {R} -v; &mfs";
+		RTLIL::constpad["abc9.script.default.area"] = "+&scorr; &sweep; &dc2; &dch -f -r; &ps; &if {W} {D} {R} -a -v; &mfs";
+		RTLIL::constpad["abc9.script.default.fast"] = "+&if {W} {D} {R} -v";
 		// Based on ABC's &flow
 		RTLIL::constpad["abc9.script.flow"] = "+&scorr; &sweep;" \
 			"&dch -C 500;" \
 			/* Round 1 */ \
-			/* Map 1 */ "&unmap; &if {C} {W} {D} {R} -v; &save; &load; &mfs;" \
+			/* Map 1 */ "&unmap; &if {W} {D} {R} -v; &save; &load; &mfs;" \
 			"&st; &dsdb;" \
-			/* Map 2 */ "&unmap; &if {C} {W} {D} {R} -v; &save; &load; &mfs;" \
+			/* Map 2 */ "&unmap; &if {W} {D} {R} -v; &save; &load; &mfs;" \
 			"&st; &syn2 -m -R 10; &dsdb;" \
 			"&blut -a -K 6;" \
-			/* Map 3 */ "&unmap; &if {C} {W} {D} {R} -v; &save; &load; &mfs;" \
+			/* Map 3 */ "&unmap; &if {W} {D} {R} -v; &save; &load; &mfs;" \
 			/* Round 2 */ \
 			"&st; &sopb;" \
-			/* Map 1 */ "&unmap; &if {C} {W} {D} {R} -v; &save; &load; &mfs;" \
+			/* Map 1 */ "&unmap; &if {W} {D} {R} -v; &save; &load; &mfs;" \
 			"&st; &dsdb;" \
-			/* Map 2 */ "&unmap; &if {C} {W} {D} {R} -v; &save; &load; &mfs;" \
+			/* Map 2 */ "&unmap; &if {W} {D} {R} -v; &save; &load; &mfs;" \
 			"&st; &syn2 -m -R 10; &dsdb;" \
 			"&blut -a -K 6;" \
-			/* Map 3 */ "&unmap; &if {C} {W} {D} {R} -v; &save; &load; &mfs;" \
+			/* Map 3 */ "&unmap; &if {W} {D} {R} -v; &save; &load; &mfs;" \
 			/* Round 3 */ \
-			/* Map 1 */ "&unmap; &if {C} {W} {D} {R} -v; &save; &load; &mfs;" \
+			/* Map 1 */ "&unmap; &if {W} {D} {R} -v; &save; &load; &mfs;" \
 			"&st; &dsdb;" \
-			/* Map 2 */ "&unmap; &if {C} {W} {D} {R} -v; &save; &load; &mfs;" \
+			/* Map 2 */ "&unmap; &if {W} {D} {R} -v; &save; &load; &mfs;" \
 			"&st; &syn2 -m -R 10; &dsdb;" \
 			"&blut -a -K 6;" \
-			/* Map 3 */ "&unmap; &if {C} {W} {D} {R} -v; &save; &load; &mfs;";
+			/* Map 3 */ "&unmap; &if {W} {D} {R} -v; &save; &load; &mfs;";
 		// Based on ABC's &flow2
 		RTLIL::constpad["abc9.script.flow2"] = "+&scorr; &sweep;" \
-			/* Comm1 */ "&synch2 -K 6 -C 500; &if -m {C} {W} {D} {R} -v; &mfs "/*"-W 4 -M 500 -C 7000"*/"; &save;"\
-			/* Comm2 */ "&dch -C 500; &if -m {C} {W} {D} {R} -v; &mfs "/*"-W 4 -M 500 -C 7000"*/"; &save;"\
+			/* Comm1 */ "&synch2 -K 6 -C 500; &if -m {W} {D} {R} -v; &mfs "/*"-W 4 -M 500 -C 7000"*/"; &save;"\
+			/* Comm2 */ "&dch -C 500; &if -m {W} {D} {R} -v; &mfs "/*"-W 4 -M 500 -C 7000"*/"; &save;"\
 			"&load; &st; &sopb -R 10 -C 4; " \
-			/* Comm3 */ "&synch2 -K 6 -C 500; &if -m "/*"-E 5"*/" {C} {W} {D} {R} -v; &mfs "/*"-W 4 -M 500 -C 7000"*/"; &save;"\
-			/* Comm2 */ "&dch -C 500; &if -m {C} {W} {D} {R} -v; &mfs "/*"-W 4 -M 500 -C 7000"*/"; &save; "\
+			/* Comm3 */ "&synch2 -K 6 -C 500; &if -m "/*"-E 5"*/" {W} {D} {R} -v; &mfs "/*"-W 4 -M 500 -C 7000"*/"; &save;"\
+			/* Comm2 */ "&dch -C 500; &if -m {W} {D} {R} -v; &mfs "/*"-W 4 -M 500 -C 7000"*/"; &save; "\
 			"&load";
 		// Based on ABC's &flow3 -m
 		RTLIL::constpad["abc9.script.flow3"] = "+&scorr; &sweep;" \
-			"&if {C} {W} {D}; &save; &st; &syn2; &if {C} {W} {D} {R} -v; &save; &load;"\
-			"&st; &if {C} -g -K 6; &dch -f; &if {C} {W} {D} {R} -v; &save; &load;"\
-			"&st; &if {C} -g -K 6; &synch2; &if {C} {W} {D} {R} -v; &save; &load;"\
+			"&if {W} {D}; &save; &st; &syn2; &if {W} {D} {R} -v; &save; &load;"\
+			"&st; &if -g -K 6; &dch -f; &if {W} {D} {R} -v; &save; &load;"\
+			"&st; &if -g -K 6; &synch2; &if {W} {D} {R} -v; &save; &load;"\
 			"&mfs";
 		// As above, but with &mfs calls as in the original &flow3
 		RTLIL::constpad["abc9.script.flow3mfs"] = "+&scorr; &sweep;" \
-			"&if {C} {W} {D}; &save; &st; &syn2; &if {C} {W} {D} {R} -v; &save; &load;"\
-			"&st; &if {C} -g -K 6; &dch -f; &if {C} {W} {D} {R} -v; &mfs; &save; &load;"\
-			"&st; &if {C} -g -K 6; &synch2; &if {C} {W} {D} {R} -v; &mfs; &save; &load;"\
+			"&if {W} {D}; &save; &st; &syn2; &if {W} {D} {R} -v; &save; &load;"\
+			"&st; &if -g -K 6; &dch -f; &if {W} {D} {R} -v; &mfs; &save; &load;"\
+			"&st; &if -g -K 6; &synch2; &if {W} {D} {R} -v; &mfs; &save; &load;"\
 			"&mfs";
 	}
 	void help() override
@@ -106,7 +106,7 @@ struct Abc9Pass : public ScriptPass
 #ifdef ABCEXTERNAL
 		log("        use the specified command instead of \"" ABCEXTERNAL "\" to execute ABC.\n");
 #else
-		log("        use the specified command instead of \"<yosys-bindir>/%syosys-abc\" to execute ABC.\n", proc_program_prefix().c_str());
+		log("        use the specified command instead of \"<yosys-bindir>/%syosys-abc\" to execute ABC.\n", proc_program_prefix());
 #endif
 		log("        This can e.g. be used to call a specific version of ABC or a wrapper.\n");
 		log("\n");
@@ -119,22 +119,13 @@ struct Abc9Pass : public ScriptPass
 		log("        replaced with blanks before the string is passed to ABC.\n");
 		log("\n");
 		log("        if no -script parameter is given, the following scripts are used:\n");
-		log("%s\n", fold_abc9_cmd(RTLIL::constpad.at("abc9.script.default").substr(1,std::string::npos)).c_str());
-		log("\n");
-		log("    -fast\n");
-		log("        use different default scripts that are slightly faster (at the cost\n");
-		log("        of output quality):\n");
-		log("%s\n", fold_abc9_cmd(RTLIL::constpad.at("abc9.script.default.fast").substr(1,std::string::npos)).c_str());
+		log("%s\n", fold_abc9_cmd(RTLIL::constpad.at("abc9.script.default").substr(1,std::string::npos)));
 		log("\n");
 		log("    -D <picoseconds>\n");
 		log("        set delay target. the string {D} in the default scripts above is\n");
 		log("        replaced by this option when used, and an empty string otherwise\n");
 		log("        (indicating best possible delay).\n");
 		log("\n");
-//		log("    -S <num>\n");
-//		log("        maximum number of LUT inputs shared.\n");
-//		log("        (replaces {S} in the default scripts above, default: -S 1)\n");
-//		log("\n");
 		log("    -lut <width>\n");
 		log("        generate netlist using luts of (max) the specified width.\n");
 		log("\n");
@@ -187,7 +178,7 @@ struct Abc9Pass : public ScriptPass
 	std::stringstream exe_cmd;
 	bool dff_mode, cleanup;
 	bool lut_mode;
-	int maxlut;
+	int maxlut, xaiger;
 	std::string box_file;
 
 	void clear_flags() override
@@ -198,6 +189,7 @@ struct Abc9Pass : public ScriptPass
 		cleanup = true;
 		lut_mode = false;
 		maxlut = 0;
+		xaiger = 2;
 		box_file = "";
 	}
 
@@ -209,6 +201,7 @@ struct Abc9Pass : public ScriptPass
 		// get arguments from scratchpad first, then override by command arguments
 		dff_mode = design->scratchpad_get_bool("abc9.dff", dff_mode);
 		cleanup = !design->scratchpad_get_bool("abc9.nocleanup", !cleanup);
+		xaiger = design->scratchpad_get_int("abc9.xaiger", 2);
 
 		if (design->scratchpad_get_bool("abc9.debug")) {
 			cleanup = false;
@@ -219,17 +212,14 @@ struct Abc9Pass : public ScriptPass
 		for (argidx = 1; argidx < args.size(); argidx++) {
 			std::string arg = args[argidx];
 			if ((arg == "-exe" || arg == "-script" || arg == "-D" ||
-						/*arg == "-S" ||*/ arg == "-lut" || arg == "-luts" ||
-						/*arg == "-box" ||*/ arg == "-W" || arg == "-genlib" ||
-						arg == "-constr" || arg == "-dont_use" || arg == "-liberty") &&
+						arg == "-lut" || arg == "-luts" || arg == "-W") &&
 					argidx+1 < args.size()) {
 				if (arg == "-lut" || arg == "-luts")
 					lut_mode = true;
 				exe_cmd << " " << arg << " " << args[++argidx];
 				continue;
 			}
-			if (arg == "-fast" || /* arg == "-dff" || */
-					/* arg == "-nocleanup" || */ arg == "-showtmp") {
+			if (arg == "-showtmp") {
 				exe_cmd << " " << arg;
 				continue;
 			}
@@ -264,6 +254,10 @@ struct Abc9Pass : public ScriptPass
 
 		if (maxlut && lut_mode)
 			log_cmd_error("abc9 '-maxlut' option only applicable without '-lut' nor '-luts'.\n");
+
+		// write_xaiger2 doesn't yet support `-dff`.
+		if (dff_mode)
+			xaiger = 1;
 
 		log_assert(design);
 		if (design->selected_modules().empty()) {
@@ -331,9 +325,9 @@ struct Abc9Pass : public ScriptPass
 					else {
 						// Rename all submod-s to _TECHMAP_REPLACE_ to inherit name + attrs
 						for (auto module : active_design->selected_modules()) {
-							active_design->selected_active_module = module->name.str();
-							if (module->cell(stringf("%s_$abc9_flop", module->name.c_str())))
-								run(stringf("rename %s_$abc9_flop _TECHMAP_REPLACE_", module->name.c_str()));
+							active_design->selected_active_module = module->name;
+							if (module->cell(stringf("%s_$abc9_flop", module->name)))
+								run(stringf("rename %s_$abc9_flop _TECHMAP_REPLACE_", module->name));
 						}
 						active_design->selected_active_module.clear();
 					}
@@ -373,8 +367,9 @@ struct Abc9Pass : public ScriptPass
 				if (help_mode) run("select =*");
 				else active_design->push_complete_selection();
 				run("techmap -wb -map %$abc9 -map +/techmap.v");
+				if (xaiger == 1)
+					run("aigmap");
 				run("opt -purge");
-				run("aigmap");
 				run("design -stash $abc9_holes");
 				run("design -load $abc9");
 				run("design -delete $abc9");
@@ -389,8 +384,8 @@ struct Abc9Pass : public ScriptPass
 				run("    abc9_ops -write_box <abc-temp-dir>/input.box", "(skip if '-box')");
 				run("    write_xaiger -map <abc-temp-dir>/input.sym [-dff] <abc-temp-dir>/input.xaig");
 				run("    abc9_exe [options] -cwd <abc-temp-dir> -lut [<abc-temp-dir>/input.lut] -box [<abc-temp-dir>/input.box]");
-				run("    read_aiger -xaiger -wideports -module_name <module-name>$abc9 -map <abc-temp-dir>/input.sym <abc-temp-dir>/output.aig");
-				run("    abc9_ops -reintegrate [-dff]");
+				run("    read_aiger -xaiger -module_name <module-name>$abc9 <abc-temp-dir>/output.aig");
+				run("    abc_ops_reintegrate -map <abc-temp-dir>/input.sym [-dff]");
 			}
 			else {
 				auto selected_modules = active_design->selected_modules();
@@ -398,19 +393,21 @@ struct Abc9Pass : public ScriptPass
 
 				for (auto mod : selected_modules) {
 					if (mod->processes.size() > 0) {
-						log("Skipping module %s as it contains processes.\n", log_id(mod));
+						log("Skipping module %s as it contains processes.\n", mod);
 						continue;
 					}
 
 					log_push();
 					active_design->select(mod);
 
+					GarbageCollectionGuard gc_guard(false);
+
 					// this check does nothing because the above line adds the whole module to the selection
 					if (!active_design->selected_whole_module(mod))
-						log_error("Can't handle partially selected module %s!\n", log_id(mod));
+						log_error("Can't handle partially selected module %s!\n", mod);
 
 					std::string tempdir_name;
-					if (cleanup) 
+					if (cleanup)
 						tempdir_name = get_base_tmpdir() + "/";
 					else
 						tempdir_name = "_tmp_";
@@ -418,31 +415,34 @@ struct Abc9Pass : public ScriptPass
 					tempdir_name = make_temp_dir(tempdir_name);
 
 					if (!lut_mode)
-						run_nocheck(stringf("abc9_ops -write_lut %s/input.lut", tempdir_name.c_str()));
+						run_nocheck(stringf("abc9_ops -write_lut %s/input.lut", tempdir_name));
 					if (box_file.empty())
-						run_nocheck(stringf("abc9_ops -write_box %s/input.box", tempdir_name.c_str()));
-					run_nocheck(stringf("write_xaiger -map %s/input.sym %s %s/input.xaig", tempdir_name.c_str(), dff_mode ? "-dff" : "", tempdir_name.c_str()));
+						run_nocheck(stringf("abc9_ops -write_box %s/input.box", tempdir_name));
+					if (xaiger == 1)
+						run_nocheck(stringf("write_xaiger -map %s/input.sym %s %s/input.xaig", tempdir_name, dff_mode ? "-dff" : "", tempdir_name));
+					else
+						run_nocheck(stringf("write_xaiger2 -mapping_prep -map2 %s/input.sym %s/input.xaig", tempdir_name, tempdir_name));
 
 					int num_outputs = active_design->scratchpad_get_int("write_xaiger.num_outputs");
 
 					log("Extracted %d AND gates and %d wires from module `%s' to a netlist network with %d inputs and %d outputs.\n",
 							active_design->scratchpad_get_int("write_xaiger.num_ands"),
 							active_design->scratchpad_get_int("write_xaiger.num_wires"),
-							log_id(mod),
+							mod,
 							active_design->scratchpad_get_int("write_xaiger.num_inputs"),
 							num_outputs);
 					if (num_outputs) {
 						std::string abc9_exe_cmd;
-						abc9_exe_cmd += stringf("%s -cwd %s", exe_cmd.str().c_str(), tempdir_name.c_str());
+						abc9_exe_cmd += stringf("%s -cwd %s", exe_cmd.str(), tempdir_name);
 						if (!lut_mode)
-							abc9_exe_cmd += stringf(" -lut %s/input.lut", tempdir_name.c_str());
+							abc9_exe_cmd += stringf(" -lut %s/input.lut", tempdir_name);
 						if (box_file.empty())
-							abc9_exe_cmd += stringf(" -box %s/input.box", tempdir_name.c_str());
+							abc9_exe_cmd += stringf(" -box %s/input.box", tempdir_name);
 						else
-							abc9_exe_cmd += stringf(" -box %s", box_file.c_str());
+							abc9_exe_cmd += stringf(" -box %s", box_file);
 						run_nocheck(abc9_exe_cmd);
-						run_nocheck(stringf("read_aiger -xaiger -wideports -module_name %s$abc9 -map %s/input.sym %s/output.aig", log_id(mod), tempdir_name.c_str(), tempdir_name.c_str()));
-						run_nocheck(stringf("abc9_ops -reintegrate %s", dff_mode ? "-dff" : ""));
+						run_nocheck(stringf("read_aiger -xaiger -module_name %s$abc9 %s/output.aig", mod, tempdir_name));
+						run_nocheck(stringf("abc_ops_reintegrate -map %s/input.sym %s", tempdir_name, dff_mode ? "-dff" : ""));
 					}
 					else
 						log("Don't call ABC as there is nothing to map.\n");

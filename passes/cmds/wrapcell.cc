@@ -19,6 +19,7 @@
 #include "kernel/yosys.h"
 #include "kernel/celltypes.h"
 #include "kernel/sigtools.h"
+#include "kernel/unused_bits.h"
 #include "backends/rtlil/rtlil_backend.h"
 
 USING_YOSYS_NAMESPACE
@@ -47,7 +48,7 @@ struct ContextData {
 	std::string unused_outputs;
 };
 
-std::optional<std::string> format(std::string fmt, const dict<IdString, Const> &parameters,
+std::optional<std::string> format_with_params(const TwinePool &twines, std::string fmt, const dict<IdString, Const> &parameters,
 								  const ContextData &context)
 {
 	std::stringstream result;
@@ -59,7 +60,7 @@ std::optional<std::string> format(std::string fmt, const dict<IdString, Const> &
 			auto beg = it;
 			while (it != fmt.end() && *it != '}') it++;
 			if (it == fmt.end()) {
-				log("Unclosed curly brackets in format string '%s'\n", fmt.c_str());
+				log("Unclosed curly brackets in format string '%s'\n", fmt);
 				return {};
 			}
 
@@ -68,9 +69,10 @@ std::optional<std::string> format(std::string fmt, const dict<IdString, Const> &
 			if (param_name == "%unused") {
 				result << context.unused_outputs;
 			} else {
-				auto id = RTLIL::escape_id(std::string(beg, it));
-				if (!parameters.count(id)) {
-					log("Parameter %s referenced in format string '%s' not found\n", log_id(id), fmt.c_str());
+				auto name = RTLIL::escape_id(std::string(beg, it));
+				IdString id = twines.find(name);
+				if (id == IdString::Null || !parameters.count(id)) {
+					log("Parameter %s referenced in format string '%s' not found\n", name, fmt);
 					return {};
 				}
 
@@ -96,10 +98,10 @@ struct Chunk {
 	{
 		if (len == cell->getPort(port).size())
 			return port;
-		else if (len == 1)
-			return stringf("%s[%d]", port.c_str(), base);
-		else
-			return stringf("%s[%d:%d]", port.c_str(), base + len - 1, base);
+		auto &pool = cell->twines();
+		if (len == 1)
+			return pool.add(stringf("%s[%d]", pool.str(port), base));
+		return pool.add(stringf("%s[%d:%d]", pool.str(port), base + len - 1, base));
 	}
 
 	SigSpec sample(Cell *cell)
@@ -112,7 +114,9 @@ struct Chunk {
 std::vector<Chunk> collect_chunks(std::vector<std::pair<IdString, int>> bits)
 {
 	std::vector<Chunk> ret;
-	std::sort(bits.begin(), bits.end());
+	std::sort(bits.begin(), bits.end(), [](const auto &a, const auto &b) {
+		return a.first.raw() < b.first.raw() || (a.first.raw() == b.first.raw() && a.second < b.second);
+	});
 	for (auto it = bits.begin(); it != bits.end();) {
 		auto sep = it + 1;
 		for (; sep != bits.end() &&
@@ -170,9 +174,9 @@ struct WrapcellPass : Pass {
 		size_t argidx;
 		for (argidx = 1; argidx < args.size(); argidx++) {
 			if (args[argidx] == "-setattr" && argidx+1 < args.size()) {
-				attributes.emplace_back(RTLIL::escape_id(args[++argidx]), "");
+				attributes.emplace_back(d->twines().add(RTLIL::escape_id(args[++argidx])), "");
 			} else if (args[argidx] == "-formatattr" && argidx+2 < args.size()) {
-				IdString id = RTLIL::escape_id(args[++argidx]);
+				IdString id = d->twines().add(RTLIL::escape_id(args[++argidx]));
 				attributes.emplace_back(id, args[++argidx]);
 			} else if (args[argidx] == "-name" && argidx+1 < args.size()) {
 				name_fmt = args[++argidx];
@@ -183,34 +187,26 @@ struct WrapcellPass : Pass {
 		extra_args(args, argidx, d);
 
 		if (name_fmt.empty())
-			log_cmd_error("Argument -name required");
+			log_cmd_error("Argument -name required\n");
 
 		CellTypes ct;
 		ct.setup();
 
 		bool tracking_unused = has_fmt_field(name_fmt, "%unused");
 
-		for (auto module : d->selected_modules()) {
-			SigPool unused;
+		NewCellTypes ct_all(d);
 
-			for (auto wire : module->wires())
-			if (wire->has_attribute(ID::unused_bits)) {
-				std::string str = wire->get_string_attribute(ID::unused_bits);
-				for (auto it = str.begin(); it != str.end();) {
-					auto sep = it;
-					for (; sep != str.end() && *sep != ' '; sep++);
-					unused.add(SigBit(wire, std::stoi(std::string(it, sep))));
-					for (it = sep; it != str.end() && *it == ' '; it++);
-				}
-			}
+		for (auto module : d->selected_modules()) {
+			UnusedBits unused(module, ct_all);
 
 			for (auto cell : module->selected_cells()) {
 				Module *subm;
 				Cell *subcell;
+				IdString name_ref;
 
 				if (!ct.cell_known(cell->type))
 					log_error("Non-internal cell type '%s' on cell '%s' in module '%s' unsupported\n",
-							  log_id(cell->type), log_id(cell), log_id(module));
+							  cell->type.unescape(), cell, module);
 
 				std::vector<std::pair<IdString, int>> unused_outputs, used_outputs;
 				for (auto conn : cell->connections()) {
@@ -227,20 +223,20 @@ struct WrapcellPass : Pass {
 				if (!unused_outputs.empty()) {
 					context.unused_outputs += "_unused";
 					for (auto chunk : collect_chunks(unused_outputs))
-						context.unused_outputs += "_" + RTLIL::unescape_id(chunk.format(cell));
+						context.unused_outputs += "_" + module->twines().unescaped_str(chunk.format(cell));
 				}
 
-				std::optional<std::string> unescaped_name = format(name_fmt, cell->parameters, context);
+				std::optional<std::string> unescaped_name = format_with_params(d->twines(), name_fmt, cell->parameters, context);
 				if (!unescaped_name)
 					log_error("Formatting error when processing cell '%s' in module '%s'\n",
-							  log_id(cell), log_id(module));
+							  cell, module);
 
-				IdString name = RTLIL::escape_id(unescaped_name.value());
-				if (d->module(name))
+				name_ref = d->twines().add(RTLIL::escape_id(unescaped_name.value()));
+				if (d->module(name_ref))
 					goto replace_cell;
 
-				subm = d->addModule(name);
-				subcell = subm->addCell("$1", cell->type);
+				subm = d->addModule(name_ref);
+				subcell = subm->addCell("$1", IdString(cell->type));
 				for (auto conn : cell->connections()) {
 					if (ct.cell_output(cell->type, conn.first)) {
 						// Insert marker bits as placehodlers which need to be replaced
@@ -270,11 +266,11 @@ struct WrapcellPass : Pass {
 					if (rule.value_fmt.empty()) {
 						subm->set_bool_attribute(rule.name);
 					} else {
-						std::optional<std::string> value = format(rule.value_fmt, cell->parameters, context);
+						std::optional<std::string> value = format_with_params(d->twines(), rule.value_fmt, cell->parameters, context);
 
 						if (!value)
 							log_error("Formatting error when processing cell '%s' in module '%s'\n",
-									  log_id(cell), log_id(module));
+									  cell, module);
 
 						subm->set_string_attribute(rule.name, value.value());
 					}
@@ -292,7 +288,7 @@ struct WrapcellPass : Pass {
 				for (auto chunk : collect_chunks(used_outputs))
 					new_connections[chunk.format(cell)] = chunk.sample(cell);
 
-				cell->type = name;
+				cell->type = name_ref;
 				cell->connections_ = new_connections;
 			}
 		}

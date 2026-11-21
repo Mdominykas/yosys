@@ -24,9 +24,14 @@
 #include "kernel/sigtools.h"
 #include "kernel/celltypes.h"
 #include "kernel/macc.h"
+#include "kernel/newcelltypes.h"
 
 YOSYS_NAMESPACE_BEGIN
 
+/**
+ * ConstEval provides on-demand constant propagation by traversing input cones
+ * with caching
+ */
 struct ConstEval
 {
 	RTLIL::Module *module;
@@ -37,12 +42,12 @@ struct ConstEval
 	std::set<RTLIL::Cell*> busy;
 	std::vector<SigMap> stack;
 	RTLIL::State defaultval;
+	bool model_barriers = false; // Model $barrier as a buffer
 
 	ConstEval(RTLIL::Module *module, RTLIL::State defaultval = RTLIL::State::Sm) : module(module), assign_map(module), defaultval(defaultval)
 	{
-		CellTypes ct;
-		ct.setup_internals();
-		ct.setup_stdcells();
+		auto ct = NewCellTypes();
+		ct.static_cell_types = StaticCellTypes::Compat::nomem_noff;
 
 		for (auto &it : module->cells_) {
 			if (!ct.cell_known(it.second->type))
@@ -115,7 +120,7 @@ struct ConstEval
 
 				for (int i = 0; i < GetSize(coval); i++) {
 					carry = (sig_g[i] == State::S1) || (sig_p[i] == RTLIL::S1 && carry);
-					coval.bits()[i] = carry ? State::S1 : State::S0;
+					coval.set(i, carry ? State::S1 : State::S0);
 				}
 
 				set(sig_co, coval);
@@ -132,6 +137,19 @@ struct ConstEval
 		sig_y = values_map(assign_map(cell->getPort(ID::Y)));
 		if (sig_y.is_fully_const())
 			return true;
+
+		if (cell->type == ID($barrier))
+		{
+			if (!model_barriers) {
+				undef.append(sig_y);
+				return false;
+			}
+			sig_a = cell->getPort(ID::A);
+			if (!eval(sig_a, undef, cell))
+				return false;
+			set(sig_y, sig_a.as_const());
+			return true;
+		}
 
 		if (cell->hasPort(ID::S)) {
 			sig_s = cell->getPort(ID::S);
@@ -249,7 +267,7 @@ struct ConstEval
 
 			for (int i = 0; i < GetSize(val_y); i++)
 				if (val_y[i] == RTLIL::Sx)
-					val_x.bits()[i] = RTLIL::Sx;
+					val_x.set(i, RTLIL::Sx);
 
 			set(sig_y, val_y);
 			set(sig_x, val_x);
@@ -349,7 +367,11 @@ struct ConstEval
 				return false;
 
 			bool eval_err = false;
-			RTLIL::Const eval_ret = CellTypes::eval(cell, sig_a.as_const(), sig_b.as_const(), sig_c.as_const(), sig_d.as_const(), &eval_err);
+			RTLIL::Const eval_ret;
+			if (sig_s.size() > 0 && eval(sig_s, undef, cell)) {
+				eval_ret = CellTypes::eval(cell, sig_a.as_const(), sig_b.as_const(), sig_s.as_const(), &eval_err);
+			} else
+				eval_ret = CellTypes::eval(cell, sig_a.as_const(), sig_b.as_const(), sig_c.as_const(), sig_d.as_const(), &eval_err);
 
 			if (eval_err)
 				return false;

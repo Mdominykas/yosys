@@ -29,7 +29,7 @@ bool FfMergeHelper::is_output_unused(RTLIL::SigSpec sig) {
 }
 
 bool FfMergeHelper::find_output_ff(RTLIL::SigSpec sig, FfData &ff, pool<std::pair<Cell *, int>> &bits) {
-	ff = FfData(module, initvals, NEW_ID);
+	ff = FfData(module, initvals, module->twines().add(NEW_ID));
 	sigmap->apply(sig);
 
 	bool found = false;
@@ -42,9 +42,9 @@ bool FfMergeHelper::find_output_ff(RTLIL::SigSpec sig, FfData &ff, pool<std::pai
 			ff.sig_d.append(bit);
 			ff.sig_clr.append(State::Sx);
 			ff.sig_set.append(State::Sx);
-			ff.val_init.bits().push_back(State::Sx);
-			ff.val_srst.bits().push_back(State::Sx);
-			ff.val_arst.bits().push_back(State::Sx);
+			ff.val_init.append(RTLIL::Const(State::Sx));
+			ff.val_srst.append(RTLIL::Const(State::Sx));
+			ff.val_arst.append(RTLIL::Const(State::Sx));
 			continue;
 		}
 
@@ -147,9 +147,9 @@ bool FfMergeHelper::find_output_ff(RTLIL::SigSpec sig, FfData &ff, pool<std::pai
 		ff.sig_q.append(cur_ff.sig_q[idx]);
 		ff.sig_clr.append(ff.has_sr ? cur_ff.sig_clr[idx] : State::S0);
 		ff.sig_set.append(ff.has_sr ? cur_ff.sig_set[idx] : State::S0);
-		ff.val_arst.bits().push_back(ff.has_arst ? cur_ff.val_arst[idx] : State::Sx);
-		ff.val_srst.bits().push_back(ff.has_srst ? cur_ff.val_srst[idx] : State::Sx);
-		ff.val_init.bits().push_back(cur_ff.val_init[idx]);
+		ff.val_arst.append(RTLIL::Const(ff.has_arst ? cur_ff.val_arst[idx] : State::Sx));
+		ff.val_srst.append(RTLIL::Const(ff.has_srst ? cur_ff.val_srst[idx] : State::Sx));
+		ff.val_init.append(RTLIL::Const(cur_ff.val_init[idx]));
 		found = true;
 	}
 
@@ -157,7 +157,7 @@ bool FfMergeHelper::find_output_ff(RTLIL::SigSpec sig, FfData &ff, pool<std::pai
 }
 
 bool FfMergeHelper::find_input_ff(RTLIL::SigSpec sig, FfData &ff, pool<std::pair<Cell *, int>> &bits) {
-	ff = FfData(module, initvals, NEW_ID);
+	ff = FfData(module, initvals, module->twines().add(NEW_ID));
 	sigmap->apply(sig);
 
 	bool found = false;
@@ -174,9 +174,9 @@ bool FfMergeHelper::find_input_ff(RTLIL::SigSpec sig, FfData &ff, pool<std::pair
 			// These two will be fixed up later.
 			ff.sig_clr.append(State::Sx);
 			ff.sig_set.append(State::Sx);
-			ff.val_init.bits().push_back(bit.data);
-			ff.val_srst.bits().push_back(bit.data);
-			ff.val_arst.bits().push_back(bit.data);
+			ff.val_init.append(RTLIL::Const(bit.data));
+			ff.val_srst.append(RTLIL::Const(bit.data));
+			ff.val_arst.append(RTLIL::Const(bit.data));
 			continue;
 		}
 
@@ -274,9 +274,9 @@ bool FfMergeHelper::find_input_ff(RTLIL::SigSpec sig, FfData &ff, pool<std::pair
 		ff.sig_q.append(cur_ff.sig_q[idx]);
 		ff.sig_clr.append(ff.has_sr ? cur_ff.sig_clr[idx] : State::S0);
 		ff.sig_set.append(ff.has_sr ? cur_ff.sig_set[idx] : State::S0);
-		ff.val_arst.bits().push_back(ff.has_arst ? cur_ff.val_arst[idx] : State::Sx);
-		ff.val_srst.bits().push_back(ff.has_srst ? cur_ff.val_srst[idx] : State::Sx);
-		ff.val_init.bits().push_back(cur_ff.val_init[idx]);
+		ff.val_arst.append(RTLIL::Const(ff.has_arst ? cur_ff.val_arst[idx] : State::Sx));
+		ff.val_srst.append(RTLIL::Const(ff.has_srst ? cur_ff.val_srst[idx] : State::Sx));
+		ff.val_init.append(RTLIL::Const(cur_ff.val_init[idx]));
 		found = true;
 	}
 
@@ -301,8 +301,9 @@ void FfMergeHelper::remove_output_ff(const pool<std::pair<Cell *, int>> &bits) {
 		SigSpec q = cell->getPort(ID::Q);
 		initvals->remove_init(q[idx]);
 		dff_driver.erase((*sigmap)(q[idx]));
-		q[idx] = module->addWire(stringf("$ffmerge_disconnected$%d", autoidx++));
+		q[idx] = module->addWire(stringf("$ffmerge_disconnected$%d", module->twines().next_autoidx()));
 		cell->setPort(ID::Q, q);
+		initvals->set_init(cell->getPort(ID::Q), (*initvals)(q));
 	}
 }
 
@@ -335,7 +336,7 @@ void FfMergeHelper::set(FfInitVals *initvals_, RTLIL::Module *module_)
 	}
 
 	for (auto cell : module->cells()) {
-		if (RTLIL::builtin_ff_cell_types().count(cell->type)) {
+		if (cell->is_builtin_ff()) {
 			if (cell->hasPort(ID::D)) {
 				SigSpec d = (*sigmap)(cell->getPort(ID::D));
 				for (int i = 0; i < GetSize(d); i++)

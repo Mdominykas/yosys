@@ -20,7 +20,7 @@
 #include "kernel/rtlil.h"
 #include "kernel/register.h"
 #include "kernel/sigtools.h"
-#include "kernel/celltypes.h"
+#include "kernel/newcelltypes.h"
 #include "kernel/log.h"
 #include <string>
 
@@ -41,7 +41,7 @@ static std::string netname(std::set<std::string> &conntypes_code, std::set<std::
 		return stringf("CONST_%d_0x%x", sig.size(), sig.as_int());
 	}
 
-	return RTLIL::unescape_id(sig.as_wire()->name);
+	return sig.as_wire()->name.unescape();
 }
 
 struct IntersynthBackend : public Backend {
@@ -77,7 +77,7 @@ struct IntersynthBackend : public Backend {
 		log_push();
 
 		std::vector<std::string> libfiles;
-		std::vector<RTLIL::Design*> libs;
+		std::vector<std::unique_ptr<RTLIL::Design>> libs;
 		bool flag_notypes = false;
 		bool selected = false;
 
@@ -100,16 +100,15 @@ struct IntersynthBackend : public Backend {
 		}
 		extra_args(f, filename, args, argidx);
 
-		log("Output filename: %s\n", filename.c_str());
+		log("Output filename: %s\n", filename);
 
 		for (auto filename : libfiles) {
 			std::ifstream f;
 			f.open(filename.c_str());
 			if (f.fail())
-				log_error("Can't open lib file `%s'.\n", filename.c_str());
-			RTLIL::Design *lib = new RTLIL::Design;
-			Frontend::frontend_call(lib, &f, filename, (filename.size() > 3 && filename.compare(filename.size()-3, std::string::npos, ".il") == 0 ? "rtlil" : "verilog"));
-			libs.push_back(lib);
+				log_error("Can't open lib file `%s'.\n", filename);
+			auto &lib = libs.emplace_back(std::make_unique<RTLIL::Design>());
+			Frontend::frontend_call(lib.get(), &f, filename, (filename.size() > 3 && filename.compare(filename.size()-3, std::string::npos, ".il") == 0 ? "rtlil" : "verilog"));
 		}
 
 		if (libs.size() > 0)
@@ -117,10 +116,10 @@ struct IntersynthBackend : public Backend {
 
 		std::set<std::string> conntypes_code, celltypes_code;
 		std::string netlists_code;
-		CellTypes ct(design);
+		NewCellTypes ct(design);
 
-		for (auto lib : libs)
-			ct.setup_design(lib);
+		for (auto &lib : libs)
+			ct.setup_design(lib.get());
 
 		for (auto module : design->modules())
 		{
@@ -133,27 +132,27 @@ struct IntersynthBackend : public Backend {
 
 			if (selected && !design->selected_whole_module(module->name)) {
 				if (design->selected_module(module->name))
-					log_cmd_error("Can't handle partially selected module %s!\n", log_id(module->name));
+					log_cmd_error("Can't handle partially selected module %s!\n", module);
 				continue;
 			}
 
-			log("Generating netlist %s.\n", log_id(module->name));
+			log("Generating netlist %s.\n", module);
 
 			if (module->memories.size() != 0 || module->processes.size() != 0)
 				log_error("Can't generate a netlist for a module with unprocessed memories or processes!\n");
 
 			std::set<std::string> constcells_code;
-			netlists_code += stringf("# Netlist of module %s\n", log_id(module->name));
-			netlists_code += stringf("netlist %s\n", log_id(module->name));
+			netlists_code += stringf("# Netlist of module %s\n", module);
+			netlists_code += stringf("netlist %s\n", module);
 
 			// Module Ports: "std::set<string> celltypes_code" prevents duplicate top level ports
 			for (auto wire : module->wires()) {
 				if (wire->port_input || wire->port_output) {
 					celltypes_code.insert(stringf("celltype !%s b%d %sPORT\n" "%s %s %d %s PORT\n",
-							log_id(wire->name), wire->width, wire->port_input ? "*" : "",
-							wire->port_input ? "input" : "output", log_id(wire->name), wire->width, log_id(wire->name)));
-					netlists_code += stringf("node %s %s PORT %s\n", log_id(wire->name), log_id(wire->name),
-							netname(conntypes_code, celltypes_code, constcells_code, sigmap(wire)).c_str());
+							wire, wire->width, wire->port_input ? "*" : "",
+							wire->port_input ? "input" : "output", wire, wire->width, wire));
+					netlists_code += stringf("node %s %s PORT %s\n", wire, wire,
+							netname(conntypes_code, celltypes_code, constcells_code, sigmap(wire)));
 				}
 			}
 
@@ -163,26 +162,26 @@ struct IntersynthBackend : public Backend {
 				std::string celltype_code, node_code;
 
 				if (!ct.cell_known(cell->type))
-					log_error("Found unknown cell type %s in module!\n", log_id(cell->type));
+					log_error("Found unknown cell type %s in module!\n", cell->type.unescape());
 
-				celltype_code = stringf("celltype %s", log_id(cell->type));
-				node_code = stringf("node %s %s", log_id(cell->name), log_id(cell->type));
+				celltype_code = stringf("celltype %s", cell->type.unescape());
+				node_code = stringf("node %s %s", cell, cell->type.unescape());
 				for (auto &port : cell->connections()) {
 					RTLIL::SigSpec sig = sigmap(port.second);
 					if (sig.size() != 0) {
 						conntypes_code.insert(stringf("conntype b%d %d 2 %d\n", sig.size(), sig.size(), sig.size()));
-						celltype_code += stringf(" b%d %s%s", sig.size(), ct.cell_output(cell->type, port.first) ? "*" : "", log_id(port.first));
-						node_code += stringf(" %s %s", log_id(port.first), netname(conntypes_code, celltypes_code, constcells_code, sig).c_str());
+						celltype_code += stringf(" b%d %s%s", sig.size(), ct.cell_output(cell->type, port.first) ? "*" : "", design->twines().unescaped_str(port.first));
+						node_code += stringf(" %s %s", design->twines().unescaped_str(port.first), netname(conntypes_code, celltypes_code, constcells_code, sig));
 					}
 				}
 				for (auto &param : cell->parameters) {
-					celltype_code += stringf(" cfg:%d %s", int(param.second.size()), log_id(param.first));
+					celltype_code += stringf(" cfg:%d %s", int(param.second.size()), design->twines().unescaped_str(param.first));
 					if (param.second.size() != 32) {
-						node_code += stringf(" %s '", log_id(param.first));
+						node_code += stringf(" %s '", design->twines().unescaped_str(param.first));
 						for (int i = param.second.size()-1; i >= 0; i--)
 							node_code += param.second[i] == State::S1 ? "1" : "0";
 					} else
-						node_code += stringf(" %s 0x%x", log_id(param.first), param.second.as_int());
+						node_code += stringf(" %s 0x%x", design->twines().unescaped_str(param.first), param.second.as_int());
 				}
 
 				celltypes_code.insert(celltype_code + "\n");
@@ -199,16 +198,13 @@ struct IntersynthBackend : public Backend {
 		if (!flag_notypes) {
 			*f << stringf("### Connection Types\n");
 			for (auto code : conntypes_code)
-				*f << stringf("%s", code.c_str());
+				*f << stringf("%s", code);
 			*f << stringf("\n### Cell Types\n");
 			for (auto code : celltypes_code)
-				*f << stringf("%s", code.c_str());
+				*f << stringf("%s", code);
 		}
 		*f << stringf("\n### Netlists\n");
-		*f << stringf("%s", netlists_code.c_str());
-
-		for (auto lib : libs)
-			delete lib;
+		*f << stringf("%s", netlists_code);
 
 		log_pop();
 	}

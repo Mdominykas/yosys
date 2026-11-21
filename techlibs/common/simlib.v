@@ -31,6 +31,14 @@
  *
  */
 
+// If using Verilator, define SIMLIB_VERILATOR_COMPAT
+`ifdef SIMLIB_VERILATOR_COMPAT
+ /* verilator lint_save */
+ /* verilator lint_off DEFOVERRIDE */
+ `define SIMLIB_NOCONNECT
+ /* verilator lint_restore */
+`endif
+
 // --------------------------------------------------------
 //* ver 2
 //* title Bit-wise inverter
@@ -96,6 +104,29 @@ endmodule
 //- for general use.
 //-
 module \$buf (A, Y);
+
+parameter WIDTH = 0;
+
+input [WIDTH-1:0] A;
+output [WIDTH-1:0] Y;
+
+assign Y = A;
+
+endmodule
+
+// --------------------------------------------------------
+
+//  |---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|
+//-
+//-     $barrier (A, Y)
+//* group unary
+//-
+//- A coarse-grain buffer cell type that acts as a barrier for optimizations.
+//- Optimization passes are forbidden from rewriting patterns that include
+//- this cell (by merging, constant propagation etc) with the exception of
+//- opt_clean that can remove it if the output is unused.
+//-
+module \$barrier (A, Y);
 
 parameter WIDTH = 0;
 
@@ -468,7 +499,7 @@ endmodule
 //-     $sshl (A, B, Y)
 //* group binary
 //-
-//- An arithmatic shift-left operation. 
+//- An arithmatic shift-left operation.
 //- This corresponds to the Verilog '<<<' operator.
 //-
 module \$sshl (A, B, Y);
@@ -712,7 +743,7 @@ endmodule
 //-     $lt (A, B, Y)
 //* group binary
 //-
-//- A less-than comparison between inputs 'A' and 'B'. 
+//- A less-than comparison between inputs 'A' and 'B'.
 //- This corresponds to the Verilog '<' operator.
 //-
 module \$lt (A, B, Y);
@@ -744,7 +775,7 @@ endmodule
 //-     $le (A, B, Y)
 //* group binary
 //-
-//- A less-than-or-equal-to comparison between inputs 'A' and 'B'. 
+//- A less-than-or-equal-to comparison between inputs 'A' and 'B'.
 //- This corresponds to the Verilog '<=' operator.
 //-
 module \$le (A, B, Y);
@@ -776,7 +807,7 @@ endmodule
 //-     $eq (A, B, Y)
 //* group binary
 //-
-//- An equality comparison between inputs 'A' and 'B'. 
+//- An equality comparison between inputs 'A' and 'B'.
 //- This corresponds to the Verilog '==' operator.
 //-
 module \$eq (A, B, Y);
@@ -808,7 +839,7 @@ endmodule
 //-     $ne (A, B, Y)
 //* group binary
 //-
-//- An inequality comparison between inputs 'A' and 'B'. 
+//- An inequality comparison between inputs 'A' and 'B'.
 //- This corresponds to the Verilog '!=' operator.
 //-
 module \$ne (A, B, Y);
@@ -936,7 +967,7 @@ endmodule
 //-     $gt (A, B, Y)
 //* group binary
 //-
-//- A greater-than comparison between inputs 'A' and 'B'. 
+//- A greater-than comparison between inputs 'A' and 'B'.
 //- This corresponds to the Verilog '>' operator.
 //-
 module \$gt (A, B, Y);
@@ -1469,7 +1500,7 @@ endmodule
 //-     $pow (A, B, Y)
 //* group binary
 //-
-//- Exponentiation of an input (Y = A ** B). 
+//- Exponentiation of an input (Y = A ** B).
 //- This corresponds to the Verilog '**' operator.
 //-
 `ifndef SIMLIB_NOPOW
@@ -1801,7 +1832,7 @@ endmodule
 //-
 //-     $tribuf (A, EN, Y)
 //-
-//- A tri-state buffer. 
+//- A tri-state buffer.
 //- This buffer conditionally drives the output with the value of the input
 //- based on the enable signal.
 //-
@@ -1968,7 +1999,7 @@ endmodule
 // --------------------------------------------------------
 //* group spec
 
-module \$specrule (EN_SRC, EN_DST, SRC, DST);
+module \$specrule (SRC_EN, DST_EN, SRC, DST);
 
 parameter TYPE = "";
 parameter T_LIMIT = 0;
@@ -1983,7 +2014,7 @@ parameter SRC_POL = 0;
 parameter DST_PEN = 0;
 parameter DST_POL = 0;
 
-input EN_SRC, EN_DST;
+input SRC_EN, DST_EN;
 input [SRC_WIDTH-1:0] SRC;
 input [DST_WIDTH-1:0] DST;
 
@@ -3214,5 +3245,31 @@ endmodule
 module \$scopeinfo ();
 
 parameter TYPE = "";
+
+endmodule
+
+// --------------------------------------------------------
+//* group wire
+`ifndef SIMLIB_NOCONNECT
+
+module \$connect (A, B);
+
+parameter WIDTH = 0;
+
+inout [WIDTH-1:0] A;
+inout [WIDTH-1:0] B;
+
+tran connect[WIDTH-1:0] (A, B);
+
+endmodule
+
+`endif
+// --------------------------------------------------------
+//* group wire
+module \$input_port (Y);
+
+parameter WIDTH = 0;
+
+inout [WIDTH-1:0] Y;
 
 endmodule

@@ -22,6 +22,7 @@
 #include "kernel/rtlil.h"
 #include "kernel/utils.h"
 #include "kernel/celltypes.h"
+#include "kernel/log_help.h"
 
 PRIVATE_NAMESPACE_BEGIN
 USING_YOSYS_NAMESPACE
@@ -38,6 +39,11 @@ static RTLIL::SigBit canonical_bit(RTLIL::SigBit bit)
 
 struct PortarcsPass : Pass {
 	PortarcsPass() : Pass("portarcs", "derive port arcs for propagation delay") {}
+	bool formatted_help() override {
+		auto *help = PrettyHelp::get_current();
+		help->set_group("passes/status");
+		return false;
+	}
 
 	void help() override
 	{
@@ -101,7 +107,7 @@ struct PortarcsPass : Pass {
 				log_assert(w->port_input || w->port_output);
 				if (w->port_input && w->port_output) {
 					log_warning("Module '%s' with ambiguous direction on port %s ignored.\n",
-								log_id(m), log_id(w));
+								m, w);
 					ambiguous_ports = true;
 					break;
 				}
@@ -118,10 +124,11 @@ struct PortarcsPass : Pass {
 				TopoSort<SigBit> sort;
 
 				for (auto cell : m->cells())
-				if (cell->type != ID($buf)) {
+				// Ignore all bufnorm helper cells
+				if (!cell->type.in(ID($buf), ID($input_port), ID($connect), ID($tribuf))) {
 					auto tdata = tinfo.find(cell->type);
 					if (tdata == tinfo.end())
-						log_cmd_error("Missing timing data for module '%s'.\n", log_id(cell->type));
+						log_cmd_error("Missing timing data for module '%s'.\n", cell->type.unescape());
 					for (auto [edge, delay] : tdata->second.comb) {
 						auto from = edge.first.get_connection(cell);
 						auto to = edge.second.get_connection(cell);
@@ -134,7 +141,7 @@ struct PortarcsPass : Pass {
 				}
 
 				if (!sort.sort())
-					log_error("Failed to sort instances in module %s.\n", log_id(m));
+					log_error("Failed to sort instances in module %s.\n", m);
 
 				ordering = sort.sorted;
 			}
@@ -237,7 +244,7 @@ struct PortarcsPass : Pass {
 
 			if (draw_mode) {
 				auto bit_str = [](SigBit bit) {
-					return stringf("%s%d", RTLIL::unescape_id(bit.wire->name.str()).c_str(), bit.offset);
+					return stringf("%s%d", bit.wire, bit.offset);
 				};
 
 				std::vector<std::string> headings;
@@ -255,28 +262,31 @@ struct PortarcsPass : Pass {
 							max_delay = p[i];
 				}
 
-				log("Delay legend:\n\n");
-				log("    ");
+				if (max_delay == 0)
+					max_delay = 1;
+
+				log("Delay legend:\n");
+				log("\n");
+				std::string message = "    ";
 				for (int i = 0; i < 24; i++)
-					log("\033[48;5;%dm ", 232+i);
-				log("\033[0m\n");
+					message += stringf("\033[48;5;%dm ", 232+i);
+				log("%s\033[0m\n", message);
 				log("    |%22s|\n", "");
 				log("    0%22s%d\n", "", max_delay);
-				log("\n");
 				for (int k = top_length - 1; k >= 0; k--) {
-					log("  %10s  ", "");
+					message = stringf("  %10s  ", "");
 					for (auto &h : headings)
-						log("%c", (k < (int) h.size()) ? h[k] : ' ');
-					log("\n");
+						message += (k < (int) h.size()) ? h[k] : ' ';
+					log("%s\n", message);
 				}
 				log("\n");
 
 				for (auto bit : outputs) {
-					log("  %10s  ", bit_str(bit).c_str());
+					message = stringf("  %10s  ", bit_str(bit));
 					int *p = annotations.at(canonical_bit(bit));
 					for (auto i = 0; i < inputs.size(); i++)
-						log("\033[48;5;%dm ", 232 + ((std::max(p[i], 0) * 24) - 1) / max_delay);
-					log("\033[0m\n");
+						message += stringf("\033[48;5;%dm ", 232 + ((std::max(p[i], 0) * 24) - 1) / max_delay);
+					log("%s\033[0m\n", message);
 				}
 			}
 

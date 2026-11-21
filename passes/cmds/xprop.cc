@@ -24,6 +24,7 @@
 #include "kernel/sigtools.h"
 #include "kernel/utils.h"
 #include "kernel/yosys.h"
+#include "kernel/log_help.h"
 #include <deque>
 
 USING_YOSYS_NAMESPACE
@@ -263,7 +264,7 @@ struct XpropWorker
 			auto not_0 = module->Not(NEW_ID, result.is_0);
 			auto not_1 = module->Not(NEW_ID, result.is_1);
 			auto not_x = module->Not(NEW_ID, result.is_x);
-			auto valid = module->ReduceAnd(NEW_ID, {
+			auto valid = module->ReduceAnd(NEW_ID, SigSpec{
 				module->Eq(NEW_ID, result.is_0, module->And(NEW_ID, not_1, not_x)),
 				module->Eq(NEW_ID, result.is_1, module->And(NEW_ID, not_0, not_x)),
 				module->Eq(NEW_ID, result.is_x, module->And(NEW_ID, not_0, not_1)),
@@ -273,7 +274,7 @@ struct XpropWorker
 			else
 				module->addAssume(NEW_ID_SUFFIX("xprop_enc"), valid, State::S1);
 			if (options.debug_asserts) {
-				auto bad_bits = module->Bweqx(NEW_ID, {result.is_0, result.is_1, result.is_x}, Const(State::Sx, GetSize(result) * 3));
+				auto bad_bits = module->Bweqx(NEW_ID, SigSpec{result.is_0, result.is_1, result.is_x}, Const(State::Sx, GetSize(result) * 3));
 				module->addAssert(NEW_ID_SUFFIX("xprop_debug"), module->LogicNot(NEW_ID, bad_bits), State::S1);
 			}
 		}
@@ -301,7 +302,7 @@ struct XpropWorker
 			return;
 		}
 
-		if (RTLIL::builtin_ff_cell_types().count(cell->type) || cell->type == ID($anyinit)) {
+		if (cell->is_builtin_ff() || cell->type == ID($anyinit)) {
 			FfData ff(&initvals, cell);
 
 			if (cell->type != ID($anyinit))
@@ -462,7 +463,11 @@ struct XpropWorker
 			return;
 		}
 
-		log_warning("Unhandled cell %s (%s) during maybe-x marking\n", log_id(cell), log_id(cell->type));
+		if (cell->type.in(ID($scopeinfo))) {
+			return;
+		}
+
+		log_warning("Unhandled cell %s (%s) during maybe-x marking\n", cell, cell->type.unescape());
 		mark_outputs_maybe_x(cell);
 	}
 
@@ -481,9 +486,9 @@ struct XpropWorker
 				auto sig_a = cell->getPort(ID::A);
 				auto sig_b = cell->getPort(ID::B);
 
-				auto name = cell->name;
+				std::string name_str = cell->name.str();
 				module->remove(cell);
-				module->addXnor(name, sig_a, sig_b, sig_y);
+				module->addXnor(name_str, sig_a, sig_b, sig_y);
 				return;
 			}
 
@@ -492,13 +497,13 @@ struct XpropWorker
 				auto sig_a = cell->getPort(ID::A);
 				auto sig_b = cell->getPort(ID::B);
 
-				auto name = cell->name;
-				auto type = cell->type;
+				std::string name_str = cell->name.str();
+				IdString type = cell->type;
 				module->remove(cell);
 				if (type == ID($eqx))
-					module->addEq(name, sig_a, sig_b, sig_y);
+					module->addEq(name_str, sig_a, sig_b, sig_y);
 				else
-					module->addNe(name, sig_a, sig_b, sig_y);
+					module->addNe(name_str, sig_a, sig_b, sig_y);
 				return;
 			}
 
@@ -680,7 +685,7 @@ struct XpropWorker
 			auto delta_0 = module->Xnor(NEW_ID, enc_a.is_0, enc_b.is_0);
 			auto delta_1 = module->Xnor(NEW_ID, enc_a.is_1, enc_b.is_1);
 
-			auto eq = module->ReduceAnd(NEW_ID, {delta_0, delta_1});
+			auto eq = module->ReduceAnd(NEW_ID, SigSpec{delta_0, delta_1});
 
 			auto res = cell->type == ID($nex) ? module->Not(NEW_ID, eq) : eq;
 
@@ -744,7 +749,7 @@ struct XpropWorker
 
 			int width = GetSize(enc_y);
 
-			auto all_x = module->ReduceOr(NEW_ID, {
+			auto all_x = module->ReduceOr(NEW_ID, SigSpec{
 				enc_s.is_x,
 				module->And(NEW_ID, enc_s.is_1, module->Sub(NEW_ID, enc_s.is_1, Const(1, width)))
 			});
@@ -782,7 +787,7 @@ struct XpropWorker
 			SigSpec y_1 = module->addWire(NEW_ID, GetSize(sig_y));
 			SigSpec y_x = module->addWire(NEW_ID, GetSize(sig_y));
 
-			auto encoded_type = cell->type == ID($shiftx) ? ID($shift) : cell->type;
+			IdString encoded_type = cell->type == ID($shiftx) ? IdString{ID($shift)} : cell->type;
 
 			if (cell->type == ID($shiftx)) {
 				std::swap(enc_a.is_0, enc_a.is_x);
@@ -827,9 +832,9 @@ struct XpropWorker
 			auto init_q_is_1 = init_q;
 			auto init_q_is_x = init_q;
 
-			for (auto &bit : init_q_is_1.bits())
+			for (auto bit : init_q_is_1)
 				bit = bit == State::S1 ? State::S1 : State::S0;
-			for (auto &bit : init_q_is_x.bits())
+			for (auto bit : init_q_is_x)
 				bit = bit == State::Sx ? State::S1 : State::S0;
 
 			initvals.remove_init(sig_q);
@@ -852,26 +857,26 @@ struct XpropWorker
 			return;
 		}
 
-		if (RTLIL::builtin_ff_cell_types().count(cell->type) || cell->type == ID($anyinit)) {
+		if (cell->is_builtin_ff() || cell->type == ID($anyinit)) {
 			FfData ff(&initvals, cell);
 
 			if ((ff.has_clk || ff.has_gclk) && !ff.has_ce && !ff.has_aload && !ff.has_srst && !ff.has_arst && !ff.has_sr) {
 				if (ff.has_clk && maybe_x(ff.sig_clk)) {
-					log_warning("Only non-x CLK inputs are currently supported for %s (%s)\n", log_id(cell), log_id(cell->type));
+					log_warning("Only non-x CLK inputs are currently supported for %s (%s)\n", cell, cell->type.unescape());
 				} else {
 					auto init_q = ff.val_init;
 					auto init_q_is_1 = init_q;
 					auto init_q_is_x = init_q;
 
 					if (ff.is_anyinit) {
-						for (auto &bit : init_q_is_1.bits())
+						for (auto bit : init_q_is_1)
 							bit = State::Sx;
-						for (auto &bit : init_q_is_x.bits())
+						for (auto bit : init_q_is_x)
 							bit = State::S0;
 					} else {
-						for (auto &bit : init_q_is_1.bits())
+						for (auto bit : init_q_is_1)
 							bit = bit == State::S1 ? State::S1 : State::S0;
-						for (auto &bit : init_q_is_x.bits())
+						for (auto bit : init_q_is_x)
 							bit = bit == State::Sx ? State::S1 : State::S0;
 					}
 
@@ -887,7 +892,7 @@ struct XpropWorker
 					ff.val_init = init_q_is_1;
 					ff.emit();
 
-					ff.name = NEW_ID;
+					ff.name = module->twines().add(NEW_ID);
 					ff.cell = nullptr;
 					ff.sig_d = enc_d.is_x;
 					ff.sig_q = enc_q.is_x;
@@ -902,7 +907,7 @@ struct XpropWorker
 					return;
 				}
 			} else {
-				log_warning("Unhandled FF-cell %s (%s), consider running clk2fflogic, async2sync and/or dffunmap\n", log_id(cell), log_id(cell->type));
+				log_warning("Unhandled FF-cell %s (%s), consider running clk2fflogic, async2sync and/or dffunmap\n", cell, cell->type.unescape());
 			}
 		}
 
@@ -959,9 +964,9 @@ struct XpropWorker
 			log("Running 'demuxmap' preserves x-propagation and can be run before 'xprop'.\n");
 
 		if (options.required)
-			log_error("Unhandled cell %s (%s)\n", log_id(cell), log_id(cell->type));
+			log_error("Unhandled cell %s (%s)\n", cell, cell->type.unescape());
 		else
-			log_warning("Unhandled cell %s (%s)\n", log_id(cell), log_id(cell->type));
+			log_warning("Unhandled cell %s (%s)\n", cell, cell->type.unescape());
 	}
 
 	void split_ports()
@@ -975,10 +980,10 @@ struct XpropWorker
 			auto wire = module->wire(port);
 			if (module->design->selected(module, wire)) {
 				if (wire->port_input == wire->port_output) {
-					log_warning("Port %s not an input or an output port which is not supported by xprop\n", log_id(wire));
+					log_warning("Port %s not an input or an output port which is not supported by xprop\n", wire);
 				} else if ((options.split_inputs && !options.assume_def_inputs && wire->port_input) || (options.split_outputs && wire->port_output)) {
-					auto port_d = module->uniquify(stringf("%s_d", port.c_str()));
-					auto port_x = module->uniquify(stringf("%s_x", port.c_str()));
+					auto port_d = module->uniquify(module->twines().str(port) + "_d");
+					auto port_x = module->uniquify(module->twines().str(port) + "_x");
 
 					auto wire_d = module->addWire(port_d, GetSize(wire));
 					auto wire_x = module->addWire(port_x, GetSize(wire));
@@ -998,7 +1003,7 @@ struct XpropWorker
 
 						if (options.split_public) {
 							// Need to hide the original wire so split_public doesn't try to split it again
-							module->rename(wire, NEW_ID_SUFFIX(wire->name.c_str()));
+							module->rename(wire, NEW_ID_SUFFIX(wire->name.str()));
 						}
 					} else {
 						auto enc = encoded(wire, true);
@@ -1030,8 +1035,9 @@ struct XpropWorker
 				continue;
 			int index_d = 0;
 			int index_x = 0;
-			auto name_d = module->uniquify(stringf("%s_d", wire->name.c_str()), index_d);
-			auto name_x = module->uniquify(stringf("%s_x", wire->name.c_str()), index_x);
+			std::string wname = wire->name.str();
+			auto name_d = module->uniquify(wname + "_d", index_d);
+			auto name_x = module->uniquify(wname + "_x", index_x);
 
 			auto hdlname = wire->get_hdlname_attribute();
 
@@ -1051,7 +1057,7 @@ struct XpropWorker
 			module->connect(wire_d, enc.is_1);
 			module->connect(wire_x, enc.is_x);
 
-			module->rename(wire, NEW_ID_SUFFIX(wire->name.c_str()));
+			module->rename(wire, NEW_ID_SUFFIX(wire->name.str()));
 		}
 	}
 
@@ -1100,6 +1106,11 @@ struct XpropWorker
 
 struct XpropPass : public Pass {
 	XpropPass() : Pass("xprop", "formal x propagation") {}
+	bool formatted_help() override {
+		auto *help = PrettyHelp::get_current();
+		help->set_group("formal");
+		return false;
+	}
 	void help() override
 	{
 		//   |---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|

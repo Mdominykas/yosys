@@ -200,7 +200,7 @@ bool is_extending_cell(RTLIL::IdString type)
 bool is_inlinable_cell(RTLIL::IdString type)
 {
 	return is_unary_cell(type) || is_binary_cell(type) || type.in(
-		ID($mux), ID($concat), ID($slice), ID($pmux), ID($bmux), ID($demux), ID($bwmux));
+		ID($mux), ID($concat), ID($slice), ID($pmux), ID($bmux), ID($demux), ID($bwmux), ID($barrier));
 }
 
 bool is_ff_cell(RTLIL::IdString type)
@@ -212,7 +212,7 @@ bool is_ff_cell(RTLIL::IdString type)
 		ID($dlatch), ID($adlatch), ID($dlatchsr), ID($sr));
 }
 
-bool is_internal_cell(RTLIL::IdString type)
+bool is_internal_cell(PooledName type)
 {
 	return !type.isPublic() && !type.begins_with("$paramod");
 }
@@ -251,7 +251,7 @@ CxxrtlPortType cxxrtl_port_type(RTLIL::Module *module, RTLIL::IdString port)
 	bool is_sync = output_wire->get_bool_attribute(ID(cxxrtl_sync));
 	if (is_comb && is_sync)
 		log_cmd_error("Port `%s.%s' is marked as both `cxxrtl_comb` and `cxxrtl_sync`.\n",
-		              log_id(module), log_signal(output_wire));
+		              module, log_signal(output_wire));
 	else if (is_comb)
 		return CxxrtlPortType::COMB;
 	else if (is_sync)
@@ -637,20 +637,6 @@ std::string escape_cxx_string(const std::string &input)
 	return output;
 }
 
-std::string basename(const std::string &filepath)
-{
-#ifdef _WIN32
-	const std::string dir_seps = "\\/";
-#else
-	const std::string dir_seps = "/";
-#endif
-	size_t sep_pos = filepath.find_last_of(dir_seps);
-	if (sep_pos != std::string::npos)
-		return filepath.substr(sep_pos + 1);
-	else
-		return filepath;
-}
-
 template<class T>
 std::string get_hdl_name(T *object)
 {
@@ -742,6 +728,8 @@ struct CxxrtlWorker {
 	std::string indent;
 	int temporary = 0;
 
+	const RTLIL::Design *design = nullptr;
+
 	dict<const RTLIL::Module*, SigMap> sigmaps;
 	dict<const RTLIL::Module*, std::vector<Mem>> mod_memories;
 	pool<std::pair<const RTLIL::Module*, RTLIL::IdString>> writable_memories;
@@ -770,7 +758,7 @@ struct CxxrtlWorker {
 	//  1b. Generated identifiers for internal names (beginning with `$`) start with `i_`.
 	//  2. An underscore is escaped with another underscore, i.e. `__`.
 	//  3. Any other non-alnum character is escaped with underscores around its lowercase hex code, e.g. `@` as `_40_`.
-	std::string mangle_name(const RTLIL::IdString &name)
+	std::string mangle_name(PooledName name)
 	{
 		std::string mangled;
 		bool first = true;
@@ -800,7 +788,7 @@ struct CxxrtlWorker {
 		return mangled;
 	}
 
-	std::string mangle_module_name(const RTLIL::IdString &name, bool is_blackbox = false)
+	std::string mangle_module_name(PooledName name, bool is_blackbox = false)
 	{
 		// Class namespace.
 		if (is_blackbox)
@@ -808,19 +796,19 @@ struct CxxrtlWorker {
 		return mangle_name(name);
 	}
 
-	std::string mangle_memory_name(const RTLIL::IdString &name)
+	std::string mangle_memory_name(PooledName name)
 	{
 		// Class member namespace.
 		return "memory_" + mangle_name(name);
 	}
 
-	std::string mangle_cell_name(const RTLIL::IdString &name)
+	std::string mangle_cell_name(PooledName name)
 	{
 		// Class member namespace.
 		return "cell_" + mangle_name(name);
 	}
 
-	std::string mangle_wire_name(const RTLIL::IdString &name)
+	std::string mangle_wire_name(PooledName name)
 	{
 		// Class member namespace.
 		return mangle_name(name);
@@ -865,7 +853,7 @@ struct CxxrtlWorker {
 			return {};
 
 		if (!(module->attributes.at(ID(cxxrtl_template)).flags & RTLIL::CONST_FLAG_STRING))
-			log_cmd_error("Attribute `cxxrtl_template' of module `%s' is not a string.\n", log_id(module));
+			log_cmd_error("Attribute `cxxrtl_template' of module `%s' is not a string.\n", module);
 
 		std::vector<std::string> param_names = split_by(module->get_string_attribute(ID(cxxrtl_template)), " \t");
 		for (const auto &param_name : param_names) {
@@ -875,7 +863,7 @@ struct CxxrtlWorker {
 			if (!isupper(param_name[0]))
 				log_cmd_error("Attribute `cxxrtl_template' of module `%s' includes a parameter `%s', "
 				              "which does not start with an uppercase letter.\n",
-				              log_id(module), param_name.c_str());
+				              module, param_name);
 		}
 		return param_names;
 	}
@@ -918,15 +906,15 @@ struct CxxrtlWorker {
 				params += ", ";
 			first = false;
 			params += "/*" + param_name + "=*/";
-			RTLIL::IdString id_param_name = '\\' + param_name;
+			IdString id_param_name = cell->twines().find('\\' + param_name);
 			if (!cell->hasParam(id_param_name))
 				log_cmd_error("Cell `%s.%s' does not have a parameter `%s', which is required by the templated module `%s'.\n",
-				              log_id(cell->module), log_id(cell), param_name.c_str(), log_id(cell_module));
+				              cell->module, cell, param_name, cell_module);
 			RTLIL::Const param_value = cell->getParam(id_param_name);
 			if (((param_value.flags & ~RTLIL::CONST_FLAG_SIGNED) != 0) || param_value.as_int() < 0)
 				log_cmd_error("Parameter `%s' of cell `%s.%s', which is required by the templated module `%s', "
 				              "is not a positive integer.\n",
-				              param_name.c_str(), log_id(cell->module), log_id(cell), log_id(cell_module));
+				              param_name, cell->module, cell, cell_module);
 			params += std::to_string(cell->getParam(id_param_name).as_int());
 		}
 		params += ">";
@@ -941,7 +929,7 @@ struct CxxrtlWorker {
 	void dump_attrs(const RTLIL::AttrObject *object)
 	{
 		for (auto attr : object->attributes) {
-			f << indent << "// " << attr.first.str() << ": ";
+			f << indent << "// " << design->twines().str(attr.first) << ": ";
 			if (attr.second.flags & RTLIL::CONST_FLAG_STRING) {
 				f << attr.second.decode_string();
 			} else {
@@ -1141,7 +1129,7 @@ struct CxxrtlWorker {
 				if (is_cxxrtl_sync_port(cell, conn.first) && !conn.second.empty()) {
 					f << indent;
 					dump_sigspec_lhs(conn.second, for_debug);
-					f << " = " << mangle(cell) << access << mangle_wire_name(conn.first) << ".curr;\n";
+					f << " = " << mangle(cell) << access << mangle_wire_name({design, conn.first}) << ".curr;\n";
 				}
 	}
 
@@ -1228,6 +1216,9 @@ struct CxxrtlWorker {
 			f << ",";
 			f << cell->getParam(ID::OFFSET).as_int();
 			f << ">().val()";
+		// Barriers
+		} else if (cell->type == ID($barrier)) {
+			dump_sigspec_rhs(cell->getPort(ID::A), for_debug);
 		} else {
 			log_assert(false);
 		}
@@ -1533,7 +1524,7 @@ struct CxxrtlWorker {
 			}
 		// Internal cells
 		} else if (is_internal_cell(cell->type)) {
-			log_cmd_error("Unsupported internal cell `%s'.\n", cell->type.c_str());
+			log_cmd_error("Unsupported internal cell `%s'.\n", cell->type);
 		// User cells
 		} else if (for_debug) {
 			// Outlines are called on demand when computing the value of a debug item. Nothing to do here.
@@ -1546,7 +1537,7 @@ struct CxxrtlWorker {
 					RTLIL::Module *cell_module = cell->module->design->module(cell->type);
 					log_assert(cell_module != nullptr && cell_module->wire(conn.first));
 					RTLIL::Wire *cell_module_wire = cell_module->wire(conn.first);
-					f << indent << mangle(cell) << access << mangle_wire_name(conn.first);
+					f << indent << mangle(cell) << access << mangle_wire_name({design, conn.first});
 					if (!is_cxxrtl_blackbox_cell(cell) && wire_types[cell_module_wire].is_buffered()) {
 						buffered_inputs = true;
 						f << ".next";
@@ -1578,7 +1569,7 @@ struct CxxrtlWorker {
 							continue; // fully sync ports are handled in CELL_SYNC nodes
 						f << indent;
 						dump_sigspec_lhs(conn.second);
-						f << " = " << mangle(cell) << access << mangle_wire_name(conn.first);
+						f << " = " << mangle(cell) << access << mangle_wire_name({design, conn.first});
 						// Similarly to how there is no purpose to buffering cell inputs, there is also no purpose to buffering
 						// combinatorial cell outputs in case the cell converges within one cycle. (To convince yourself that
 						// this optimization is valid, consider that, since the cell converged within one cycle, it would not
@@ -1668,26 +1659,29 @@ struct CxxrtlWorker {
 						f << signal_temp << " == ";
 						dump_sigspec(compare, /*is_lhs=*/false, for_debug);
 					} else if (compare.is_fully_const()) {
-						RTLIL::Const compare_mask, compare_value;
+						RTLIL::Const::Builder compare_mask_builder(compare.size());
+						RTLIL::Const::Builder compare_value_builder(compare.size());
 						for (auto bit : compare.as_const()) {
 							switch (bit) {
 								case RTLIL::S0:
 								case RTLIL::S1:
-									compare_mask.bits().push_back(RTLIL::S1);
-									compare_value.bits().push_back(bit);
+									compare_mask_builder.push_back(RTLIL::S1);
+									compare_value_builder.push_back(bit);
 									break;
 
 								case RTLIL::Sx:
 								case RTLIL::Sz:
 								case RTLIL::Sa:
-									compare_mask.bits().push_back(RTLIL::S0);
-									compare_value.bits().push_back(RTLIL::S0);
+									compare_mask_builder.push_back(RTLIL::S0);
+									compare_value_builder.push_back(RTLIL::S0);
 									break;
 
 								default:
 									log_assert(false);
 							}
 						}
+						RTLIL::Const compare_mask = compare_mask_builder.build();
+						RTLIL::Const compare_value = compare_value_builder.build();
 						f << "and_uu<" << compare.size() << ">(" << signal_temp << ", ";
 						dump_const(compare_mask);
 						f << ") == ";
@@ -2307,10 +2301,10 @@ struct CxxrtlWorker {
 			if (!metadata_item.first.isPublic())
 				continue;
 			if (metadata_item.second.size() > 64 && (metadata_item.second.flags & RTLIL::CONST_FLAG_STRING) == 0) {
-				f << indent << "/* attribute " << metadata_item.first.str().substr(1) << " is over 64 bits wide */\n";
+				f << indent << "/* attribute " << design->twines().str(metadata_item.first).substr(1) << " is over 64 bits wide */\n";
 				continue;
 			}
-			data += metadata_item.first.str().substr(1) + '\0';
+			data += design->twines().str(metadata_item.first).substr(1) + '\0';
 			// In Yosys, a real is a type of string.
 			if (metadata_item.second.flags & RTLIL::CONST_FLAG_REAL) {
 				double dvalue = std::stod(metadata_item.second.decode_string());
@@ -2344,10 +2338,10 @@ struct CxxrtlWorker {
 					if (!metadata_item.first.isPublic())
 						continue;
 					if (metadata_item.second.size() > 64 && (metadata_item.second.flags & RTLIL::CONST_FLAG_STRING) == 0) {
-						f << indent << "/* attribute " << metadata_item.first.str().substr(1) << " is over 64 bits wide */\n";
+						f << indent << "/* attribute " << design->twines().str(metadata_item.first).substr(1) << " is over 64 bits wide */\n";
 						continue;
 					}
-					f << indent << "{ " << escape_cxx_string(metadata_item.first.str().substr(1)) << ", ";
+					f << indent << "{ " << escape_cxx_string(design->twines().str(metadata_item.first).substr(1)) << ", ";
 					// In Yosys, a real is a type of string.
 					if (metadata_item.second.flags & RTLIL::CONST_FLAG_REAL) {
 						f << std::showpoint << std::stod(metadata_item.second.decode_string()) << std::noshowpoint;
@@ -2587,8 +2581,8 @@ struct CxxrtlWorker {
 			}
 		dec_indent();
 
-		log_debug("Debug information statistics for module `%s':\n", log_id(module));
-		log_debug("  Scopes: %zu", count_scopes);
+		log_debug("Debug information statistics for module `%s':\n", module);
+		log_debug("  Scopes: %zu\n", count_scopes);
 		log_debug("  Public wires: %zu, of which:\n", count_public_wires);
 		log_debug("    Member wires: %zu, of which:\n", count_member_wires);
 		log_debug("      Undriven:     %zu (incl. inputs)\n", count_undriven);
@@ -2785,9 +2779,11 @@ struct CxxrtlWorker {
 
 	void dump_design(RTLIL::Design *design)
 	{
+		this->design = design;
 		RTLIL::Module *top_module = nullptr;
 		std::vector<RTLIL::Module*> modules;
-		TopoSort<RTLIL::Module*> topo_design;
+		using Order = IdString::compare_ptr_by_name<RTLIL::Module>;
+		TopoSort<RTLIL::Module*, Order> topo_design;
 		for (auto module : design->modules()) {
 			if (!design->selected_module(module))
 				continue;
@@ -2855,7 +2851,7 @@ struct CxxrtlWorker {
 		}
 
 		if (split_intf)
-			f << "#include \"" << basename(intf_filename) << "\"\n";
+			f << "#include \"" << name_from_file_path(intf_filename) << "\"\n";
 		else
 			f << "#include <cxxrtl/cxxrtl.h>\n";
 		f << "\n";
@@ -2921,6 +2917,7 @@ struct CxxrtlWorker {
 
 	void analyze_design(RTLIL::Design *design)
 	{
+		this->design = design;
 		bool has_feedback_arcs = false;
 		bool has_buffered_comb_wires = false;
 
@@ -2950,7 +2947,7 @@ struct CxxrtlWorker {
 						RTLIL::Const edge_attr = wire->attributes[ID(cxxrtl_edge)];
 						if (!(edge_attr.flags & RTLIL::CONST_FLAG_STRING) || (int)edge_attr.decode_string().size() != GetSize(wire))
 							log_cmd_error("Attribute `cxxrtl_edge' of port `%s.%s' is not a string with one character per bit.\n",
-							              log_id(module), log_signal(wire));
+							              module, log_signal(wire));
 
 						std::string edges = wire->get_string_attribute(ID(cxxrtl_edge));
 						for (int i = 0; i < GetSize(wire); i++) {
@@ -2963,7 +2960,7 @@ struct CxxrtlWorker {
 								default:
 									log_cmd_error("Attribute `cxxrtl_edge' of port `%s.%s' contains specifiers "
 									              "other than '-', 'p', 'n', or 'a'.\n",
-										log_id(module), log_signal(wire));
+										module, log_signal(wire));
 							}
 						}
 					}
@@ -2988,7 +2985,7 @@ struct CxxrtlWorker {
 
 			for (auto cell : module->cells()) {
 				if (!cell->known())
-					log_cmd_error("Unknown cell `%s'.\n", log_id(cell->type));
+					log_cmd_error("Unknown cell `%s'.\n", cell->type.unescape());
 
 				if (cell->is_mem_cell())
 					continue;
@@ -2997,7 +2994,7 @@ struct CxxrtlWorker {
 				if (cell_module &&
 				    cell_module->get_blackbox_attribute() &&
 				    !cell_module->get_bool_attribute(ID(cxxrtl_blackbox)))
-					log_cmd_error("External blackbox cell `%s' is not marked as a CXXRTL blackbox.\n", log_id(cell->type));
+					log_cmd_error("External blackbox cell `%s' is not marked as a CXXRTL blackbox.\n", cell->type.unescape());
 
 				if (cell_module &&
 				    cell_module->get_bool_attribute(ID(cxxrtl_blackbox)) &&
@@ -3042,7 +3039,7 @@ struct CxxrtlWorker {
 								if (init == RTLIL::Const()) {
 									init = RTLIL::Const(State::Sx, GetSize(bit.wire));
 								}
-								init.bits()[bit.offset] = port.init_value[i];
+								init.set(bit.offset, port.init_value[i]);
 							}
 						}
 					}
@@ -3126,9 +3123,9 @@ struct CxxrtlWorker {
 			}
 			if (!feedback_wires.empty()) {
 				has_feedback_arcs = true;
-				log("Module `%s' contains feedback arcs through wires:\n", log_id(module));
+				log("Module `%s' contains feedback arcs through wires:\n", module);
 				for (auto wire : feedback_wires)
-					log("  %s\n", log_id(wire));
+					log("  %s\n", wire);
 			}
 
 			// Conservatively assign wire types. Assignment of types BUFFERED and MEMBER is final, but assignment
@@ -3199,7 +3196,7 @@ struct CxxrtlWorker {
 				if (wire->name.isPublic() && !inline_public) continue;
 				if (flow.is_inlinable(wire, live_wires[wire])) {
 					if (flow.wire_comb_defs[wire].size() > 1)
-						log_cmd_error("Wire %s.%s has multiple drivers!\n", log_id(module), log_id(wire));
+						log_cmd_error("Wire %s.%s has multiple drivers!\n", module, wire);
 					log_assert(flow.wire_comb_defs[wire].size() == 1);
 					FlowGraph::Node *node = *flow.wire_comb_defs[wire].begin();
 					switch (node->type) {
@@ -3247,9 +3244,9 @@ struct CxxrtlWorker {
 					buffered_comb_wires.insert(wire);
 			if (!buffered_comb_wires.empty()) {
 				has_buffered_comb_wires = true;
-				log("Module `%s' contains buffered combinatorial wires:\n", log_id(module));
+				log("Module `%s' contains buffered combinatorial wires:\n", module);
 				for (auto wire : buffered_comb_wires)
-					log("  %s\n", log_id(wire));
+					log("  %s\n", wire);
 			}
 
 			// Record whether eval() requires only one delta cycle in this module.
@@ -3430,7 +3427,7 @@ struct CxxrtlWorker {
 
 			if (!design->selected_whole_module(module))
 				if (design->selected_module(module))
-					log_cmd_error("Can't handle partially selected module `%s'!\n", id2cstr(module->name));
+					log_cmd_error("Can't handle partially selected module `%s'!\n", module);
 			if (!design->selected_module(module))
 				continue;
 
@@ -3478,8 +3475,8 @@ struct CxxrtlWorker {
 };
 
 struct CxxrtlBackend : public Backend {
-	static const int DEFAULT_OPT_LEVEL = 6;
-	static const int DEFAULT_DEBUG_LEVEL = 4;
+	static constexpr int DEFAULT_OPT_LEVEL = 6;
+	static constexpr int DEFAULT_DEBUG_LEVEL = 4;
 
 	CxxrtlBackend() : Backend("cxxrtl", "convert design to C++ RTL simulation") { }
 	void help() override
@@ -3800,7 +3797,7 @@ struct CxxrtlBackend : public Backend {
 			if (args[argidx] == "-print-output" && argidx+1 < args.size()) {
 				worker.print_output = args[++argidx];
 				if (!(worker.print_output == "std::cout" || worker.print_output == "std::cerr")) {
-					log_cmd_error("Invalid output stream \"%s\".\n", worker.print_output.c_str());
+					log_cmd_error("Invalid output stream \"%s\".\n", worker.print_output);
 					worker.print_output = "std::cout";
 				}
 				continue;
@@ -3868,7 +3865,7 @@ struct CxxrtlBackend : public Backend {
 			intf_f.open(worker.intf_filename, std::ofstream::trunc);
 			if (intf_f.fail())
 				log_cmd_error("Can't open file `%s' for writing: %s\n",
-				              worker.intf_filename.c_str(), strerror(errno));
+				              worker.intf_filename, strerror(errno));
 
 			worker.intf_f = &intf_f;
 		}

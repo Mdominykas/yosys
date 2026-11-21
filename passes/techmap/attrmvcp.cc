@@ -79,7 +79,7 @@ struct AttrmvcpPass : public Pass {
 				continue;
 			}
 			if (arg == "-attr" && argidx+1 < args.size()) {
-				attrnames.insert(RTLIL::escape_id(args[++argidx]));
+				attrnames.insert(design->twines().find(RTLIL::escape_id(args[++argidx])));
 				continue;
 			}
 			break;
@@ -121,8 +121,8 @@ struct AttrmvcpPass : public Pass {
 					for (auto bit : sigmap(wire))
 						if (net2cells.count(bit))
 							for (auto cell : net2cells.at(bit)) {
-								log("Moving attribute %s=%s from %s.%s to %s.%s.\n", log_id(attr.first), log_const(attr.second),
-										log_id(module), log_id(wire), log_id(module), log_id(cell));
+								log("Moving attribute %s=%s from %s.%s to %s.%s.\n", PooledName(design, attr.first).unescape(), log_const(attr.second),
+										module, wire, module, cell);
 								cell->attributes[attr.first] = attr.second;
 								did_something = true;
 							}

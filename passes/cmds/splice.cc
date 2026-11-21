@@ -149,7 +149,7 @@ struct SpliceWorker
 
 	void run()
 	{
-		log("Splicing signals in module %s:\n", log_id(module->name));
+		log("Splicing signals in module %s:\n", module);
 
 		driven_bits.push_back(RTLIL::State::Sm);
 		driven_bits.push_back(RTLIL::State::Sm);
@@ -319,12 +319,12 @@ struct SplicePass : public Pass {
 				continue;
 			}
 			if (args[argidx] == "-port" && argidx+1 < args.size()) {
-				ports.insert(RTLIL::escape_id(args[++argidx]));
+				ports.insert(design->twines().add(RTLIL::escape_id(args[++argidx])));
 				no_outputs = true;
 				continue;
 			}
 			if (args[argidx] == "-no_port" && argidx+1 < args.size()) {
-				no_ports.insert(RTLIL::escape_id(args[++argidx]));
+				no_ports.insert(design->twines().add(RTLIL::escape_id(args[++argidx])));
 				continue;
 			}
 			break;
@@ -345,7 +345,7 @@ struct SplicePass : public Pass {
 		for (auto module : design->selected_modules())
 		{
 			if (module->processes.size()) {
-				log("Skipping module %s as it contains processes.\n", module->name.c_str());
+				log("Skipping module %s as it contains processes.\n", module->name);
 				continue;
 			}
 

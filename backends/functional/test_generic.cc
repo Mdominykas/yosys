@@ -46,7 +46,7 @@ struct MemContentsTest {
 		error:
 		printf("FAIL\n");
 		int digits = (data_width + 3) / 4;
-		
+
 		for(auto addr = 0; addr < (1<<addr_width); addr++) {
 			if(addr % 8 == 0) printf("%.8x   ", addr);
 			auto it = reference.find(addr);
@@ -105,7 +105,7 @@ struct MemContentsTest {
 				RTLIL::Const values;
 				for(addr_t addr = low; addr <= high; addr++) {
 					RTLIL::Const word(data_dist(rnd), data_width);
-					values.bits().insert(values.bits().end(), word.begin(), word.end());
+					values.append(word);
 				}
 				insert_concatenated(low, values);
 			}
@@ -116,7 +116,9 @@ struct MemContentsTest {
 
 struct FunctionalTestGeneric : public Pass
 {
-	FunctionalTestGeneric() : Pass("test_generic", "test the generic compute graph") {}
+	FunctionalTestGeneric() : Pass("test_generic", "test the generic compute graph") {
+		internal();
+	}
 
     void help() override
 	{
@@ -141,14 +143,14 @@ struct FunctionalTestGeneric : public Pass
 */
 
 		for (auto module : design->selected_modules()) {
-            log("Dumping module `%s'.\n", module->name.c_str());
+            log("Dumping module `%s'.\n", module->name);
 			auto fir = Functional::IR::from_module(module);
 			for(auto node : fir)
-				std::cout << RTLIL::unescape_id(node.name()) << " = " << node.to_string([](auto n) { return RTLIL::unescape_id(n.name()); }) << "\n";
+				std::cout << node.name().unescape() << " = " << node.to_string([](auto n) { return n.name().unescape(); }) << "\n";
 			for(auto output : fir.all_outputs())
-				std::cout << RTLIL::unescape_id(output->kind) << " " << RTLIL::unescape_id(output->name) << " = " << RTLIL::unescape_id(output->value().name()) << "\n";
+				std::cout << output->kind.unescape() << " " << output->name.unescape() << " = " << output->value().name().unescape() << "\n";
 			for(auto state : fir.all_states())
-				std::cout << RTLIL::unescape_id(state->kind) << " " << RTLIL::unescape_id(state->name) << " = " << RTLIL::unescape_id(state->next_value().name()) << "\n";
+				std::cout << state->kind.unescape() << " " << state->name.unescape() << " = " << state->next_value().name().unescape() << "\n";
 		}
 	}
 } FunctionalCxxBackend;

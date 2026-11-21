@@ -21,6 +21,7 @@
 #include "kernel/yosys.h"
 #include "kernel/sigtools.h"
 #include "kernel/timinginfo.h"
+#include "kernel/log_help.h"
 #include <deque>
 
 USING_YOSYS_NAMESPACE
@@ -65,12 +66,12 @@ struct StaWorker
 			Module *inst_module = design->module(cell->type);
 			if (!inst_module) {
 				if (unrecognised_cells.insert(cell->type).second)
-					log_warning("Cell type '%s' not recognised! Ignoring.\n", log_id(cell->type));
+					log_warning("Cell type '%s' not recognised! Ignoring.\n", cell->type.unescape());
 				continue;
 			}
 
 			if (!inst_module->get_blackbox_attribute()) {
-				log_warning("Cell type '%s' is not a black- nor white-box! Ignoring.\n", log_id(cell->type));
+				log_warning("Cell type '%s' is not a black- nor white-box! Ignoring.\n", cell->type.unescape());
 				continue;
 			}
 
@@ -81,7 +82,7 @@ struct StaWorker
 			if (!timing.count(derived_type)) {
 				auto &t = timing.setup_module(inst_module);
 				if (t.has_inputs && t.comb.empty() && t.arrival.empty() && t.required.empty())
-					log_warning("Module '%s' has no timing arcs!\n", log_id(cell->type));
+					log_warning("Module '%s' has no timing arcs!\n", cell->type.unescape());
 			}
 
 			auto &t = timing.at(derived_type);
@@ -202,10 +203,10 @@ struct StaWorker
 			return;
 		}
 
-		log("Latest arrival time in '%s' is %d:\n", log_id(module), maxarrival);
+		log("Latest arrival time in '%s' is %d:\n", module, maxarrival);
 		auto it = endpoints.find(maxbit);
 		if (it != endpoints.end() && it->second.sink)
-			log("  %6d %s (%s.%s)\n", maxarrival, log_id(it->second.sink), log_id(it->second.sink->type), log_id(it->second.port));
+			log("  %6d %s (%s.%s)\n", maxarrival, it->second.sink, it->second.sink->type.unescape(), PooledName(it->second.sink->module, it->second.port).unescape());
 		else {
 			log("  %6d (%s)\n", maxarrival, b.wire->port_output ? "<primary output>" : "<unknown>");
 			if (!b.wire->port_output)
@@ -216,7 +217,7 @@ struct StaWorker
 			int arrival = b.wire->get_intvec_attribute(ID::sta_arrival)[b.offset];
 			if (jt->second.driver) {
 				log("           %s\n", log_signal(b));
-				log("  %6d %s (%s.%s->%s)\n", arrival, log_id(jt->second.driver), log_id(jt->second.driver->type), log_id(jt->second.src_port), log_id(jt->second.dst_port));
+				log("  %6d %s (%s.%s->%s)\n", arrival, jt->second.driver, jt->second.driver->type.unescape(), PooledName(jt->second.driver->module, jt->second.src_port).unescape(), PooledName(jt->second.driver->module, jt->second.dst_port).unescape());
 			}
 			else if (b.wire->port_input)
 				log("  %6d   %s (%s)\n", arrival, log_signal(b), "<primary input>");
@@ -233,13 +234,13 @@ struct StaWorker
 				continue;
 
 			if (!b.wire->attributes.count(ID::sta_arrival)) {
-				log_warning("Endpoint %s.%s has no (* sta_arrival *) value.\n", log_id(module), log_signal(b));
+				log_warning("Endpoint %s.%s has no (* sta_arrival *) value.\n", module, log_signal(b));
 				continue;
 			}
 
 			auto arrival = b.wire->get_intvec_attribute(ID::sta_arrival)[b.offset];
 			if (arrival < 0) {
-				log_warning("Endpoint %s.%s has no (* sta_arrival *) value.\n", log_id(module), log_signal(b));
+				log_warning("Endpoint %s.%s has no (* sta_arrival *) value.\n", module, log_signal(b));
 				continue;
 			}
 			arrival += i.second.required;
@@ -267,7 +268,7 @@ struct StaWorker
 			log("         + represents [1,%d) endpoint(s)\n", max_freq / bar_width);
 			for (int i = num_bins-1; i >= 0; --i)
 				log("(%6d, %6d] |%s%c\n", min_arrival + bin_size * (i + 1), min_arrival + bin_size * i,
-						std::string(bins[i] * bar_width / max_freq, '*').c_str(),
+						std::string(bins[i] * bar_width / max_freq, '*'),
 						(bins[i] * bar_width) % max_freq > 0 ? '+' : ' ');
 		}
 	}
@@ -275,6 +276,11 @@ struct StaWorker
 
 struct StaPass : public Pass {
 	StaPass() : Pass("sta", "perform static timing analysis") { }
+	bool formatted_help() override {
+		auto *help = PrettyHelp::get_current();
+		help->set_group("passes/status");
+		return false;
+	}
 	void help() override
 	{
 		//   |---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|

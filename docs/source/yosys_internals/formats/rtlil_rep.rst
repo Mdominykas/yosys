@@ -158,8 +158,8 @@ An ``RTLIL::Wire`` object has the following properties:
 -  The wire name
 -  A list of attributes
 -  A width (buses are just wires with a width more than 1)
--  Bus direction (MSB to LSB or vice versa)
--  Lowest valid bit index (LSB or MSB depending on bus direction)
+-  Bus direction (MSb to LSb or vice versa)
+-  Lowest valid bit index (LSb or MSb depending on bus direction)
 -  If the wire is a port: port number and direction (input/output/inout)
 
 As with modules, the attributes can be Verilog attributes imported by the
@@ -171,8 +171,8 @@ signals. This makes some aspects of RTLIL more complex but enables Yosys to be
 used for coarse grain synthesis where the cells of the target architecture
 operate on entire signal vectors instead of single bit wires.
 
-In Verilog and VHDL, busses may have arbitrary bounds, and LSB can have either
-the lowest or the highest bit index. In RTLIL, bit 0 always corresponds to LSB;
+In Verilog and VHDL, busses may have arbitrary bounds, and LSb can have either
+the lowest or the highest bit index. In RTLIL, bit 0 always corresponds to LSb;
 however, information from the HDL frontend is preserved so that the bus will be
 correctly indexed in error messages, backend output, constraint files, etc.
 
@@ -194,17 +194,18 @@ RTLIL::SigSpec
 
 A "signal" is everything that can be applied to a cell port. I.e.
 
--  | Any constant value of arbitrary bit-width
+-  | A bit from a wire (``RTLIL::SigBit``)
+   | 1em For example: ``mywire[24]``
+
+-  | A range of bits from a wire (wire variant of ``RTLIL::SigChunk``)
+   | 1em For example: ``mywire, mywire[15:8]``
+
+-  | Any constant value of arbitrary bit-width (``std::vector<RTLIL::State>>`` variant of ``RTLIL::SigChunk``)
    | 1em For example: ``1337, 16'b0000010100111001, 1'b1, 1'bx``
 
--  | All bits of a wire or a selection of bits from a wire
-   | 1em For example: ``mywire, mywire[24], mywire[15:8]``
-
--  | Concatenations of the above
-   | 1em For example: ``{16'd1337, mywire[15:8]}``
-
-The ``RTLIL::SigSpec`` data type is used to represent signals. The
-``RTLIL::Cell`` object contains one ``RTLIL::SigSpec`` for each cell port.
+The ``RTLIL::SigSpec`` data type is used to represent signals.
+It contains a single ``RTLIL::SigChunk`` or a vector of ``RTLIL::SigBit``.
+The ``RTLIL::Cell`` object contains one ``RTLIL::SigSpec`` for each cell port.
 
 In addition, connections between wires are represented using a pair of
 ``RTLIL::SigSpec`` objects. Such pairs are needed in different locations.

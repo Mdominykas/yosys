@@ -78,8 +78,8 @@ struct EquivStructWorker
 					if (bits_a[i] != bits_b[i]) {
 						inputs_a.append(bits_a[i]);
 						inputs_b.append(bits_b[i]);
-						input_names.push_back(GetSize(bits_a) == 1 ? port_a.first.str() :
-								stringf("%s[%d]", log_id(port_a.first), i));
+						input_names.push_back(GetSize(bits_a) == 1 ? module->twines().str(port_a.first) :
+								stringf("%s[%d]", module->twines().unescaped_str(port_a.first), i));
 					}
 		}
 
@@ -87,7 +87,7 @@ struct EquivStructWorker
 			SigBit bit_a = inputs_a[i], bit_b = inputs_b[i];
 			SigBit bit_y = module->addWire(NEW_ID);
 			log("        New $equiv for input %s: A: %s, B: %s, Y: %s\n",
-					input_names[i].c_str(), log_signal(bit_a), log_signal(bit_b), log_signal(bit_y));
+					input_names[i], log_signal(bit_a), log_signal(bit_b), log_signal(bit_y));
 			module->addEquiv(NEW_ID, bit_a, bit_b, bit_y);
 			merged_map.add(bit_a, bit_y);
 			merged_map.add(bit_b, bit_y);
@@ -110,9 +110,7 @@ struct EquivStructWorker
 			module->connect(sig_b, sig_a);
 		}
 
-		auto merged_attr = cell_b->get_strpool_attribute(ID::equiv_merged);
-		merged_attr.insert(log_id(cell_b));
-		cell_a->add_strpool_attribute(ID::equiv_merged, merged_attr);
+		cell_a->set_bool_attribute(ID::equiv_merged);
 		module->remove(cell_b);
 	}
 
@@ -144,7 +142,7 @@ struct EquivStructWorker
 				SigBit sig_b = sigmap(cell->getPort(ID::B).as_bit());
 				SigBit sig_y = sigmap(cell->getPort(ID::Y).as_bit());
 				if (sig_a == sig_b && equiv_inputs.count(sig_y)) {
-					log("    Purging redundant $equiv cell %s.\n", log_id(cell));
+					log("    Purging redundant $equiv cell %s.\n", cell);
 					module->connect(sig_y, sig_a);
 					module->remove(cell);
 					merge_count++;
@@ -175,14 +173,14 @@ struct EquivStructWorker
 				if (cell->input(conn.first)) {
 					SigSpec sig = sigmap(conn.second);
 					for (int i = 0; i < GetSize(sig); i++)
-						fwd_connections.push_back(make_tuple(conn.first, i, sig[i]));
+						fwd_connections.push_back(std::make_tuple(conn.first, i, sig[i]));
 				}
 
 				if (cell->output(conn.first)) {
 					SigSpec sig = equiv_bits(conn.second);
 					for (int i = 0; i < GetSize(sig); i++) {
 						key.connections.clear();
-						key.connections.push_back(make_tuple(conn.first, i, sig[i]));
+						key.connections.push_back(std::make_tuple(conn.first, i, sig[i]));
 
 						if (merge_cache.count(key))
 							bwd_merge_cache.insert(key);
@@ -213,7 +211,7 @@ struct EquivStructWorker
 				for (auto cell_name : merge_cache[key]) {
 					Cell *c = module->cell(cell_name);
 					if (c != nullptr) {
-						string n = cell_name.str();
+						string n = module->twines().str(cell_name);
 						cells_type = c->type;
 						if (GetSize(n) > 5 && n.compare(GetSize(n)-5, std::string::npos, "_gold") == 0)
 							gold_cells.push_back(c);
@@ -266,9 +264,9 @@ struct EquivStructWorker
 			run_strategy:
 				int total_group_size = GetSize(gold_cells) + GetSize(gate_cells) + GetSize(other_cells);
 				log("    %s merging %d %s cells (from group of %d) using strategy %s:\n", phase ? "Bwd" : "Fwd",
-						2*GetSize(cell_pairs), log_id(cells_type), total_group_size, strategy);
+						2*GetSize(cell_pairs), PooledName(module->design, cells_type).unescape(), total_group_size, strategy);
 				for (auto it : cell_pairs) {
-					log("      Merging cells %s and %s.\n", log_id(it.first),  log_id(it.second));
+					log("      Merging cells %s and %s.\n", it.first,  it.second);
 					merge_cell_pair(it.first, it.second);
 				}
 			}
@@ -334,7 +332,7 @@ struct EquivStructPass : public Pass {
 				continue;
 			}
 			if (args[argidx] == "-fwonly" && argidx+1 < args.size()) {
-				fwonly_cells.insert(RTLIL::escape_id(args[++argidx]));
+				fwonly_cells.insert(design->twines().add(RTLIL::escape_id(args[++argidx])));
 				continue;
 			}
 			if (args[argidx] == "-maxiter" && argidx+1 < args.size()) {
@@ -347,7 +345,7 @@ struct EquivStructPass : public Pass {
 
 		for (auto module : design->selected_modules()) {
 			int module_merge_count = 0;
-			log("Running equiv_struct on module %s:\n", log_id(module));
+			log("Running equiv_struct on module %s:\n", module);
 			for (int iter = 0;; iter++) {
 				if (iter == max_iter) {
 					log("  Reached iteration limit of %d.\n", iter);
@@ -359,7 +357,7 @@ struct EquivStructPass : public Pass {
 				module_merge_count += worker.merge_count;
 			}
 			if (module_merge_count)
-				log("  Performed a total of %d merges in module %s.\n", module_merge_count, log_id(module));
+				log("  Performed a total of %d merges in module %s.\n", module_merge_count, module);
 		}
 	}
 } EquivStructPass;

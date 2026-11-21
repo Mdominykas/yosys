@@ -21,6 +21,7 @@
 #include "kernel/celltypes.h"
 #include "kernel/rtlil.h"
 #include "kernel/log.h"
+#include "passes/proc/proc_dlatch.h"
 
 USING_YOSYS_NAMESPACE
 PRIVATE_NAMESPACE_BEGIN
@@ -34,6 +35,15 @@ struct SynthIce40Pass : public ScriptPass
 		RTLIL::constpad["synth_ice40.abc9.hx.W"] = "250";
 		RTLIL::constpad["synth_ice40.abc9.lp.W"] = "400";
 		RTLIL::constpad["synth_ice40.abc9.u.W"] = "750";
+		target_register.emplace("ice40", Target{
+			"Lattice iCE40",
+			{
+				{"", { // default
+					"",
+					{"+/ice40/cells_sim.v"}
+				}}
+			}
+		});
 	}
 
 	void help() override
@@ -45,8 +55,8 @@ struct SynthIce40Pass : public ScriptPass
 		log("This command runs synthesis for iCE40 FPGAs.\n");
 		log("\n");
 		log("    -device < hx | lp | u >\n");
-		log("        relevant only for '-abc9' flow, optimise timing for the specified\n");
-		log("        device. default: hx\n");
+		log("        optimise timing for the specified device. default: hx\n");
+		log("        (irrelevant if -noabc)\n");
 		log("\n");
 		log("    -top <module>\n");
 		log("        use the specified module as top module\n");
@@ -72,10 +82,7 @@ struct SynthIce40Pass : public ScriptPass
 		log("        do not flatten design before synthesis\n");
 		log("\n");
 		log("    -dff\n");
-		log("        run 'abc'/'abc9' with -dff option\n");
-		log("\n");
-		log("    -retime\n");
-		log("        run 'abc' with '-dff -D 1' options\n");
+		log("        run 'abc9' with -dff option\n");
 		log("\n");
 		log("    -nocarry\n");
 		log("        do not use SB_CARRY cells in output netlist\n");
@@ -97,25 +104,18 @@ struct SynthIce40Pass : public ScriptPass
 		log("        use iCE40 UltraPlus DSP cells for large arithmetic\n");
 		log("\n");
 		log("    -noabc\n");
-		log("        use built-in Yosys LUT techmapping instead of abc\n");
-		log("\n");
-		log("    -abc2\n");
-		log("        run two passes of 'abc' for slightly improved logic density\n");
+		log("        use built-in Yosys LUT techmapping instead of abc9\n");
 		log("\n");
 		log("    -vpr\n");
 		log("        generate an output netlist (and BLIF file) suitable for VPR\n");
 		log("        (this feature is experimental and incomplete)\n");
 		log("\n");
-		log("    -noabc9\n");
-		log("        disable use of new ABC9 flow\n");
-		log("\n");
-		log("    -flowmap\n");
-		log("        use FlowMap LUT techmapping instead of abc (EXPERIMENTAL)\n");
-		log("\n");
 		log("    -no-rw-check\n");
 		log("        marks all recognized read ports as \"return don't-care value on\n");
 		log("        read/write collision\" (same result as setting the no_rw_check\n");
 		log("        attribute on all memories).\n");
+		log("\n");
+		SynthLatchesConfig::help();
 		log("\n");
 		log("\n");
 		log("The following commands are executed by this synthesis command:\n");
@@ -124,7 +124,8 @@ struct SynthIce40Pass : public ScriptPass
 	}
 
 	string top_opt, blif_file, edif_file, json_file, device_opt;
-	bool nocarry, nodffe, nobram, spram, dsp, flatten, retime, noabc, abc2, vpr, abc9, dff, flowmap, no_rw_check;
+	SynthLatchesConfig latches;
+	bool nocarry, nodffe, nobram, spram, dsp, flatten, noabc, vpr, dff, no_rw_check;
 	int min_ce_use;
 
 	void clear_flags() override
@@ -140,14 +141,11 @@ struct SynthIce40Pass : public ScriptPass
 		spram = false;
 		dsp = false;
 		flatten = true;
-		retime = false;
 		noabc = false;
-		abc2 = false;
 		vpr = false;
-		abc9 = true;
-		flowmap = false;
 		device_opt = "hx";
 		no_rw_check = false;
+		latches = SynthLatchesConfig();
 	}
 
 	void execute(std::vector<std::string> args, RTLIL::Design *design) override
@@ -191,7 +189,7 @@ struct SynthIce40Pass : public ScriptPass
 				continue;
 			}
 			if (args[argidx] == "-retime") {
-				retime = true;
+				// removed, retiming is not supported with ABC9
 				continue;
 			}
 			if (args[argidx] == "-relut") {
@@ -226,20 +224,16 @@ struct SynthIce40Pass : public ScriptPass
 				noabc = true;
 				continue;
 			}
-			if (args[argidx] == "-abc2") {
-				abc2 = true;
-				continue;
-			}
 			if (args[argidx] == "-vpr") {
 				vpr = true;
 				continue;
 			}
 			if (args[argidx] == "-abc9") {
-				// removed, ABC9 is on by default.
+				// removed, ABC9 is used if not -noabc
 				continue;
 			}
 			if (args[argidx] == "-noabc9") {
-				abc9 = false;
+				// removed, ABC9 is used if not -noabc
 				continue;
 			}
 			if (args[argidx] == "-dff") {
@@ -250,14 +244,12 @@ struct SynthIce40Pass : public ScriptPass
 				device_opt = args[++argidx];
 				continue;
 			}
-			if (args[argidx] == "-flowmap") {
-				flowmap = true;
-				continue;
-			}
 			if (args[argidx] == "-no-rw-check") {
 				no_rw_check = true;
 				continue;
 			}
+			if (latches.parse(args, argidx))
+				continue;
 			break;
 		}
 		extra_args(args, argidx, design);
@@ -265,16 +257,7 @@ struct SynthIce40Pass : public ScriptPass
 		if (!design->full_selection())
 			log_cmd_error("This command only operates on fully selected designs!\n");
 		if (device_opt != "hx" && device_opt != "lp" && device_opt !="u")
-			log_cmd_error("Invalid or no device specified: '%s'\n", device_opt.c_str());
-
-		if (abc9 && retime)
-			log_cmd_error("-retime option not currently compatible with -abc9!\n");
-		if (abc9 && noabc)
-			log_cmd_error("-abc9 is incompatible with -noabc!\n");
-		if (abc9 && flowmap)
-			log_cmd_error("-abc9 is incompatible with -flowmap!\n");
-		if (flowmap && noabc)
-			log_cmd_error("-flowmap is incompatible with -noabc!\n");
+			log_cmd_error("Invalid or no device specified: '%s'\n", device_opt);
 
 		log_header(design, "Executing SYNTH_ICE40 pass.\n");
 		log_push();
@@ -302,13 +285,14 @@ struct SynthIce40Pass : public ScriptPass
 		if (check_label("begin"))
 		{
 			run("read_verilog " + define + " -lib -specify +/ice40/cells_sim.v");
-			run(stringf("hierarchy -check %s", help_mode ? "-top <top>" : top_opt.c_str()));
-			run("proc");
+			run(stringf("hierarchy -check %s", help_mode ? "-top <top>" : top_opt));
+			run(stringf("proc -latches %s", latches.str()));
 		}
 
 		if (check_label("flatten", "(unless -noflatten)"))
 		{
 			if (flatten) {
+				run("check");
 				run("flatten");
 				run("tribuf -logic");
 				run("deminout");
@@ -318,8 +302,8 @@ struct SynthIce40Pass : public ScriptPass
 		if (check_label("coarse"))
 		{
 			run("opt_expr");
-			run("opt_clean");
 			run("check");
+			run("opt_clean");
 			run("opt -nodffe -nosdff");
 			run("fsm");
 			run("opt");
@@ -332,6 +316,10 @@ struct SynthIce40Pass : public ScriptPass
 			run("opt_clean");
 			if (help_mode || dsp) {
 				run("memory_dff" + no_rw_check_opt); // ice40_dsp will merge registers, reserve memory port registers first
+				// give every product its own adder for the DSP post-adder
+				run("alumacc -macc-only", "            (if -dsp)");
+				run("maccmap -unmap", "                (if -dsp)");
+				run("opt_clean", "                     (if -dsp)");
 				run("wreduce t:$mul");
 				run("techmap -map +/mul2dsp.v -map +/ice40/dsp_map.v -D DSP_A_MAXWIDTH=16 -D DSP_B_MAXWIDTH=16 "
 						"-D DSP_A_MINWIDTH=2 -D DSP_B_MINWIDTH=2 -D DSP_Y_MINWIDTH=11 "
@@ -382,8 +370,6 @@ struct SynthIce40Pass : public ScriptPass
 				run("techmap -map +/techmap.v -map +/ice40/arith_map.v");
 			}
 			run("opt -fast");
-			if (retime || help_mode)
-				run("abc -dff -D 1", "(only if -retime)");
 			run("ice40_opt");
 		}
 
@@ -401,35 +387,27 @@ struct SynthIce40Pass : public ScriptPass
 
 		if (check_label("map_luts"))
 		{
-			if (abc2 || help_mode) {
-				run("abc", "      (only if -abc2)");
-				run("ice40_opt", "(only if -abc2)");
-			}
+			if (latches.policy == LatchPolicy::Error || help_mode)
+				run("check -latchonly -assert", "(only if -latches error, the default)");
 			run("techmap -map +/ice40/latches_map.v");
-			if (noabc || flowmap || help_mode) {
-				run("simplemap", "                               (if -noabc or -flowmap)");
+			if (noabc || help_mode) {
+				run("simplemap", "                               (if -noabc)");
 				if (noabc || help_mode)
 					run("techmap -map +/gate2lut.v -D LUT_WIDTH=4", "(only if -noabc)");
-				if (flowmap || help_mode)
-					run("flowmap -maxlut 4", "(only if -flowmap)");
 			}
 			if (!noabc) {
-				if (abc9) {
-					run("read_verilog " + define + " -icells -lib -specify +/ice40/abc9_model.v");
-					std::string abc9_opts;
-					std::string k = "synth_ice40.abc9.W";
-					if (active_design && active_design->scratchpad.count(k))
-						abc9_opts += stringf(" -W %s", active_design->scratchpad_get_string(k).c_str());
-					else {
-						k = stringf("synth_ice40.abc9.%s.W", device_opt.c_str());
-						abc9_opts += stringf(" -W %s", RTLIL::constpad.at(k).c_str());
-					}
-					if (dff)
-						abc9_opts += " -dff";
-					run("abc9 " + abc9_opts);
+				run("read_verilog " + define + " -icells -lib -specify +/ice40/abc9_model.v");
+				std::string abc9_opts;
+				std::string k = "synth_ice40.abc9.W";
+				if (active_design && active_design->scratchpad.count(k))
+					abc9_opts += stringf(" -W %s", active_design->scratchpad_get_string(k));
+				else {
+					k = stringf("synth_ice40.abc9.%s.W", device_opt);
+					abc9_opts += stringf(" -W %s", RTLIL::constpad.at(k));
 				}
-				else
-					run(stringf("abc -dress -lut 4 %s", dff ? "-dff" : ""), "(skip if -noabc)");
+				if (dff)
+					abc9_opts += " -dff";
+				run("abc9 " + abc9_opts);
 			}
 			run("ice40_wrapcarry -unwrap");
 			run("techmap -map +/ice40/ff_map.v");
@@ -462,12 +440,12 @@ struct SynthIce40Pass : public ScriptPass
 					run(stringf("opt_clean -purge"),
 							"                                 (vpr mode)");
 					run(stringf("write_blif -attr -cname -conn -param %s",
-							help_mode ? "<file-name>" : blif_file.c_str()),
+							help_mode ? "<file-name>" : blif_file),
 							" (vpr mode)");
 				}
 				if (!vpr)
 					run(stringf("write_blif -gates -attr -param %s",
-							help_mode ? "<file-name>" : blif_file.c_str()),
+							help_mode ? "<file-name>" : blif_file),
 							"       (non-vpr mode)");
 			}
 		}
@@ -475,13 +453,13 @@ struct SynthIce40Pass : public ScriptPass
 		if (check_label("edif"))
 		{
 			if (!edif_file.empty() || help_mode)
-				run(stringf("write_edif %s", help_mode ? "<file-name>" : edif_file.c_str()));
+				run(stringf("write_edif %s", help_mode ? "<file-name>" : edif_file));
 		}
 
 		if (check_label("json"))
 		{
 			if (!json_file.empty() || help_mode)
-				run(stringf("write_json %s", help_mode ? "<file-name>" : json_file.c_str()));
+				run(stringf("write_json %s", help_mode ? "<file-name>" : json_file));
 		}
 	}
 } SynthIce40Pass;

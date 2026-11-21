@@ -17,14 +17,20 @@
  *
  */
 
-#include "kernel/register.h"
-#include "kernel/log.h"
+#include "kernel/yosys.h"
+#include "kernel/log_help.h"
+#include <regex>
 
 USING_YOSYS_NAMESPACE
 PRIVATE_NAMESPACE_BEGIN
 
 struct LoggerPass : public Pass {
 	LoggerPass() : Pass("logger", "set logger properties") { }
+	bool formatted_help() override {
+		auto *help = PrettyHelp::get_current();
+		help->set_group("passes/status");
+		return false;
+	}
 	void help() override
 	{
 		//   |---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|
@@ -36,9 +42,6 @@ struct LoggerPass : public Pass {
 		log("\n");
 		log("    -[no]time\n");
 		log("        enable/disable display of timestamp in log output.\n");
-		log("\n");
-		log("    -[no]stderr\n");
-		log("        enable/disable logging errors to stderr.\n");
 		log("\n");
 		log("    -warn regex\n");
 		log("        print a warning for all log messages matching the regex.\n");
@@ -60,6 +63,8 @@ struct LoggerPass : public Pass {
 		log("    -expect <type> <regex> <expected_count>\n");
 		log("        expect log, warning or error to appear. matched errors will terminate\n");
 		log("        with exit code 0.\n");
+		log("        Types prefix-log, prefix-warning and prefix-error match the entire\n");
+		log("        logged string, including filename if present.\n");
 		log("\n");
 		log("    -expect-no-warnings\n");
 		log("        gives error in case there is at least one warning that is not expected.\n");
@@ -78,112 +83,97 @@ struct LoggerPass : public Pass {
 		{
 
 			if (args[argidx] == "-time") {
-				log_time = true;
+				logger().set_log_time(true);
 				log("Enabled timestamp in logs.\n");
 				continue;
 			}
 			if (args[argidx] == "-notime") {
-				log_time = false;
+				logger().set_log_time(false);
 				log("Disabled timestamp in logs.\n");
-				continue;
-			}
-			if (args[argidx] == "-stderr") {
-				log_error_stderr = true;
-				log("Enabled loggint errors to stderr.\n");
-				continue;
-			}
-			if (args[argidx] == "-nostderr") {
-				log_error_stderr = false;
-				log("Disabled loggint errors to stderr.\n");
 				continue;
 			}
 			if (args[argidx] == "-warn" && argidx+1 < args.size()) {
 				std::string pattern = args[++argidx];
-				if (pattern.front() == '\"' && pattern.back() == '\"') pattern = pattern.substr(1, pattern.size() - 2);		
+				if (pattern.front() == '\"' && pattern.back() == '\"') pattern = pattern.substr(1, pattern.size() - 2);
 				try {
-					log("Added regex '%s' for warnings to warn list.\n", pattern.c_str());
-					log_warn_regexes.push_back(YS_REGEX_COMPILE(pattern));
+					log("Added regex '%s' for warnings to warn list.\n", pattern);
+					logger().add_warn(pattern);
 				}
 				catch (const std::regex_error& e) {
-					log_cmd_error("Error in regex expression '%s' !\n", pattern.c_str());
+					log_cmd_error("Error in regex expression '%s' !\n", pattern);
 				}
 				continue;
 			}
 			if (args[argidx] == "-nowarn" && argidx+1 < args.size()) {
 				std::string pattern = args[++argidx];
-				if (pattern.front() == '\"' && pattern.back() == '\"') pattern = pattern.substr(1, pattern.size() - 2);	
+				if (pattern.front() == '\"' && pattern.back() == '\"') pattern = pattern.substr(1, pattern.size() - 2);
 				try {
-					log("Added regex '%s' for warnings to nowarn list.\n", pattern.c_str());
-					log_nowarn_regexes.push_back(YS_REGEX_COMPILE(pattern));
+					log("Added regex '%s' for warnings to nowarn list.\n", pattern);
+					logger().add_nowarn(pattern);
 				}
 				catch (const std::regex_error& e) {
-					log_cmd_error("Error in regex expression '%s' !\n", pattern.c_str());
+					log_cmd_error("Error in regex expression '%s' !\n", pattern);
 				}
 				continue;
 			}
 			if (args[argidx] == "-werror" && argidx+1 < args.size()) {
 				std::string pattern = args[++argidx];
-				if (pattern.front() == '\"' && pattern.back() == '\"') pattern = pattern.substr(1, pattern.size() - 2);	
+				if (pattern.front() == '\"' && pattern.back() == '\"') pattern = pattern.substr(1, pattern.size() - 2);
 				try {
-					log("Added regex '%s' for warnings to werror list.\n", pattern.c_str());
-					log_werror_regexes.push_back(YS_REGEX_COMPILE(pattern));
+					log("Added regex '%s' for warnings to werror list.\n", pattern);
+					logger().add_werror(pattern);
 				}
 				catch (const std::regex_error& e) {
-					log_cmd_error("Error in regex expression '%s' !\n", pattern.c_str());
+					log_cmd_error("Error in regex expression '%s' !\n", pattern);
 				}
 				continue;
 			}
 			if (args[argidx] == "-debug") {
-				log_force_debug = 1;
+				logger().set_force_debug(true);
 				log("Enabled debug log messages.\n");
 				continue;
 			}
 			if (args[argidx] == "-nodebug") {
-				log_force_debug = 0;
+				logger().set_force_debug(false);
 				log("Disabled debug log messages.\n");
 				continue;
 			}
 			if (args[argidx] == "-experimental" && argidx+1 < args.size()) {
 				std::string value = args[++argidx];
-				log("Added '%s' experimental ignore list.\n", value.c_str());
-				log_experimentals_ignored.insert(value);
+				log("Added '%s' experimental ignore list.\n", value);
+				logger().add_experimental_ignore(value);
 				continue;
 			}
 			if (args[argidx] == "-expect" && argidx+3 < args.size()) {
 				std::string type = args[++argidx];
-				if (type!="error" && type!="warning" && type!="log")
+				if (type!="error" && type!="warning" && type!="log"
+						&& type!="prefix-error" && type!="prefix-warning" && type!="prefix-log")
 					log_cmd_error("Expect command require type to be 'log', 'warning' or 'error' !\n");
-				if (type=="error" && log_expect_error.size()>0)
+				if ((type=="error" || type=="prefix-error") && logger().expects_error())
 					log_cmd_error("Only single error message can be expected !\n");
 				std::string pattern = args[++argidx];
-				if (pattern.front() == '\"' && pattern.back() == '\"') pattern = pattern.substr(1, pattern.size() - 2);					
+				if (pattern.front() == '\"' && pattern.back() == '\"') pattern = pattern.substr(1, pattern.size() - 2);
 				int count = atoi(args[++argidx].c_str());
 				if (count<=0)
 					log_cmd_error("Number of expected messages must be higher then 0 !\n");
-				if (type=="error" && count!=1)
+				if ((type=="error" || type=="prefix-error") && count!=1)
 					log_cmd_error("Expected error message occurrences must be 1 !\n");
 				log("Added regex '%s' to expected %s messages list.\n",
-					pattern.c_str(), type.c_str());
+					pattern, type);
 				try {
-					if (type == "error")
-						log_expect_error[pattern] = LogExpectedItem(YS_REGEX_COMPILE(pattern), count);
-					else if (type == "warning")
-						log_expect_warning[pattern] = LogExpectedItem(YS_REGEX_COMPILE(pattern), count);
-					else if (type == "log")
-						log_expect_log[pattern] = LogExpectedItem(YS_REGEX_COMPILE(pattern), count);
-					else log_abort();
+					logger().add_expect(type, pattern, count);
 				}
 				catch (const std::regex_error& e) {
-					log_cmd_error("Error in regex expression '%s' !\n", pattern.c_str());
+					log_cmd_error("Error in regex expression '%s' !\n", pattern);
 				}
 				continue;
 			}
 			if (args[argidx] == "-expect-no-warnings") {
-				log_expect_no_warnings = true;
+				logger().set_expect_no_warnings(true);
 				continue;
 			}
 			if (args[argidx] == "-check-expected") {
-				log_check_expected();
+				logger().check_expected();
 				continue;
 			}
 			break;

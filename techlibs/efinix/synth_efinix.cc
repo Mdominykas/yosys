@@ -22,6 +22,7 @@
 #include "kernel/celltypes.h"
 #include "kernel/rtlil.h"
 #include "kernel/log.h"
+#include "passes/proc/proc_dlatch.h"
 
 USING_YOSYS_NAMESPACE
 PRIVATE_NAMESPACE_BEGIN
@@ -29,6 +30,19 @@ PRIVATE_NAMESPACE_BEGIN
 struct SynthEfinixPass : public ScriptPass
 {
 	SynthEfinixPass() : ScriptPass("synth_efinix", "synthesis for Efinix FPGAs") { }
+
+	void on_register() override
+	{
+		target_register.emplace("efinix", Target{
+			"Efinix",
+			{
+				{"", { // default
+					"",
+					{"+/efinix/cells_sim.v"}
+				}}
+			}
+		});
+	}
 
 	void help() override
 	{
@@ -57,11 +71,10 @@ struct SynthEfinixPass : public ScriptPass
 		log("    -noflatten\n");
 		log("        do not flatten design before synthesis\n");
 		log("\n");
-		log("    -retime\n");
-		log("        run 'abc' with '-dff -D 1' options\n");
-		log("\n");
 		log("    -nobram\n");
 		log("        do not use EFX_RAM_5K cells in output netlist\n");
+		log("\n");
+		SynthLatchesConfig::help();
 		log("\n");
 		log("\n");
 		log("The following commands are executed by this synthesis command:\n");
@@ -70,7 +83,8 @@ struct SynthEfinixPass : public ScriptPass
 	}
 
 	string top_opt, edif_file, json_file;
-	bool flatten, retime, nobram;
+	SynthLatchesConfig latches;
+	bool flatten, nobram;
 
 	void clear_flags() override
 	{
@@ -78,8 +92,8 @@ struct SynthEfinixPass : public ScriptPass
 		edif_file = "";
 		json_file = "";
 		flatten = true;
-		retime = false;
 		nobram = false;
+		latches = SynthLatchesConfig();
 	}
 
 	void execute(std::vector<std::string> args, RTLIL::Design *design) override
@@ -115,13 +129,15 @@ struct SynthEfinixPass : public ScriptPass
 				continue;
 			}
 			if (args[argidx] == "-retime") {
-				retime = true;
+				// Removed: ABC9 does not support retiming.
 				continue;
 			}
 			if (args[argidx] == "-nobram") {
 				nobram = true;
 				continue;
 			}
+			if (latches.parse(args, argidx))
+				continue;
 			break;
 		}
 		extra_args(args, argidx, design);
@@ -142,12 +158,13 @@ struct SynthEfinixPass : public ScriptPass
 		if (check_label("begin"))
 		{
 			run("read_verilog -lib +/efinix/cells_sim.v");
-			run(stringf("hierarchy -check %s", help_mode ? "-top <top>" : top_opt.c_str()));
+			run(stringf("hierarchy -check %s", help_mode ? "-top <top>" : top_opt));
 		}
 
 		if (flatten && check_label("flatten", "(unless -noflatten)"))
 		{
-			run("proc");
+			run(stringf("proc -latches %s", latches.str()));
+			run("check");
 			run("flatten");
 			run("tribuf -logic");
 			run("deminout");
@@ -182,13 +199,13 @@ struct SynthEfinixPass : public ScriptPass
 		{
 			run("techmap -map +/techmap.v -map +/efinix/arith_map.v");
 			run("opt -fast");
-			if (retime || help_mode)
-				run("abc -dff -D 1", "(only if -retime)");
 		}
 
 		if (check_label("map_ffs"))
 		{
 			run("dfflegalize -cell $_DFFE_????_ 0 -cell $_SDFFE_????_ 0 -cell $_SDFFCE_????_ 0 -cell $_DLATCH_?_ x");
+			if (latches.policy == LatchPolicy::Error || help_mode)
+				run("check -latchonly -assert", "(only if -latches error, the default)");
 			run("techmap -D NO_LUT -map +/efinix/cells_map.v");
 			run("opt_expr -mux_undef");
 			run("simplemap");
@@ -196,7 +213,7 @@ struct SynthEfinixPass : public ScriptPass
 
 		if (check_label("map_luts"))
 		{
-			run("abc -lut 4");
+			run("abc9 -lut 4");
 			run("clean");
 		}
 
@@ -225,13 +242,13 @@ struct SynthEfinixPass : public ScriptPass
 		if (check_label("edif"))
 		{
 			if (!edif_file.empty() || help_mode)
-				run(stringf("write_edif %s", help_mode ? "<file-name>" : edif_file.c_str()));
+				run(stringf("write_edif %s", help_mode ? "<file-name>" : edif_file));
 		}
 
 		if (check_label("json"))
 		{
 			if (!json_file.empty() || help_mode)
-				run(stringf("write_json %s", help_mode ? "<file-name>" : json_file.c_str()));
+				run(stringf("write_json %s", help_mode ? "<file-name>" : json_file));
 		}
 	}
 } SynthEfinixPass;

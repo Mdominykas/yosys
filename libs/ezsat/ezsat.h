@@ -78,7 +78,10 @@ protected:
 
 public:
 	int solverTimeout;
-	bool solverTimoutStatus;
+	bool solverTimeoutStatus;
+	int64_t solverPropLimit;
+	bool solverPropLimitStatus;
+	int64_t solverProps;
 
 	ezSAT();
 	virtual ~ezSAT();
@@ -153,8 +156,21 @@ public:
 		solverTimeout = newTimeoutSeconds;
 	}
 
-	bool getSolverTimoutStatus() {
-		return solverTimoutStatus;
+	bool getSolverTimeoutStatus() {
+		return solverTimeoutStatus;
+	}
+
+	void setSolverPropLimit(int64_t newPropLimit) {
+		solverPropLimit = newPropLimit;
+	}
+
+	bool getSolverPropLimitStatus() {
+		return solverPropLimitStatus;
+	}
+
+	// propagations spent by the most recent solve() call
+	int64_t getSolverProps() {
+		return solverProps;
 	}
 
 	// manage CNF (usually only accessed by SAT solvers)
@@ -295,7 +311,7 @@ public:
 
 	// printing CNF and internal state
 
-	void printDIMACS(FILE *f, bool verbose = false) const;
+	void printDIMACS(FILE *f, bool verbose = false, const std::vector<std::vector<int>> &extraClauses = std::vector<std::vector<int>>()) const;
 	void printInternalState(FILE *f) const;
 
 	// more sophisticated constraints (designed to be used directly with assume(..))

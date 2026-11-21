@@ -22,45 +22,67 @@
 
 #include "kernel/yosys.h"
 #include "kernel/sigtools.h"
+#include "kernel/threading.h"
 
 YOSYS_NAMESPACE_BEGIN
 
 struct FfInitVals
 {
-	const SigMap *sigmap;
+	const SigMapView *sigmap;
 	dict<SigBit, std::pair<State,SigBit>> initbits;
 
-	void set(const SigMap *sigmap_, RTLIL::Module *module)
+	void set(const SigMapView *sigmap_, RTLIL::Module *module)
 	{
 		sigmap = sigmap_;
 		initbits.clear();
 		for (auto wire : module->wires())
+			if (wire->attributes.count(ID::init))
+				process_wire(wire);
+	}
+
+	void process_wire(RTLIL::Wire *wire)
+	{
+		SigSpec wirebits = (*sigmap)(wire);
+		Const initval = wire->attributes.at(ID::init);
+
+		for (int i = 0; i < GetSize(wirebits) && i < GetSize(initval); i++)
 		{
-			if (wire->attributes.count(ID::init) == 0)
+			SigBit bit = wirebits[i];
+			State val = initval[i];
+
+			if (val != State::S0 && val != State::S1 && bit.wire != nullptr)
 				continue;
 
-			SigSpec wirebits = (*sigmap)(wire);
-			Const initval = wire->attributes.at(ID::init);
-
-			for (int i = 0; i < GetSize(wirebits) && i < GetSize(initval); i++)
-			{
-				SigBit bit = wirebits[i];
-				State val = initval[i];
-
-				if (val != State::S0 && val != State::S1 && bit.wire != nullptr)
-					continue;
-
-				if (initbits.count(bit)) {
-					if (initbits.at(bit).first != val)
-						log_error("Conflicting init values for signal %s (%s = %s != %s).\n",
-								log_signal(bit), log_signal(SigBit(wire, i)),
-								log_signal(val), log_signal(initbits.at(bit).first));
-					continue;
-				}
-
-				initbits[bit] = std::make_pair(val,SigBit(wire,i));
+			if (initbits.count(bit)) {
+				if (initbits.at(bit).first != val)
+					log_error("Conflicting init values for signal %s (%s = %s != %s).\n",
+							log_signal(bit), log_signal(SigBit(wire, i)),
+							log_signal(val), log_signal(initbits.at(bit).first));
+				continue;
 			}
+
+			initbits[bit] = std::make_pair(val,SigBit(wire,i));
 		}
+	}
+
+	void set_parallel(const SigMapView *sigmap_, ParallelDispatchThreadPool &thread_pool, RTLIL::Module *module)
+	{
+		sigmap = sigmap_;
+		initbits.clear();
+
+		const RTLIL::Module *const_module = module;
+		ParallelDispatchThreadPool::Subpool subpool(thread_pool, ThreadPool::work_pool_size(0, module->wires_size(), 1000));
+		ShardedVector<RTLIL::Wire*> init_wires(subpool);
+		subpool.run([const_module, &init_wires](const ParallelDispatchThreadPool::RunCtx &ctx) {
+			for (int i : ctx.item_range(const_module->wires_size())) {
+				RTLIL::Wire *wire = const_module->wire_at(i);
+				if (wire->attributes.count(ID::init))
+					init_wires.insert(ctx, wire);
+			}
+		});
+
+		for (RTLIL::Wire *wire : init_wires)
+			process_wire(wire);
 	}
 
 	RTLIL::State operator()(RTLIL::SigBit bit) const
@@ -74,10 +96,10 @@ struct FfInitVals
 
 	RTLIL::Const operator()(const RTLIL::SigSpec &sig) const
 	{
-		RTLIL::Const res;
+		RTLIL::Const::Builder res_bits(GetSize(sig));
 		for (auto bit : sig)
-			res.bits().push_back((*this)(bit));
-		return res;
+			res_bits.push_back((*this)(bit));
+		return res_bits.build();
 	}
 
 	void set_init(RTLIL::SigBit bit, RTLIL::State val)
@@ -93,12 +115,12 @@ struct FfInitVals
 		initbits[mbit] = std::make_pair(val,abit);
 		auto it2 = abit.wire->attributes.find(ID::init);
 		if (it2 != abit.wire->attributes.end()) {
-			it2->second.bits()[abit.offset] = val;
+			it2->second.set(abit.offset, val);
 			if (it2->second.is_fully_undef())
 				abit.wire->attributes.erase(it2);
 		} else if (val != State::Sx) {
 			Const cval(State::Sx, GetSize(abit.wire));
-			cval.bits()[abit.offset] = val;
+			cval.set(abit.offset, val);
 			abit.wire->attributes[ID::init] = cval;
 		}
 	}
@@ -121,12 +143,73 @@ struct FfInitVals
 			remove_init(bit);
 	}
 
+	// Move $barrier output init value to it's input
+	void move_barrier_inits(RTLIL::Module *module)
+	{
+		dict<RTLIL::SigBit, RTLIL::SigBit> next;
+		for (auto cell : module->cells()) {
+			if (cell->type != ID($barrier))
+				continue;
+			RTLIL::SigSpec sig_y = (*sigmap)(cell->getPort(ID::Y)), sig_a = cell->getPort(ID::A);
+			for (int i = 0; i < GetSize(sig_y); i++)
+				next[sig_y[i]] = sig_a[i];
+		}
+		if (next.empty() || initbits.empty())
+			return;
+		pool<RTLIL::SigBit> inputs = input_nets(module), moved;
+		for (auto [from, to] : next) {
+			RTLIL::State val = (*this)(from);
+			if (val == State::Sx)
+				continue;
+			moved.insert(from);
+			for (int i = 0; i < GetSize(next) && next.count((*sigmap)(to)); i++)
+				to = next.at((*sigmap)(to));
+			RTLIL::SigBit to_net = (*sigmap)(to);
+			if (to_net.wire == nullptr || inputs.count(to_net))
+				continue;
+			RTLIL::State to_val = (*this)(to);
+			if (to_val == State::Sx)
+				set_init(to, val);
+			else if (to_val != val)
+				log_error("Conflicting init values for signal %s (%s = %s != %s).\n",
+						log_signal(to), log_signal(from), log_signal(val), log_signal(to_val));
+		}
+		if (!moved.empty())
+			remove_net_inits(module, moved);
+	}
+
+	pool<RTLIL::SigBit> input_nets(RTLIL::Module *module) const
+	{
+		pool<RTLIL::SigBit> nets;
+		for (auto wire : module->wires())
+			if (wire->port_input)
+				for (auto bit : (*sigmap)(wire))
+					nets.insert(bit);
+		return nets;
+	}
+
+	void remove_net_inits(RTLIL::Module *module, const pool<RTLIL::SigBit> &nets)
+	{
+		for (auto bit : nets)
+			initbits.erase(bit);
+		for (auto wire : module->wires()) {
+			auto it = wire->attributes.find(ID::init);
+			if (it == wire->attributes.end())
+				continue;
+			for (int i = 0; i < GetSize(wire) && i < GetSize(it->second); i++)
+				if (nets.count((*sigmap)(RTLIL::SigBit(wire, i))))
+					it->second.set(i, State::Sx);
+			if (it->second.is_fully_undef())
+				wire->attributes.erase(it);
+		}
+	}
+
 	void clear()
 	{
 		initbits.clear();
 	}
 
-	FfInitVals (const SigMap *sigmap, RTLIL::Module *module)
+	FfInitVals (const SigMapView *sigmap, RTLIL::Module *module)
 	{
 		set(sigmap, module);
 	}

@@ -39,7 +39,8 @@ const arrivalint INF_PAST = std::numeric_limits<arrivalint>::min();
 struct EstimateSta {
 	SigMap sigmap;
 	Module *m;
-	SigBit clk;
+	std::optional<SigBit> clk;
+	bool top_port_endpoints = false;
 
 	dict<std::pair<RTLIL::IdString, dict<RTLIL::IdString, RTLIL::Const>>, Aig> aigs;
 	dict<Cell *, Aig *> cell_aigs;
@@ -73,30 +74,34 @@ struct EstimateSta {
 	}
 
 	// TODO: ignores clock polarity
-	EstimateSta(Module *m, SigBit clk)
-		: sigmap(m), m(m), clk(clk)
+	EstimateSta(Module *m, std::optional<SigBit> clk, bool top_port_endpoints)
+		: sigmap(m), m(m), clk(clk), top_port_endpoints(top_port_endpoints)
 	{
-		sigmap.apply(clk);
+		if (clk.has_value())
+			sigmap.apply(*clk);
 	}
 
 	void run()
 	{
-		log("Domain %s\n", log_signal(clk));
+		log("\n");
+		log("Module %s\n", m);
+		if (clk.has_value())
+			log("Domain %s\n", log_signal(*clk));
 
 		// first, we collect launch and sample points and convert the combinational logic to AIG
 		std::vector<Cell *> combinational;
 
 		for (auto cell : m->cells()) {
 			SigSpec launch, sample;
-			if (RTLIL::builtin_ff_cell_types().count(cell->type)) {
+			if (cell->is_builtin_ff()) {
 				// collect launch and sample points for FF cell
 				FfData ff(nullptr, cell);
 				if (!ff.has_clk) {
 					log_warning("Ignoring unsupported storage element '%s' (%s)\n",
-								log_id(cell), log_id(cell->type));
+								cell, cell->type.unescape());
 					continue;
 				}
-				if (ff.sig_clk != clk)
+				if (!clk || ff.sig_clk.as_bit() != *clk)
 					continue;
 				launch.append(ff.sig_q);
 				sample.append(ff.sig_d);
@@ -112,13 +117,13 @@ struct EstimateSta {
 				continue;
 			} else {
 				// find or build AIG model of combinational cell
-				auto fingerprint = std::make_pair(cell->type, cell->parameters);
+				auto fingerprint = std::make_pair(IdString(cell->type), cell->parameters);
 				if (!aigs.count(fingerprint)) {
 					aigs.emplace(fingerprint, Aig(cell));
 					if (aigs.at(fingerprint).name.empty()) {
-						log_error("Unsupported cell '%s' in module '%s'",
-								  log_id(cell->type), log_id(m));
-					}					
+						log_error("Unsupported cell '%s' in module '%s'\n",
+								  cell->type.unescape(), m);
+					}
 				}
 
 				combinational.push_back(cell);
@@ -129,7 +134,7 @@ struct EstimateSta {
 		// since we're now taking reference into `aigs`, we can no longer modify it
 		// and thus have to fill `cell_aigs` in a separate loop
 		for (auto cell : combinational) {
-			auto fingerprint = std::make_pair(cell->type, cell->parameters);
+			auto fingerprint = std::make_pair(IdString(cell->type), cell->parameters);
 			cell_aigs.emplace(cell, &aigs.at(fingerprint));
 		}
 
@@ -137,18 +142,34 @@ struct EstimateSta {
 		for (auto &mem : Mem::get_all_memories(m)) {
 			for (auto &rd : mem.rd_ports) {
 				if (!rd.clk_enable) {
-					log_error("Unsupported async memory port '%s'\n", log_id(rd.cell));
+					log_error("Unsupported async memory port '%s'\n", rd.cell);
 					continue;
 				}
-				if (sigmap(rd.clk) != clk)
+				if (!clk || sigmap(rd.clk).as_bit() != *clk)
 					continue;
 				add_seq(rd.cell, rd.data, {rd.addr, rd.srst, rd.en});
 			}
 			for (auto &wr : mem.wr_ports) {
-				if (sigmap(wr.clk) != clk)
+				if (!clk || sigmap(wr.clk).as_bit() != *clk)
 					continue;
 				add_seq(wr.cell, {}, {wr.en, wr.addr, wr.data});
 			}
+		}
+
+		// add top module port launching/sampling, if requested
+		if (top_port_endpoints) {
+			SigSpec all_inputs, all_outputs;
+			for (auto port_id : m->ports) {
+				Wire *port = m->wire(port_id);
+				if (port->port_input && !port->port_output) {
+					all_inputs.append(port);
+				} else if (port->port_output && !port->port_input) {
+					all_outputs.append(port);
+				} else if (port->port_output && port->port_input) {
+					log_warning("Ignoring bi-directional port %s\n", port);
+				}
+			}
+			add_seq(nullptr, all_inputs, all_outputs);
 		}
 
 		// now we toposort the combinational logic
@@ -168,7 +189,7 @@ struct EstimateSta {
 			assert(cell_aigs.count(cell));
 			Aig &aig = *cell_aigs.at(cell);
 			for (auto &node : aig.nodes) {
-				if (!node.portname.empty()) {
+				if (node.portname != IdString{}) {
 					topo.edge(
 						desc_sig(cell->getPort(node.portname)[node.portbit]),
 						desc_aig(cell, node)
@@ -196,10 +217,10 @@ struct EstimateSta {
 		}
 
 		if (!topo.sort())
-			log_error("Module '%s' contains combinational loops", log_id(m));
-		
+			log_error("Module '%s' contains combinational loops\n", m);
+
 		// now we determine how long it takes for signals to stabilize
-		
+
 		// `levels` records the time after a clock edge after which a signal is stable
 		dict<std::tuple<SigBit, Cell *, AigNode *>, arrivalint> levels;
 
@@ -215,7 +236,7 @@ struct EstimateSta {
 			if (aig_node) {
 				Cell *cell = std::get<1>(node);
 				Aig &aig = *cell_aigs.at(cell);
-				if (!aig_node->portname.empty()) {
+				if (aig_node->portname != IdString{}) {
 					// for a cell port, copy `levels` value from port bit
 					SigBit bit = cell->getPort(aig_node->portname)[aig_node->portbit];
 					levels[node] = levels[desc_sig(bit)];
@@ -246,7 +267,8 @@ struct EstimateSta {
 			return;
 		}
 
-		log("Critical path is %ld nodes long:\n\n", crit);
+		log("Critical path is %ld nodes long:\n", crit);
+		log("\n");
 
 		// we use dict instead of pool because dict gives us
 		// some compile-time errors related to hashing
@@ -274,7 +296,7 @@ struct EstimateSta {
 						critical[node] = true;
 				}
 
-				if (!aig_node->portname.empty()) {
+				if (aig_node->portname != IdString{}) {
 					SigBit bit = cell->getPort(aig_node->portname)[aig_node->portbit];
 					if (critical.count(node))
 						critical[desc_sig(bit)] = true;
@@ -320,9 +342,9 @@ struct EstimateSta {
 					std::string cell_src;
 					if (cell->has_attribute(ID::src)) {
 						std::string src_attr = cell->get_src_attribute();
-						cell_src = stringf(" source: %s", src_attr.c_str());
+						cell_src = stringf(" source: %s", src_attr);
 					}
-					log("    cell %s (%s)%s\n", log_id(cell), log_id(cell->type), cell_src.c_str());
+					log("    cell %s (%s)%s\n", cell, cell->type.unescape(), cell_src);
 					printed.insert(cell);
 				}
 			} else {
@@ -331,15 +353,15 @@ struct EstimateSta {
 				std::string wire_src;
 				if (bit.wire && bit.wire->has_attribute(ID::src)) {
 					std::string src_attr = bit.wire->get_src_attribute();
-					wire_src = stringf(" source: %s", src_attr.c_str());
+					wire_src = stringf(" source: %s", src_attr);
 				}
-				log("    wire %s%s (level %ld)\n", log_signal(bit), wire_src.c_str(), levels[node]);
+				log("    wire %s%s (level %ld)\n", log_signal(bit), wire_src, levels[node]);
 			}
 		}
 
 		for (auto wire : m->wires()) {
 			if (bits_to_select.check_any(sigmap(wire)))
-				to_select.insert(wire->name);
+				{ IdString wn = wire->name; to_select.insert(wn); }
 		}
 
 		if (select) {
@@ -360,7 +382,7 @@ struct TimeestPass : Pass {
 		log("\n");
 		log("    timeest [-clk <clk_signal>] [options] [selection]\n");
 		log("\n");
-		log("Estimate the critical path in clock domain <clk_signal> by counting AIG nodes.\n");
+		log("Estimate the critical path by counting AIG nodes.\n");
 		log("\n");
 		log("    -all_paths\n");
 		log("        Print or select nodes from all critical paths instead of focusing on\n");
@@ -374,7 +396,8 @@ struct TimeestPass : Pass {
 	{
 		log_header(d, "Executing TIMEEST pass. (estimate timing)\n");
 
-		std::string clk;
+		std::string clk_name;
+		bool clk_domain_specified = false;
 		bool all_paths = false;
 		bool select = false;
 		size_t argidx;
@@ -388,26 +411,31 @@ struct TimeestPass : Pass {
 				continue;
 			}
 			if (args[argidx] == "-clk" && argidx + 1 < args.size()) {
-				clk = args[++argidx];
+				clk_domain_specified = true;
+				clk_name = args[++argidx];
 				continue;
 			}
 			break;
 		}
 		extra_args(args, argidx, d);
 
-		if (clk.empty())
-			log_cmd_error("No -clk argument provided\n");
-
 		if (select && d->selected_modules().size() > 1)
 			log_cmd_error("The -select option operates on a single selected module\n");
 
 		for (auto m : d->selected_modules()) {
-			if (!m->wire(RTLIL::escape_id(clk))) {
-				log_warning("No domain '%s' in module %s\n", clk.c_str(), log_id(m));
-				continue;
+			std::optional<SigBit> clk;
+
+			if (clk_domain_specified) {
+				IdString clk_ref = d->twines().find(RTLIL::escape_id(clk_name));
+				if (!m->wire(clk_ref)) {
+					log_warning("No domain '%s' in module %s\n", clk_name, m);
+					continue;
+				}
+
+				clk = SigBit(m->wire(clk_ref), 0);
 			}
 
-			EstimateSta sta(m, SigBit(m->wire(RTLIL::escape_id(clk)), 0));
+			EstimateSta sta(m, clk, /*top_port_endpoints=*/ !clk_domain_specified);
 			sta.all_paths = all_paths;
 			sta.select = select;
 			sta.run();

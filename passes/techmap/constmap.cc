@@ -24,21 +24,22 @@
 USING_YOSYS_NAMESPACE
 PRIVATE_NAMESPACE_BEGIN
 
-static std::string celltype, cell_portname, cell_paramname;
-
-static RTLIL::Module *module;
-static RTLIL::SigChunk value;
-
-void constmap_worker(RTLIL::SigSpec &sig)
+struct ConstmapWorker
 {
-	if (sig.is_fully_const()){
-		value = module->addWire(NEW_ID, sig.size());
-		RTLIL::Cell *cell = module->addCell(NEW_ID, celltype);
-		cell->setParam(cell_paramname, sig.as_const());
-		cell->setPort(cell_portname, value);
-		sig = value;
+	RTLIL::Module *module;
+	IdString celltype_ref, cell_portname_ref, cell_paramname_ref;
+
+	void operator()(RTLIL::SigSpec &sig)
+	{
+		if (sig.is_fully_const()){
+			RTLIL::SigChunk value = module->addWire(NEW_ID, sig.size());
+			RTLIL::Cell *cell = module->addCell(NEW_ID, celltype_ref);
+			cell->setParam(cell_paramname_ref, sig.as_const());
+			cell->setPort(cell_portname_ref, value);
+			sig = value;
+		}
 	}
-}
+};
 
 struct ConstmapPass : public Pass {
 	ConstmapPass() : Pass("constmap", "technology mapping of coarse constant value") { }
@@ -58,6 +59,8 @@ struct ConstmapPass : public Pass {
 	{
 		log_header(design, "Executing CONSTMAP pass (mapping to constant driver).\n");
 
+		std::string celltype, cell_portname, cell_paramname;
+
 		size_t argidx;
 		for (argidx = 1; argidx < args.size(); argidx++)
 		{
@@ -71,34 +74,40 @@ struct ConstmapPass : public Pass {
 		}
 		extra_args(args, argidx, design);
 
+		if (celltype.empty())
+			log_cmd_error("Missing required option -cell.\n");
 
-		if (design->has(celltype)) {
-			Module *existing = design->module(celltype);
+		IdString celltype_ref = design->twines().add(celltype);
+		IdString cell_portname_ref = design->twines().add(cell_portname);
+		IdString cell_paramname_ref = design->twines().add(cell_paramname);
+
+		if (design->has(celltype_ref)) {
+			Module *existing = design->module(celltype_ref);
 			bool has_port = false;
 			for (auto &p : existing->ports){
-				if (p == cell_portname){
+				if (p == cell_portname_ref){
 					has_port = true;
 					break;
 				}
 			}
 			if (!has_port)
-				log_cmd_error("Cell type '%s' does not have port '%s'.\n", celltype.c_str(), cell_portname.c_str());
+				log_cmd_error("Cell type '%s' does not have port '%s'.\n", celltype, cell_portname);
 
 			bool has_param = false;
 			for (auto &p : existing->avail_parameters){
-				if (p == cell_paramname)
+				if (p == cell_paramname_ref)
 					has_param = true;
 			}
 
 			if (!has_param)
-				log_cmd_error("Cell type '%s' does not have parameter '%s'.\n", celltype.c_str(), cell_paramname.c_str());
+				log_cmd_error("Cell type '%s' does not have parameter '%s'.\n", celltype, cell_paramname);
 		}
 
 
 		for (auto mod : design->selected_modules())
 		{
-			module = mod;
-			module->rewrite_sigspecs(constmap_worker);
+			ConstmapWorker worker{mod, celltype_ref, cell_portname_ref, cell_paramname_ref};
+			mod->rewrite_sigspecs(worker);
 		}
 	}
 } ConstmapPass;

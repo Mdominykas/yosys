@@ -82,7 +82,7 @@ struct EquivMiterWorker
 
 		for (auto c : source_module->selected_cells())
 			if (c->type == ID($equiv)) {
-				log("Seed $equiv cell: %s\n", log_id(c));
+				log("Seed $equiv cell: %s\n", c);
 				seed_cells.insert(c);
 			}
 
@@ -143,8 +143,7 @@ struct EquivMiterWorker
 		for (auto w :  miter_wires)
 			miter_module->addWire(w->name, w->width);
 		for (auto c :  miter_cells) {
-			miter_module->addCell(c->name, c);
-			auto mc = miter_module->cell(c->name);
+			auto mc = miter_module->addCell(c->name, c);
 			for (auto &conn : mc->connections())
 				mc->setPort(conn.first, sigmap(conn.second));
 		}
@@ -194,11 +193,11 @@ struct EquivMiterWorker
 					w->port_input = true;
 			}
 			if (w->port_output && w->port_input)
-				log("Created miter inout port %s.\n", log_id(w));
+				log("Created miter inout port %s.\n", w);
 			else if (w->port_output)
-				log("Created miter output port %s.\n", log_id(w));
+				log("Created miter output port %s.\n", w);
 			else if (w->port_input)
-				log("Created miter input port %s.\n", log_id(w));
+				log("Created miter input port %s.\n", w);
 		}
 
 		miter_module->fixup_ports();
@@ -242,7 +241,7 @@ struct EquivMiterWorker
 		}
 
 		if (mode_trigger) {
-			auto w = miter_module->addWire(ID(trigger));
+			auto w = miter_module->addWire("trigger");
 			w->port_output = true;
 			miter_module->addReduceOr(NEW_ID, trigger_signals, w);
 		}
@@ -252,7 +251,7 @@ struct EquivMiterWorker
 
 	void run()
 	{
-		log("Creating miter %s from module %s.\n", log_id(miter_module), log_id(source_module));
+		log("Creating miter %s from module %s.\n", miter_module, source_module);
 		find_miter_cells_wires();
 		copy_to_miter();
 		make_stuff();
@@ -316,11 +315,11 @@ struct EquivMiterPass : public Pass {
 		if (argidx >= args.size())
 			log_cmd_error("Invalid number of arguments.\n");
 
-		worker.miter_name = RTLIL::escape_id(args[argidx++]);
+		worker.miter_name = design->twines().add(RTLIL::escape_id(args[argidx++]));
 		extra_args(args, argidx, design);
 
 		if (design->module(worker.miter_name))
-			log_cmd_error("Miter module %s already exists.\n", log_id(worker.miter_name));
+			log_cmd_error("Miter module %s already exists.\n", PooledName(design, worker.miter_name).unescape());
 
 		worker.source_module = nullptr;
 		for (auto m : design->selected_modules()) {

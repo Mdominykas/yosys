@@ -29,6 +29,25 @@ PRIVATE_NAMESPACE_BEGIN
 struct SynthIntelALMPass : public ScriptPass {
 	SynthIntelALMPass() : ScriptPass("synth_intel_alm", "synthesis for ALM-based Intel (Altera) FPGAs.") {}
 
+	void on_register() override
+	{
+		target_register.emplace("intel_alm", Target{
+			"Intel (Altera) ALM-based",
+			{
+				{"cyclonev", {
+					"Cyclone V",
+					{ "+/intel_alm/cyclonev/cells_sim.v",
+					  "+/intel_alm/common/alm_sim.v",
+					  "+/intel_alm/common/dff_sim.v",
+					  "+/intel_alm/common/dsp_sim.v",
+					  "+/intel_alm/common/mem_sim.v",
+					  "+/intel_alm/common/misc_sim.v",
+					}
+				}}
+			}
+		});
+	}
+
 	void help() override
 	{
 		//   |---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|
@@ -169,28 +188,30 @@ struct SynthIntelALMPass : public ScriptPass {
 
 		if (check_label("begin")) {
 			if (family_opt == "cyclonev")
-				run(stringf("read_verilog -sv -lib +/intel_alm/%s/cells_sim.v", family_opt.c_str()));
-			run(stringf("read_verilog -specify -lib -D %s +/intel_alm/common/alm_sim.v", family_opt.c_str()));
-			run(stringf("read_verilog -specify -lib -D %s +/intel_alm/common/dff_sim.v", family_opt.c_str()));
-			run(stringf("read_verilog -specify -lib -D %s +/intel_alm/common/dsp_sim.v", family_opt.c_str()));
-			run(stringf("read_verilog -specify -lib -D %s +/intel_alm/common/mem_sim.v", family_opt.c_str()));
-			run(stringf("read_verilog -specify -lib -D %s +/intel_alm/common/misc_sim.v", family_opt.c_str()));
-			run(stringf("read_verilog -specify -lib -D %s -icells +/intel_alm/common/abc9_model.v", family_opt.c_str()));
+				run(stringf("read_verilog -sv -lib +/intel_alm/%s/cells_sim.v", family_opt));
+			run(stringf("read_verilog -specify -lib -D %s +/intel_alm/common/alm_sim.v", family_opt));
+			run(stringf("read_verilog -specify -lib -D %s +/intel_alm/common/dff_sim.v", family_opt));
+			run(stringf("read_verilog -specify -lib -D %s +/intel_alm/common/dsp_sim.v", family_opt));
+			run(stringf("read_verilog -specify -lib -D %s +/intel_alm/common/mem_sim.v", family_opt));
+			run(stringf("read_verilog -specify -lib -D %s +/intel_alm/common/misc_sim.v", family_opt));
+			run(stringf("read_verilog -specify -lib -D %s -icells +/intel_alm/common/abc9_model.v", family_opt));
 			// Misc and common cells
 			run("read_verilog -lib +/intel/common/altpll_bb.v");
 			run("read_verilog -lib +/intel_alm/common/megafunction_bb.v");
-			run(stringf("hierarchy -check %s", help_mode ? "-top <top>" : top_opt.c_str()));
+			run(stringf("hierarchy -check %s", help_mode ? "-top <top>" : top_opt));
 		}
 
 		if (check_label("coarse")) {
-			run("proc");
-			if (flatten || help_mode)
+			run("proc -latches error");
+			if (flatten || help_mode) {
+				run("check");
 				run("flatten", "(skip if -noflatten)");
+			}
 			run("tribuf -logic");
 			run("deminout");
 			run("opt_expr");
-			run("opt_clean");
 			run("check");
+			run("opt_clean");
 			run("opt -nodffe -nosdff");
 			run("fsm");
 			run("opt");
@@ -225,8 +246,8 @@ struct SynthIntelALMPass : public ScriptPass {
 		}
 
 		if (!nobram && check_label("map_bram", "(skip if -nobram)")) {
-			run(stringf("memory_bram -rules +/intel_alm/common/bram_%s.txt", bram_type.c_str()));
-			run(stringf("techmap -map +/intel_alm/common/bram_%s_map.v", bram_type.c_str()));
+			run(stringf("memory_bram -rules +/intel_alm/common/bram_%s.txt", bram_type));
+			run(stringf("techmap -map +/intel_alm/common/bram_%s_map.v", bram_type));
 		}
 
 		if (!nolutram && check_label("map_lutram", "(skip if -nolutram)")) {
@@ -239,6 +260,7 @@ struct SynthIntelALMPass : public ScriptPass {
 		}
 
 		if (check_label("map_ffs")) {
+			run("check -latchonly -assert");
 			run("techmap");
 			run("dfflegalize -cell $_DFFE_PN0P_ 0 -cell $_SDFFCE_PP0P_ 0");
 			run("techmap -map +/intel_alm/common/dff_map.v");

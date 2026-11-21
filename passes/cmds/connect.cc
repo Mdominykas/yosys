@@ -122,7 +122,7 @@ struct ConnectPass : public Pass {
 		RTLIL::Module *module = nullptr;
 		for (auto mod : design->selected_modules()) {
 			if (module != nullptr)
-				log_cmd_error("Multiple modules selected: %s, %s\n", log_id(module->name), log_id(mod->name));
+				log_cmd_error("Multiple modules selected: %s, %s\n", module, mod);
 			module = mod;
 		}
 		if (module == nullptr)
@@ -150,9 +150,9 @@ struct ConnectPass : public Pass {
 
 			RTLIL::SigSpec sig_lhs, sig_rhs;
 			if (!RTLIL::SigSpec::parse_sel(sig_lhs, design, module, set_lhs))
-				log_cmd_error("Failed to parse set lhs expression `%s'.\n", set_lhs.c_str());
+				log_cmd_error("Failed to parse set lhs expression `%s'.\n", set_lhs);
 			if (!RTLIL::SigSpec::parse_rhs(sig_lhs, sig_rhs, module, set_rhs))
-				log_cmd_error("Failed to parse set rhs expression `%s'.\n", set_rhs.c_str());
+				log_cmd_error("Failed to parse set rhs expression `%s'.\n", set_rhs);
 
 			sigmap.apply(sig_lhs);
 			sigmap.apply(sig_rhs);
@@ -173,7 +173,7 @@ struct ConnectPass : public Pass {
 
 			RTLIL::SigSpec sig;
 			if (!RTLIL::SigSpec::parse_sel(sig, design, module, unset_expr))
-				log_cmd_error("Failed to parse unset expression `%s'.\n", unset_expr.c_str());
+				log_cmd_error("Failed to parse unset expression `%s'.\n", unset_expr);
 
 			sigmap.apply(sig);
 			unset_drivers(design, module, sigmap, sig);
@@ -184,17 +184,19 @@ struct ConnectPass : public Pass {
 			if (flag_nounset)
 				log_cmd_error("Can't use -port together with -nounset.\n");
 
-			if (module->cell(RTLIL::escape_id(port_cell)) == nullptr)
-				log_cmd_error("Can't find cell %s.\n", port_cell.c_str());
+			RTLIL::Cell *port_cell_obj = module->cell(RTLIL::escape_id(port_cell));
+			if (port_cell_obj == nullptr)
+				log_cmd_error("Can't find cell %s.\n", port_cell);
 
 			RTLIL::SigSpec sig;
 			if (!RTLIL::SigSpec::parse_sel(sig, design, module, port_expr))
-				log_cmd_error("Failed to parse port expression `%s'.\n", port_expr.c_str());
+				log_cmd_error("Failed to parse port expression `%s'.\n", port_expr);
 
+			IdString port_port_ref = module->twines().add(RTLIL::escape_id(port_port));
 			if (!flag_assert) {
-				module->cell(RTLIL::escape_id(port_cell))->setPort(RTLIL::escape_id(port_port), sigmap(sig));
+				port_cell_obj->setPort(port_port_ref, sigmap(sig));
 			} else {
-				SigSpec cur = module->cell(RTLIL::escape_id(port_cell))->getPort(RTLIL::escape_id(port_port));
+				SigSpec cur = port_cell_obj->getPort(port_port_ref);
 				if (sigmap(sig) != sigmap(cur)) {
 					log_cmd_error("Expected connection not present: expected %s, found %s.\n", log_signal(sig), log_signal(cur));
 				}

@@ -20,7 +20,7 @@ SigSpec module_inputs(Module *m)
 			continue;
 		if (w->width != 1)
 			log_error("Unsupported wide port (%s) of non-unit width found in module %s.\n",
-					  log_id(w), log_id(m));
+					  w, m);
 		ret.append(w);
 	}
 	return ret;
@@ -36,7 +36,7 @@ SigSpec module_outputs(Module *m)
 			continue;
 		if (w->width != 1)
 			log_error("Unsupported wide port (%s) of non-unit width found in module %s.\n",
-					  log_id(w), log_id(m));
+					  w, m);
 		ret.append(w);
 	}
 	return ret;
@@ -96,7 +96,7 @@ bool derive_module_luts(Module *m, std::vector<uint64_t> &luts)
 	ff_types.setup_stdcells_mem();
 	for (auto cell : m->cells()) {
 		if (ff_types.cell_known(cell->type)) {
-			log("Ignoring module '%s' which isn't purely combinational.\n", log_id(m));
+			log("Ignoring module '%s' which isn't purely combinational.\n", m);
 			return false;
 		}
 	}
@@ -106,7 +106,7 @@ bool derive_module_luts(Module *m, std::vector<uint64_t> &luts)
 	int ninputs = inputs.size(), noutputs = outputs.size();
 
 	if (ninputs > 6) {
-		log_warning("Skipping module %s with more than 6 inputs bits.\n", log_id(m));
+		log_warning("Skipping module %s with more than 6 inputs bits.\n", m);
 		return false;
 	}
 
@@ -123,7 +123,7 @@ bool derive_module_luts(Module *m, std::vector<uint64_t> &luts)
 
 			if (!ceval.eval(bit)) {
 				log("Failed to evaluate output '%s' in module '%s'.\n",
-					log_signal(outputs[j]), log_id(m));
+					log_signal(outputs[j]), m);
 				return false;
 			}
 
@@ -173,8 +173,8 @@ struct CellmatchPass : Pass {
 				derive_luts = true;
 			} else if (args[argidx] == "-lib" && argidx + 1 < args.size()) {
 				if (!saved_designs.count(args[++argidx]))
-					log_cmd_error("No design '%s' found!\n", args[argidx].c_str());
-				lib = saved_designs.at(args[argidx]);
+					log_cmd_error("No design '%s' found!\n", args[argidx]);
+				lib = saved_designs.at(args[argidx]).get();
 			} else {
 				break;
 			}
@@ -203,7 +203,7 @@ struct CellmatchPass : Pass {
 			for (auto lut : luts)
 				p_classes.insert(p_class(ninputs, lut));
 
-			log_debug("Registered %s\n", log_id(m));
+			log_debug("Registered %s\n", m);
 
 			// save as a viable target
 			targets[p_classes].push_back(Target{m, luts});
@@ -211,8 +211,8 @@ struct CellmatchPass : Pass {
 
 		auto r = saved_designs.emplace("$cellmatch", nullptr);
 		if (r.second)
-			r.first->second = new Design;
-		Design *map_design = r.first->second;
+			r.first->second = std::make_shared<Design>();
+		Design *map_design = r.first->second.get();
 
 		for (auto m : d->selected_whole_modules_warn(/* visit whiteboxes */derive_luts)) {
 			std::vector<uint64_t> luts;
@@ -237,7 +237,7 @@ struct CellmatchPass : Pass {
 				p_classes.insert(p_class(inputs.size(), lut));
 
 			for (auto target : targets[p_classes]) {
-				log_debug("Candidate %s for matching to %s\n", log_id(target.module), log_id(m));
+				log_debug("Candidate %s for matching to %s\n", target.module, m);
 
 				SigSpec target_inputs = module_inputs(target.module);
 				SigSpec target_outputs = module_outputs(target.module);
@@ -271,30 +271,30 @@ struct CellmatchPass : Pass {
 						}
 
 						if (match) {
-							log("Module %s matches %s\n", log_id(m), log_id(target.module));
+							log("Module %s matches %s\n", m, target.module);
 							// Add target.module to map_design ("$cellmatch")
 							// as a techmap rule to match m and replace it with target.module
-							Module *map = map_design->addModule(stringf("\\_60_%s_%s", log_id(m), log_id(target.module)));
-							Cell *cell = map->addCell(ID::_TECHMAP_REPLACE_, target.module->name);
+							Module *map = map_design->addModule(stringf("\\_60_%s_%s", m, target.module));
+							Cell *cell = map->addCell(ID::_TECHMAP_REPLACE_, map_design->twines().copy_from(target.module->twines(), target.module->name));
 
 							map->attributes[ID(techmap_celltype)] = m->name.str();
 
 							for (int i = 0; i < outputs.size(); i++) {
 								log_assert(outputs[i].is_wire());
-								Wire *w = map->addWire(outputs[i].wire->name, 1);
+								Wire *w = map->addWire(map_design->twines().copy_from(m->twines(), outputs[i].wire->name), 1);
 								w->port_id = outputs[i].wire->port_id;
 								w->port_output = true;
 								log_assert(target_outputs[output_map[i]].is_wire());
-								cell->setPort(target_outputs[output_map[i]].wire->name, w);
+								cell->setPort(map_design->twines().copy_from(target.module->twines(), target_outputs[output_map[i]].wire->name), w);
 							}
 
 							for (int i = 0; i < inputs.size(); i++) {
 								log_assert(inputs[i].is_wire());
-								Wire *w = map->addWire(inputs[i].wire->name, 1);
+								Wire *w = map->addWire(map_design->twines().copy_from(m->twines(), inputs[i].wire->name), 1);
 								w->port_id = inputs[i].wire->port_id;
 								w->port_input = true;
 								log_assert(target_inputs[input_map[i]].is_wire());
-								cell->setPort(target_inputs[input_map[i]].wire->name, w);
+								cell->setPort(map_design->twines().copy_from(target.module->twines(), target_inputs[input_map[i]].wire->name), w);
 							}
 
 							map->fixup_ports();

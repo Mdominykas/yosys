@@ -23,16 +23,18 @@
 #include "kernel/rtlil.h"
 #include "kernel/register.h"
 #include "kernel/sigtools.h"
-#include "kernel/celltypes.h"
+#include "kernel/newcelltypes.h"
 #include "kernel/log.h"
 #include <string>
 
 USING_YOSYS_NAMESPACE
 PRIVATE_NAMESPACE_BEGIN
 
-#define EDIF_DEF(_id) edif_names(RTLIL::unescape_id(_id), true).c_str()
-#define EDIF_DEFR(_id, _ren, _bl, _br) edif_names(RTLIL::unescape_id(_id), true, _ren, _bl, _br).c_str()
-#define EDIF_REF(_id) edif_names(RTLIL::unescape_id(_id), false).c_str()
+#define EDIF_DEF(_id) edif_names(design->twines().unescaped_str(_id), true)
+#define EDIF_DEFR(_id, _ren, _bl, _br) edif_names(design->twines().unescaped_str(_id), true, _ren, _bl, _br)
+#define EDIF_REF(_id) edif_names(design->twines().unescaped_str(_id), false)
+#define EDIF_DEF_STR(_id) edif_names(RTLIL::unescape_id(_id), true)
+#define EDIF_REF_STR(_id) edif_names(RTLIL::unescape_id(_id), false)
 
 struct EdifNames
 {
@@ -48,8 +50,8 @@ struct EdifNames
 		if (define) {
 			std::string new_id = operator()(id, false);
 			if (port_rename)
-				return stringf("(rename %s \"%s%c%d:%d%c\")", new_id.c_str(), id.c_str(), delim_left, range_left, range_right, delim_right);
-			return new_id != id ? stringf("(rename %s \"%s\")", new_id.c_str(), id.c_str()) : id;
+				return stringf("(rename %s \"%s%c%d:%d%c\")", new_id, id, delim_left, range_left, range_right, delim_right);
+			return new_id != id ? stringf("(rename %s \"%s\")", new_id, id) : id;
 		}
 
 		if (name_map.count(id) > 0)
@@ -138,7 +140,7 @@ struct EdifBackend : public Backend {
 		bool lsbidx = false;
 		std::map<RTLIL::IdString, std::map<RTLIL::IdString, int>> lib_cell_ports;
 		bool nogndvcc = false, gndvccy = false, keepmode = false;
-		CellTypes ct(design);
+		NewCellTypes ct(design);
 		EdifNames edif_names;
 
 		size_t argidx;
@@ -207,9 +209,9 @@ struct EdifBackend : public Backend {
 				top_module_name = module->name.str();
 
 			if (module->processes.size() != 0)
-				log_error("Found unmapped processes in module %s: unmapped processes are not supported in EDIF backend!\n", log_id(module->name));
+				log_error("Found unmapped processes in module %s: unmapped processes are not supported in EDIF backend!\n", module);
 			if (module->memories.size() != 0)
-				log_error("Found unmapped memories in module %s: unmapped memories are not supported in EDIF backend!\n", log_id(module->name));
+				log_error("Found unmapped memories in module %s: unmapped memories are not supported in EDIF backend!\n", module);
 
 			for (auto cell : module->cells())
 			{
@@ -227,7 +229,7 @@ struct EdifBackend : public Backend {
 		if (top_module_name.empty())
 			log_error("No module found in design!\n");
 
-		*f << stringf("(edif %s\n", EDIF_DEF(top_module_name));
+		*f << stringf("(edif %s\n", EDIF_DEF_STR(top_module_name));
 		*f << stringf("  (edifVersion 2 0 0)\n");
 		*f << stringf("  (edifLevel 0)\n");
 		*f << stringf("  (keywordMap (keywordLevel 0))\n");
@@ -317,12 +319,12 @@ struct EdifBackend : public Backend {
 				for (auto &dep : it.second)
 					if (module_deps.count(dep) > 0)
 						goto not_ready_yet;
-				// log("Next in topological sort: %s\n", log_id(it.first->name));
+				// log("Next in topological sort: %s\n", it.first->name.unescape());
 				sorted_modules.push_back(it.first);
 			not_ready_yet:;
 			}
 			if (sorted_modules_idx == sorted_modules.size())
-				log_error("Cyclic dependency between modules found! Cycle includes module %s.\n", log_id(module_deps.begin()->first->name));
+				log_error("Cyclic dependency between modules found! Cycle includes module %s.\n", module_deps.begin()->first);
 			while (sorted_modules_idx < sorted_modules.size())
 				module_deps.erase(sorted_modules.at(sorted_modules_idx++));
 		}
@@ -334,7 +336,7 @@ struct EdifBackend : public Backend {
 
 		auto add_prop = [&](IdString name, Const val) {
 			if ((val.flags & RTLIL::CONST_FLAG_STRING) != 0)
-				*f << stringf("\n            (property %s (string \"%s\"))", EDIF_DEF(name), val.decode_string().c_str());
+				*f << stringf("\n            (property %s (string \"%s\"))", EDIF_DEF(name), val.decode_string());
 			else if (val.size() <= 32 && RTLIL::SigSpec(val).is_fully_def())
 				*f << stringf("\n            (property %s (integer %u))", EDIF_DEF(name), val.as_int());
 			else {
@@ -348,7 +350,7 @@ struct EdifBackend : public Backend {
 					char digit_str[2] = { "0123456789abcdef"[digit_value], 0 };
 					hex_string = std::string(digit_str) + hex_string;
 				}
-				*f << stringf("\n            (property %s (string \"%d'h%s\"))", EDIF_DEF(name), GetSize(val), hex_string.c_str());
+				*f << stringf("\n            (property %s (string \"%d'h%s\"))", EDIF_DEF(name), GetSize(val), hex_string);
 			}
 		};
 		for (auto module : sorted_modules)
@@ -404,7 +406,6 @@ struct EdifBackend : public Backend {
 						auto count_nontrivial_attr = [](Wire *w) {
 							int count = w->attributes.size();
 							count -= w->attributes.count(ID::src);
-							count -= w->attributes.count(ID::unused_bits);
 							return count;
 						};
 
@@ -486,7 +487,7 @@ struct EdifBackend : public Backend {
 					for (int i = 0; i < GetSize(sig); i++)
 						if (sig[i].wire == NULL && sig[i] != RTLIL::State::S0 && sig[i] != RTLIL::State::S1)
 							log_warning("Bit %d of cell port %s.%s.%s driven by %s will be left unconnected in EDIF output.\n",
-									i, log_id(module), log_id(cell), log_id(p.first), log_signal(sig[i]));
+									i, module, cell, design->twines().unescaped_str(p.first), log_signal(sig[i]));
 						else {
 							int member_idx = lsbidx ? i : GetSize(sig)-i-1;
 							auto m = design->module(cell->type);
@@ -513,13 +514,13 @@ struct EdifBackend : public Backend {
 				if (sig.wire == NULL && sig != RTLIL::State::S0 && sig != RTLIL::State::S1) {
 					if (sig == RTLIL::State::Sx) {
 						for (auto &ref : it.second)
-							log_warning("Exporting x-bit on %s as zero bit.\n", ref.first.c_str());
+							log_warning("Exporting x-bit on %s as zero bit.\n", ref.first);
 						sig = RTLIL::State::S0;
 					} else if (sig == RTLIL::State::Sz) {
 						continue;
 					} else {
 						for (auto &ref : it.second)
-							log_error("Don't know how to handle %s on %s.\n", log_signal(sig), ref.first.c_str());
+							log_error("Don't know how to handle %s on %s.\n", log_signal(sig), ref.first);
 						log_abort();
 					}
 				}
@@ -534,9 +535,9 @@ struct EdifBackend : public Backend {
 						if (netname[i] == ' ' || netname[i] == '\\')
 							netname.erase(netname.begin() + i--);
 				}
-				*f << stringf("          (net %s (joined\n", EDIF_DEF(netname));
+				*f << stringf("          (net %s (joined\n", EDIF_DEF_STR(netname));
 				for (auto &ref : it.second)
-					*f << stringf("              %s\n", ref.first.c_str());
+					*f << stringf("              %s\n", ref.first);
 				if (sig.wire == NULL) {
 					if (nogndvcc)
 						log_error("Design contains constant nodes (map with \"hilomap\" first).\n");
@@ -572,12 +573,12 @@ struct EdifBackend : public Backend {
 
 					if (keepmode)
 					{
-						*f << stringf("          (net %s (joined\n", EDIF_DEF(netname));
+						*f << stringf("          (net %s (joined\n", EDIF_DEF_STR(netname));
 
 						auto &refs = net_join_db.at(mapped_sig);
 						for (auto &ref : refs)
 							if (ref.second)
-								*f << stringf("              %s\n", ref.first.c_str());
+								*f << stringf("              %s\n", ref.first);
 						*f << stringf("            )");
 
 						if (attr_properties && raw_sig.wire != NULL)
@@ -588,7 +589,7 @@ struct EdifBackend : public Backend {
 					}
 					else
 					{
-						log_warning("Ignoring conflicting 'keep' property on net %s. Use -keep to generate the extra net nevertheless.\n", EDIF_DEF(netname));
+						log_warning("Ignoring conflicting 'keep' property on net %s. Use -keep to generate the extra net nevertheless.\n", EDIF_DEF_STR(netname));
 					}
 				}
 			}
@@ -599,8 +600,8 @@ struct EdifBackend : public Backend {
 		}
 		*f << stringf("  )\n");
 
-		*f << stringf("  (design %s\n", EDIF_DEF(top_module_name));
-		*f << stringf("    (cellRef %s (libraryRef DESIGN))\n", EDIF_REF(top_module_name));
+		*f << stringf("  (design %s\n", EDIF_DEF_STR(top_module_name));
+		*f << stringf("    (cellRef %s (libraryRef DESIGN))\n", EDIF_REF_STR(top_module_name));
 		*f << stringf("  )\n");
 
 		*f << stringf(")\n");

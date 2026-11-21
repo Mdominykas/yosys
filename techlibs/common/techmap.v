@@ -59,7 +59,7 @@ module _90_simplemap_compare_ops;
 endmodule
 
 (* techmap_simplemap *)
-(* techmap_celltype = "$buf $pos $slice $concat $mux $tribuf $bmux $bwmux $bweqx" *)
+(* techmap_celltype = "$buf $pos $slice $concat $mux $pmux $tribuf $bmux $bwmux $bweqx" *)
 module _90_simplemap_various;
 endmodule
 
@@ -283,9 +283,16 @@ module _90_alu (A, B, CI, BI, X, Y, CO);
 	\$pos #(.A_SIGNED(A_SIGNED), .A_WIDTH(A_WIDTH), .Y_WIDTH(Y_WIDTH)) A_conv (.A(A), .Y(A_buf));
 	\$pos #(.A_SIGNED(B_SIGNED), .A_WIDTH(B_WIDTH), .Y_WIDTH(Y_WIDTH)) B_conv (.A(B), .Y(B_buf));
 
-	\$lcu #(.WIDTH(Y_WIDTH)) lcu (.P(X), .G(AA & BB), .CI(CI), .CO(CO));
+	(* force_downto *)
+	wire [Y_WIDTH-1:0] P;
+	wire [Y_WIDTH-1:0] G;
+	wire [Y_WIDTH-1:0] Cnull;
+	assign Cnull = 1'b0;
 
-	assign X = AA ^ BB;
+	\$fa #(.WIDTH(Y_WIDTH)) fa (.A(AA), .B(BB), .C(Cnull), .X(G), .Y(P));
+	\$lcu #(.WIDTH(Y_WIDTH)) lcu (.P(P), .G(G), .CI(CI), .CO(CO));
+
+	assign X = P;
 	assign Y = X ^ {CO, CI};
 endmodule
 
@@ -556,48 +563,6 @@ module _90_pow (A, B, Y);
 	wire _TECHMAP_FAIL_ = 1;
 endmodule
 
-
-// --------------------------------------------------------
-// Parallel Multiplexers
-// --------------------------------------------------------
-
-(* techmap_celltype = "$pmux" *)
-module _90_pmux (A, B, S, Y);
-	parameter WIDTH = 1;
-	parameter S_WIDTH = 1;
-
-	(* force_downto *)
-	input [WIDTH-1:0] A;
-	(* force_downto *)
-	input [WIDTH*S_WIDTH-1:0] B;
-	(* force_downto *)
-	input [S_WIDTH-1:0] S;
-	(* force_downto *)
-	output [WIDTH-1:0] Y;
-
-	(* force_downto *)
-	wire [WIDTH-1:0] Y_B;
-
-	genvar i, j;
-	generate
-		(* force_downto *)
-		wire [WIDTH*S_WIDTH-1:0] B_AND_S;
-		for (i = 0; i < S_WIDTH; i = i + 1) begin:B_AND
-			assign B_AND_S[WIDTH*(i+1)-1:WIDTH*i] = B[WIDTH*(i+1)-1:WIDTH*i] & {WIDTH{S[i]}};
-		end:B_AND
-		for (i = 0; i < WIDTH; i = i + 1) begin:B_OR
-			(* force_downto *)
-			wire [S_WIDTH-1:0] B_AND_BITS;
-			for (j = 0; j < S_WIDTH; j = j + 1) begin:B_AND_BITS_COLLECT
-				assign B_AND_BITS[j] = B_AND_S[WIDTH*j+i];
-			end:B_AND_BITS_COLLECT
-			assign Y_B[i] = |B_AND_BITS;
-		end:B_OR
-	endgenerate
-
-	assign Y = |S ? Y_B : A;
-endmodule
-
 // --------------------------------------------------------
 // Demultiplexers
 // --------------------------------------------------------
@@ -647,3 +612,28 @@ module _90_lut;
 endmodule
 `endif
 
+
+// --------------------------------------------------------
+// Bufnorm helpers
+// --------------------------------------------------------
+
+(* techmap_celltype = "$connect" *)
+module \$connect (A, B);
+
+parameter WIDTH = 0;
+
+inout [WIDTH-1:0] A;
+inout [WIDTH-1:0] B;
+
+assign A = B; // RTLIL assignments are not inherently directed
+
+endmodule
+
+(* techmap_celltype = "$input_port" *)
+module \$input_port (Y);
+
+parameter WIDTH = 0;
+
+inout [WIDTH-1:0] Y; // This cell is just a maker, so we leave Y undriven
+
+endmodule

@@ -46,7 +46,8 @@ static void test_abcloop()
 {
 	log("Rng seed value: %u\n", int(xorshift32_state));
 
-	RTLIL::Design *design = new RTLIL::Design;
+	RTLIL::Design uut_design;
+	RTLIL::Design *design = &uut_design;
 	RTLIL::Module *module = nullptr;
 	RTLIL::SigSpec in_sig, out_sig;
 
@@ -223,19 +224,19 @@ static void test_abcloop()
 	}
 
 	for (int i = 0; i < 16; i++) {
-		log("%3d ", i);
+		std::string message = stringf("%3d ", i);
 		for (int j = 0; j < 4; j++)
-			log("%c", truthtab[i][j] ? '1' : '0');
-		log(" ");
+			message += truthtab[i][j] ? '1' : '0';
+		message += " ";
 		for (int j = 0; j < 4; j++)
-			log("%c", truthtab2[i][j] ? '1' : '0');
+			message += truthtab2[i][j] ? '1' : '0';
 		for (int j = 0; j < 4; j++)
 			if (truthtab[i][j] != truthtab2[i][j]) {
 				found_error = true;
-				log(" !");
+				message += " !";
 				break;
 			}
-		log("\n");
+		log("%s\n", message);
 	}
 
 	log_assert(found_error == false);
@@ -243,7 +244,9 @@ static void test_abcloop()
 }
 
 struct TestAbcloopPass : public Pass {
-	TestAbcloopPass() : Pass("test_abcloop", "automatically test handling of loops in abc command") { }
+	TestAbcloopPass() : Pass("test_abcloop", "automatically test handling of loops in abc command") {
+		internal();
+	}
 	void help() override
 	{
 		//   |---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|

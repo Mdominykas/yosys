@@ -326,12 +326,12 @@ int counter_tryextract(
 			return 24;
 		//Mux should have A driven by count Q, and B by muxy
 		//if A and B are swapped, CE polarity is inverted
-		if(sigmap(cemux->getPort(ID::B)) == muxy && 
+		if(sigmap(cemux->getPort(ID::B)) == muxy &&
 			sigmap(cemux->getPort(ID::A)) == sigmap(count_reg->getPort(ID::Q)))
 		{
 			extract.ce_inverted = false;
 		}
-		else if(sigmap(cemux->getPort(ID::A)) == muxy && 
+		else if(sigmap(cemux->getPort(ID::A)) == muxy &&
 				sigmap(cemux->getPort(ID::B)) == sigmap(count_reg->getPort(ID::Q)))
 		{
 			extract.ce_inverted = true;
@@ -541,9 +541,9 @@ void counter_worker(
 		{
 			extract_value = *sa.begin();
 			log("  Signal %s declared at %s has COUNT_EXTRACT = %s\n",
-				log_id(port_wire),
-				count_reg_src.c_str(),
-				extract_value.c_str());
+				port_wire,
+				count_reg_src,
+				extract_value);
 
 			if(extract_value == "FORCE")
 				force_extract = true;
@@ -553,7 +553,7 @@ void counter_worker(
 			{}	//default
 			else
 				log_error("  Illegal COUNT_EXTRACT value %s (must be one of FORCE, NO, AUTO)\n",
-					extract_value.c_str());
+					extract_value);
 		}
 	}
 
@@ -604,14 +604,14 @@ void counter_worker(
 		{
 			log_error(
 			"Counter extraction is set to FORCE on register %s, but a counter could not be inferred (%s)\n",
-			log_id(port_wire),
+			port_wire,
 			reasons[reason]);
 		}
 		return;
 	}
 
 	//Get new cell name
-	string countname = string("$COUNTx$") + log_id(extract.rwire->name.str());
+	string countname = string("$COUNTx$") + extract.rwire->name.unescape();
 
 	//Wipe all of the old connections to the ALU
 	cell->unsetPort(ID::A);
@@ -697,7 +697,7 @@ void counter_worker(
 	//Hook up any parallel outputs
 	for(auto load : extract.pouts)
 	{
-		log("    Counter has parallel output to cell %s port %s\n", log_id(load.cell->name), log_id(load.port));
+		log("    Counter has parallel output to cell %s port %s\n", cell, PooledName(load.cell->module, load.port).unescape());
 	}
 	if(extract.has_pout)
 	{
@@ -726,13 +726,13 @@ void counter_worker(
 	}
 	log("  Found %d-bit (%s) %s counter %s (counting %s %d) for register %s, declared at %s\n",
 		extract.width,
-		reset_type.c_str(),
+		reset_type,
 		extract.count_is_up ? "up" : "down",
-		countname.c_str(),
+		countname,
 		extract.count_is_up ? "to" : "from",
 		extract.count_value,
-		log_id(extract.rwire->name),
-		count_reg_src.c_str());
+		extract.rwire->name.unescape(),
+		count_reg_src);
 
 	//Optimize the counter
 	//If we have no parallel output, and we have redundant bits, shrink us
@@ -817,13 +817,13 @@ struct ExtractCounterPass : public Pass {
 				{
 					if(pouts[i] == ',')
 					{
-						settings.parallel_cells.insert(RTLIL::escape_id(tmp));
+						settings.parallel_cells.insert(design->twines().add(RTLIL::escape_id(tmp)));
 						tmp = "";
 					}
 					else
 						tmp += pouts[i];
 				}
-				settings.parallel_cells.insert(RTLIL::escape_id(tmp));
+				settings.parallel_cells.insert(design->twines().add(RTLIL::escape_id(tmp)));
 				continue;
 			}
 
@@ -847,7 +847,7 @@ struct ExtractCounterPass : public Pass {
 				else if (arg == "no")
 					settings.allow_arst = false;
 				else
-					log_error("Invalid -allow_arst value \"%s\"\n", arg.c_str());
+					log_error("Invalid -allow_arst value \"%s\"\n", arg);
 				continue;
 			}
 
@@ -861,7 +861,7 @@ struct ExtractCounterPass : public Pass {
 				else if (arg == "both")
 					settings.allowed_dirs = 2;
 				else
-					log_error("Invalid -dir value \"%s\"\n", arg.c_str());
+					log_error("Invalid -dir value \"%s\"\n", arg);
 				continue;
 			}
 		}
@@ -887,13 +887,13 @@ struct ExtractCounterPass : public Pass {
 
 			for(auto cell : cells_to_remove)
 			{
-				//log("Removing cell %s\n", log_id(cell->name));
+				//log("Removing cell %s\n", cell);
 				module->remove(cell);
 			}
 
 			for(auto cpair : cells_to_rename)
 			{
-				//log("Renaming cell %s to %s\n", log_id(cpair.first->name), cpair.second.c_str());
+				//log("Renaming cell %s to %s\n", cpair.first, cpair.second);
 				module->rename(cpair.first, cpair.second);
 			}
 		}

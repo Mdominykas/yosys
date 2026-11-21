@@ -58,6 +58,7 @@ synth -top my_design -booth
 #include "kernel/sigtools.h"
 #include "kernel/yosys.h"
 #include "kernel/macc.h"
+#include "kernel/compressor_tree.h"
 
 USING_YOSYS_NAMESPACE
 PRIVATE_NAMESPACE_BEGIN
@@ -67,6 +68,7 @@ struct BoothPassWorker {
 	RTLIL::Module *module;
 	SigMap sigmap;
 	int booth_counter;
+	int cpa_id = 0;
 	bool lowpower = false;
 	bool mapped_cpa = false;
 
@@ -187,9 +189,8 @@ struct BoothPassWorker {
 		cor_o = module->AndGate(NEW_ID_SUFFIX(name), pp1_nor_pp0, cori_i);
 	}
 
-	void BuildBitwiseFa(Module *mod, std::string name, const SigSpec &sig_a, const SigSpec &sig_b,
-			    const SigSpec &sig_c, const SigSpec &sig_x, const SigSpec &sig_y,
-			    const std::string &src = "")
+	void BuildBitwiseFa(Module *mod, IdString name, const SigSpec &sig_a, const SigSpec &sig_b,
+			    const SigSpec &sig_c, const SigSpec &sig_x, const SigSpec &sig_y)
 	{
 		// We can't emit a single wide full-adder cell here since
 		// there would typically be feedback loops involving the cells'
@@ -201,8 +202,8 @@ struct BoothPassWorker {
 		log_assert(sig_a.size() == sig_y.size());
 
 		for (int i = 0; i < sig_a.size(); i++)
-			mod->addFa(stringf("%s[%d]", name.c_str(), i), sig_a[i], sig_b[i],
-				   sig_c[i], sig_x[i], sig_y[i], src);
+			mod->addFa(TwineSpec::Suffix{name, stringf("[%d]", i)}, sig_a[i], sig_b[i],
+				   sig_c[i], sig_x[i], sig_y[i]);
 	}
 
 	void run()
@@ -223,7 +224,7 @@ struct BoothPassWorker {
 				macc.from_cell(cell);
 
 				if (!macc.is_simple_product()) {
-					log_debug("Not mapping cell %s: not a simple macc cell\n", log_id(cell));
+					log_debug("Not mapping cell %s: not a simple macc cell\n", cell);
 					continue;
 				}
 
@@ -239,11 +240,11 @@ struct BoothPassWorker {
 
 			if (x_sz < 4 || y_sz < 4 || z_sz < 8) {
 				log_debug("Not mapping cell %s sized at %dx%x, %x: size below threshold\n",
-					  log_id(cell), x_sz, y_sz, z_sz);
+					  cell, x_sz, y_sz, z_sz);
 				continue;
 			}
 
-			log("Mapping cell %s to %s Booth multiplier\n", log_id(cell), is_signed ? "signed" : "unsigned");
+			log("Mapping cell %s to %s Booth multiplier\n", cell, is_signed ? "signed" : "unsigned");
 
 			// To simplify the generator size the arguments
 			// to be the same. Then allow logic synthesis to
@@ -259,7 +260,7 @@ struct BoothPassWorker {
 						y_sz_revised = y_sz + 1;
 					} else {
 						x_sz_revised = y_sz;
-					}		
+					}
 				} else {
 					if (x_sz % 2 != 0) {
 						y_sz_revised = x_sz + 1;
@@ -315,36 +316,6 @@ struct BoothPassWorker {
 			module->remove(cell);
 			booth_counter++;
 		}
-	}
-
-	SigSig WallaceSum(int width, std::vector<SigSpec> summands)
-	{
-		for (auto &s : summands)
-			s.extend_u0(width);
-
-		while (summands.size() > 2) {
-			std::vector<SigSpec> new_summands;
-			int i;
-			for (i = 0; i < (int) summands.size() - 2; i += 3) {
-				SigSpec x = module->addWire(NEW_ID, width);
-				SigSpec y = module->addWire(NEW_ID, width);
-				BuildBitwiseFa(module, NEW_ID.str(), summands[i], summands[i + 1],
-					       summands[i + 2], x, y);
-				new_summands.push_back(y);
-				new_summands.push_back({x.extract(0, width - 1), State::S0});
-			}
-
-			new_summands.insert(new_summands.begin(), summands.begin() + i, summands.end());
-
-			std::swap(summands, new_summands);
-		}
-
-		if (!summands.size())
-			return SigSig(SigSpec(width, State::S0), SigSpec(width, State::S0));
-		else if (summands.size() == 1)
-			return SigSig(summands[0], SigSpec(width, State::S0));
-		else
-			return SigSig(summands[0], summands[1]);
 	}
 
 	/*
@@ -415,16 +386,20 @@ struct BoothPassWorker {
 		// Later on yosys will clean up unused constants
 		//  DebugDumpAlignPP(aligned_pp);
 
-		SigSig wtree_sum = WallaceSum(z_sz, aligned_pp);
+		std::vector<CompressorTree::DepthSig> operands;
+		operands.reserve(aligned_pp.size());
+		for (auto &s : aligned_pp)
+			operands.push_back({s, 0});
+		auto [wtree_a, wtree_b] = CompressorTree::reduce_scheduled(module, std::move(operands), z_sz, CompressorTree::Strategy::FA_ONLY);
 
 		// Debug code: Dump out the csa trees
 		// DumpCSATrees(debug_csa_trees);
 		// Build the CPA to do the final accumulation.
-		log_assert(wtree_sum.second[0] == State::S0);
+		log_assert(wtree_b[0] == State::S0);
 		if (mapped_cpa)
-			BuildCPA(module, wtree_sum.first, {State::S0, wtree_sum.second.extract_end(1)}, Z);
+			BuildCPA(module, wtree_a, wtree_b, Z);
 		else
-			module->addAdd(NEW_ID, wtree_sum.first, {wtree_sum.second.extract_end(1), State::S0}, Z);
+			module->addAdd(NEW_ID, wtree_a, wtree_b, Z);
 	}
 
 	/*
@@ -505,7 +480,7 @@ struct BoothPassWorker {
 		for (auto pp_row : aligned_pp) {
 			printf("PP_%d \t", pp_ix);
 			for (unsigned i = 0; i < pp_row.size(); i++)
-				printf("[%d] %s ", i, pp_row[i] == nullptr ? " 0 " : pp_row[i]->name.c_str());
+				printf("[%d] %s ", i, pp_row[i] == nullptr ? " 0 " : pp_row[i]->name.str().c_str());
 			printf("\n");
 			pp_ix++;
 		}
@@ -529,11 +504,11 @@ struct BoothPassWorker {
 			for (auto pp_wire : get<0>(pp)) {
 				RTLIL::IdString wire_name = pp_wire->name;
 
-				printf(" [%d]:%s ", ix, wire_name.c_str());
+				printf(" [%d]:%s ", ix, module->twines().str(wire_name).c_str());
 				ix++;
 			}
 			printf("\n");
-			printf("\tSign bit to add in: %s\n", sign_bit->name.c_str());
+			printf("\tSign bit to add in: %s\n", sign_bit->name.str().c_str());
 
 			pp_ix++;
 		}
@@ -546,30 +521,30 @@ struct BoothPassWorker {
 			printf("CSA Tree column %d\n", i);
 			int ix = 0;
 			for (auto csa_elem : csa_tree) {
-				printf("\tCell %d  %s type %s\n", ix, csa_elem->name.c_str(), csa_elem->type.c_str());
+				printf("\tCell %d  %s type %s\n", ix, csa_elem->name.str().c_str(), csa_elem->type.str().c_str());
 				if (csa_elem->getPort(ID::A) == State::S0)
 					printf("\tA set to constant 0\n");
 				else if (csa_elem->getPort(ID::A) == State::S1)
 					printf("\tA set to constant 1\n");
 				else
-					printf("\tA driven by %s\n", csa_elem->getPort(ID::A).as_wire()->name.c_str());
+					printf("\tA driven by %s\n", csa_elem->getPort(ID::A).as_wire()->name.str().c_str());
 
 				if (csa_elem->getPort(ID::B) == State::S0)
 					printf("\tB set to constant 0\n");
 				else if (csa_elem->getPort(ID::B) == State::S1)
 					printf("\tB set to constant 1\n");
 				else
-					printf("\tB driven by %s\n", csa_elem->getPort(ID::B).as_wire()->name.c_str());
+					printf("\tB driven by %s\n", csa_elem->getPort(ID::B).as_wire()->name.str().c_str());
 
 				if (csa_elem->getPort(ID::C) == State::S0)
 					printf("\tC set to constant 0\n");
 				else if (csa_elem->getPort(ID::C) == State::S1)
 					printf("\tC set to constant 1\n");
 				else
-					printf("\tC driven by %s\n", csa_elem->getPort(ID::C).as_wire()->name.c_str());
+					printf("\tC driven by %s\n", csa_elem->getPort(ID::C).as_wire()->name.str().c_str());
 
-				printf("Carry out: %s\n", csa_elem->getPort(ID::X).as_wire()->name.c_str());
-				printf("Sum out: %s\n", csa_elem->getPort(ID::Y).as_wire()->name.c_str());
+				printf("Carry out: %s\n", csa_elem->getPort(ID::X).as_wire()->name.str().c_str());
+				printf("Sum out: %s\n", csa_elem->getPort(ID::Y).as_wire()->name.str().c_str());
 
 				ix++;
 			}
@@ -709,7 +684,6 @@ struct BoothPassWorker {
 	*/
 	void BuildCPA(RTLIL::Module *module, SigSpec s_vec, SigSpec c_vec, SigSpec result)
 	{
-		static int cpa_id;
 		cpa_id++;
 
 		log_assert(c_vec.size() == s_vec.size());
@@ -829,7 +803,7 @@ struct BoothPassWorker {
 				c_result = c_wire;
 
 				debug_csa_trees[column_ix].push_back(csa);
-				csa_ix++;				
+				csa_ix++;
 
 				if (var_ix <= column_bits.size() - 1)
 					carry_bits_to_sum.append(c_wire);
@@ -1103,7 +1077,7 @@ struct BoothPassWorker {
 		// 1st row exception: two localized inverters due to sign extension structure
 		SigBit d08_inv = module->NotGate(NEW_ID_SUFFIX("bfa_0_exc_inv1"), PPij[(0 * dec_count) + dec_count - 1]);
 		SigBit d18_inv = module->NotGate(NEW_ID_SUFFIX("bfa_0_exc_inv2"), PPij[(1 * dec_count) + dec_count - 1]);
-		BuildBitwiseFa(module, NEW_ID_SUFFIX("fa_row_0").str(),
+		BuildBitwiseFa(module, module->twines().add(NEW_ID_SUFFIX("fa_row_0")),
 			/* A */ {State::S0, d08_inv, PPij[(0 * dec_count) + x_sz], PPij.extract((0 * dec_count) + 2, x_sz - 1)},
 			/* B */ {State::S1, d18_inv, PPij.extract((1 * dec_count), x_sz)},
 			/* C */ fa_carry[0].extract(1, x_sz + 2),
@@ -1119,7 +1093,7 @@ struct BoothPassWorker {
 			SigBit d_inv = module->NotGate(NEW_ID_SUFFIX(stringf("bfa_se_inv_%d_L", fa_row_ix)),
 						       PPij[((fa_row_ix + 1) * dec_count) + dec_count - 1]);
 
-			BuildBitwiseFa(module, NEW_ID_SUFFIX(stringf("fa_row_%d", fa_row_ix)).str(),
+			BuildBitwiseFa(module, module->twines().add(NEW_ID_SUFFIX(stringf("fa_row_%d", fa_row_ix))),
 				/* A */	{State::S0, fa_carry[fa_row_ix - 1][fa_count - 1], fa_sum[fa_row_ix - 1].extract(2, x_sz + 2)},
 				/* B */ {State::S1, d_inv, PPij.extract((fa_row_ix + 1) * dec_count, x_sz), State::S0, State::S0},
 

@@ -1,0 +1,36 @@
+include(CTest)
+include(GoogleTest)
+
+function(yosys_gtest arg_TARGET)
+	cmake_parse_arguments(PARSE_ARGV 1 arg "" "" "COMPONENTS")
+	set(arg_SOURCES ${arg_UNPARSED_ARGUMENTS})
+
+	set(target "gtest-${arg_TARGET}")
+	add_executable(${target} ${arg_SOURCES} ${CMAKE_CURRENT_FUNCTION_LIST_DIR}/yosysSetupEnv.cc)
+	target_link_libraries(${target} PRIVATE
+		GTest::gmock_main
+		yosys_common
+		$<${YOSYS_ENABLE_PYTHON}:Python3::Python>
+	)
+	yosys_expand_components(test_components essentials ${arg_COMPONENTS})
+	yosys_link_components(${target} PRIVATE ${test_components})
+	add_dependencies(yosys-gtest-all ${target})
+
+	if(NOT CMAKE_CROSSCOMPILING)
+		gtest_discover_tests(${target})
+	endif()
+endfunction()
+
+if (GTest_FOUND)
+	add_custom_target(yosys-gtest-all)
+
+	add_subdirectory(cmds)
+	add_subdirectory(kernel)
+	add_subdirectory(opt)
+	add_subdirectory(techmap)
+	if (YOSYS_ENABLE_VERIFIC)
+		add_subdirectory(verific)
+	endif()
+
+	enable_testing()
+endif()

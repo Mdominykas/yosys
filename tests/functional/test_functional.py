@@ -1,6 +1,6 @@
 import subprocess
 import pytest
-import sys
+import os
 import shlex
 from pathlib import Path
 
@@ -18,13 +18,13 @@ def run(cmd, **kwargs):
     assert status.returncode == 0, f"{cmd[0]} failed"
 
 def yosys(script):
-    run([base_path / 'yosys', '-Q', '-p', script])
+    run([os.environ.get("YOSYS", "../../yosys"), '-Q', '-p', script])
 
 def compile_cpp(in_path, out_path, args):
-    run(['g++', '-g', '-std=c++17'] + args + [str(in_path), '-o', str(out_path)])
+    run(['g++', '-g', '-std=c++20'] + args + [str(in_path), '-o', str(out_path)])
 
 def yosys_synth(verilog_file, rtlil_file):
-    yosys(f"read_verilog {quote(verilog_file)} ; prep ; write_rtlil {quote(rtlil_file)}")
+    yosys(f"read_verilog {quote(verilog_file)} ; prep ; setundef -undriven -undef ; write_rtlil {quote(rtlil_file)}")
 
 # simulate an rtlil file with yosys, comparing with a given vcd file, and writing out the yosys simulation results into a second vcd file
 def yosys_sim(rtlil_file, vcd_reference_file, vcd_out_file, preprocessing = ""):
@@ -35,7 +35,7 @@ def yosys_sim(rtlil_file, vcd_reference_file, vcd_out_file, preprocessing = ""):
         # since yosys sim aborts on simulation mismatch to generate vcd output
         # we have to re-run with a different set of flags
         # on this run we ignore output and return code, we just want a best-effort attempt to get a vcd
-        subprocess.run([base_path / 'yosys', '-Q', '-p',
+        subprocess.run([os.environ.get("YOSYS", "../../yosys"), '-Q', '-p',
             f'read_rtlil {quote(rtlil_file)}; sim -vcd {quote(vcd_out_file)} -a -r {quote(vcd_reference_file)} -scope gold -timescale 1us -fst-noinit'],
             capture_output=True, check=False)
         raise
@@ -74,7 +74,8 @@ def test_smt(cell, parameters, tmp_path, num_steps, rnd):
     yosys_sim(rtlil_file, vcd_functional_file, vcd_yosys_sim_file, getattr(cell, 'sim_preprocessing', ''))
 
 @pytest.mark.rkt
-def test_rkt(cell, parameters, tmp_path, num_steps, rnd):
+@pytest.mark.parametrize("use_assoc_list_helpers", [True, False])
+def test_rkt(cell, parameters, tmp_path, num_steps, rnd, use_assoc_list_helpers):
     import rkt_vcd
 
     rtlil_file = tmp_path / 'rtlil.il'
@@ -83,12 +84,13 @@ def test_rkt(cell, parameters, tmp_path, num_steps, rnd):
     vcd_yosys_sim_file = tmp_path / 'yosys.vcd'
 
     cell.write_rtlil_file(rtlil_file, parameters)
-    yosys(f"read_rtlil {quote(rtlil_file)} ; clk2fflogic ; write_functional_rosette -provides {quote(rkt_file)}")
-    rkt_vcd.simulate_rosette(rkt_file, vcd_functional_file, num_steps, rnd(cell.name + "-rkt"))
+    use_assoc_helpers_flag = '-assoc-list-helpers' if use_assoc_list_helpers else ''
+    yosys(f"read_rtlil {quote(rtlil_file)} ; clk2fflogic ; write_functional_rosette -provides {use_assoc_helpers_flag} {quote(rkt_file)}")
+    rkt_vcd.simulate_rosette(rkt_file, vcd_functional_file, num_steps, rnd(cell.name + "-rkt"), use_assoc_list_helpers=use_assoc_list_helpers)
     yosys_sim(rtlil_file, vcd_functional_file, vcd_yosys_sim_file, getattr(cell, 'sim_preprocessing', ''))
 
 def test_print_graph(tmp_path):
     tb_file = base_path / 'tests/functional/picorv32_tb.v'
     cpu_file = base_path / 'tests/functional/picorv32.v'
     # currently we only check that we can print the graph without getting an error, not that it prints anything sensibl
-    yosys(f"read_verilog {quote(tb_file)} {quote(cpu_file)}; prep -top gold; flatten; clk2fflogic; test_generic")
+    yosys(f"read_verilog {quote(tb_file)} {quote(cpu_file)}; prep -top gold; setundef -undriven -undef ; flatten; clk2fflogic; test_generic")

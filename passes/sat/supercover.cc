@@ -18,6 +18,7 @@
  */
 
 #include "kernel/yosys.h"
+#include "kernel/log_help.h"
 #include "kernel/sigtools.h"
 
 USING_YOSYS_NAMESPACE
@@ -25,6 +26,11 @@ PRIVATE_NAMESPACE_BEGIN
 
 struct SupercoverPass : public Pass {
 	SupercoverPass() : Pass("supercover", "add hi/lo cover cells for each wire bit") { }
+	bool formatted_help() override {
+		auto *help = PrettyHelp::get_current();
+		help->set_group("formal");
+		return false;
+	}
 	void help() override
 	{
 		//   |---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|
@@ -58,7 +64,7 @@ struct SupercoverPass : public Pass {
 			pool<SigBit> handled_bits;
 
 			int cnt_wire = 0, cnt_bits = 0;
-			log("Adding cover cells to module %s.\n", log_id(module));
+			log("Adding cover cells to module %s.\n", module);
 			for (auto wire : module->selected_wires())
 			{
 				bool counted_wire = false;

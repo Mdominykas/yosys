@@ -36,7 +36,7 @@ The main characteristics are:
    all compilers, standard libraries and architectures.
 
 In addition to ``dict<K, T>`` and ``pool<T>`` there is also an ``idict<K>`` that
-creates a bijective map from ``K`` to the integers. For example:
+creates a bijective map from ``K`` to incrementing integers. For example:
 
 ::
 
@@ -45,9 +45,9 @@ creates a bijective map from ``K`` to the integers. For example:
    log("%d\n", si("world"));      // will print 43
    log("%d\n", si.at("world"));   // will print 43
    log("%d\n", si.at("dummy"));   // will throw exception
-   log("%s\n", si[42].c_str()));  // will print hello
-   log("%s\n", si[43].c_str()));  // will print world
-   log("%s\n", si[44].c_str()));  // will throw exception
+   log("%s\n", si[42]));  // will print hello
+   log("%s\n", si[43]));  // will print world
+   log("%s\n", si[44]));  // will throw exception
 
 It is not possible to remove elements from an idict.
 
@@ -114,6 +114,10 @@ many RTLIL data structures like ``RTLIL::Wire`` carry their own unique index
 ``Hasher::hash_t hashidx_;``, there are specializations for ``hash_ops<Wire*>``
 and others in ``kernel/hashlib.h`` that actually dereference the pointers and
 call ``hash_into`` on the instances pointed to.
+The index comes from a counter owned by the ``RTLIL::Design`` the object
+belongs to, so the hashes, and with them the iteration order of hashlib
+containers of RTLIL objects, only depend on the history of that design.
+``design -reset`` restarts the counter.
 
 ``hash_ops<T>`` is also specialized for simple compound types like
 ``std::pair<U>`` by calling hash_into in sequence on its members. For flexible
@@ -138,7 +142,7 @@ Previously, the interface to implement hashing on custom types was just
 independently and then ad-hoc combined with the hash function with some xorshift
 operations thrown in to mix bits together somewhat. A plugin can stay compatible
 with both versions prior and after the break by implementing both interfaces
-based on the existance and value of `YS_HASHING_VERSION`.
+based on the existance and value of ``YS_HASHING_VERSION``.
 
 .. code-block:: cpp
    :caption: Example hash compatibility wrapper

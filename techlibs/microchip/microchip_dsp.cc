@@ -31,22 +31,26 @@ void microchip_dsp_pack(microchip_dsp_pm &pm)
 {
 	auto &st = pm.st_microchip_dsp_pack;
 
-	log("Analysing %s.%s for Microchip MACC_PA packing.\n", log_id(pm.module), log_id(st.dsp));
+	log("Analysing %s.%s for Microchip MACC_PA packing.\n", pm.module, st.dsp);
 
 	Cell *cell = st.dsp;
 	// pack pre-adder
 	if (st.preAdderStatic) {
 		SigSpec &pasub = cell->connections_.at(ID(PASUB));
-		log("  static PASUB preadder %s (%s)\n", log_id(st.preAdderStatic), log_id(st.preAdderStatic->type));
+		log("  static PASUB preadder %s (%s)\n", st.preAdderStatic, st.preAdderStatic->type.unescape());
 		bool D_SIGNED = st.preAdderStatic->getParam(ID::B_SIGNED).as_bool();
 		bool B_SIGNED = st.preAdderStatic->getParam(ID::A_SIGNED).as_bool();
-		st.sigB.extend_u0(18, B_SIGNED);
-		st.sigD.extend_u0(18, D_SIGNED);
+		// The pre-adder inputs, before the A, B and D registers: those are
+		// folded in below, as on the path without a pre-adder.
+		SigSpec B = pm.sigmap(st.preAdderStatic->getPort(ID::A));
+		SigSpec D = pm.sigmap(st.preAdderStatic->getPort(ID::B));
+		B.extend_u0(18, B_SIGNED);
+		D.extend_u0(18, D_SIGNED);
 		if (st.moveBtoA) {
-			cell->setPort(ID::A, st.sigA); // if pre-adder feeds into A, original sigB will be moved to port A
+			cell->setPort(ID::A, pm.sigmap(cell->getPort(ID::B))); // if pre-adder feeds into A, original B will be moved to port A
 		}
-		cell->setPort(ID::B, st.sigB);
-		cell->setPort(ID::D, st.sigD);
+		cell->setPort(ID::B, B);
+		cell->setPort(ID::D, D);
 		// MACC_PA supports both addition and subtraction with the pre-adder.
 		//   Affects the sign of the 'D' port.
 		if (st.preAdderStatic->type == ID($add))
@@ -60,7 +64,7 @@ void microchip_dsp_pack(microchip_dsp_pm &pm)
 	}
 	// pack post-adder
 	if (st.postAdderStatic) {
-		log("  postadder %s (%s)\n", log_id(st.postAdderStatic), log_id(st.postAdderStatic->type));
+		log("  postadder %s (%s)\n", st.postAdderStatic, st.postAdderStatic->type.unescape());
 		SigSpec &sub = cell->connections_.at(ID(SUB));
 		// Post-adder in MACC_PA also supports subtraction
 		//   Determines the sign of the output from the multiplier.
@@ -93,7 +97,7 @@ void microchip_dsp_pack(microchip_dsp_pm &pm)
 
 			if (!A.empty())
 				A.replace(Q, D);
-			if (rstport != IdString()) {
+			if (rstport != IdString::Null) {
 				if (ff->type.in(ID($sdff), ID($sdffe))) {
 					SigSpec srst = ff->getPort(ID::SRST);
 					bool rstpol_n = !ff->getParam(ID::SRST_POLARITY).as_bool();
@@ -121,16 +125,6 @@ void microchip_dsp_pack(microchip_dsp_pm &pm)
 
 			// bypass set to 0
 			cell->setPort(bypass, State::S0);
-
-			for (auto c : Q.chunks()) {
-				auto it = c.wire->attributes.find(ID::init);
-				if (it == c.wire->attributes.end())
-					continue;
-				for (int i = c.offset; i < c.offset + c.width; i++) {
-					log_assert(it->second[i] == State::S0 || it->second[i] == State::Sx);
-					it->second.bits()[i] = State::Sx;
-				}
-			}
 		};
 
 		// NOTE: flops are not autoremoved because it is possible that they
@@ -165,19 +159,28 @@ void microchip_dsp_pack(microchip_dsp_pm &pm)
 		if (st.ffP) {
 			SigSpec P; // unused
 			f(P, st.ffP, ID(P_EN), ID(P_SRST_N), ID(P_BYPASS));
+			// The DSP drives these bits now and powers up as 0. Input
+			// registers keep their init: their FF stays in the fabric.
+			for (auto bit : st.sigP) {
+				auto it = bit.wire->attributes.find(ID::init);
+				if (it == bit.wire->attributes.end())
+					continue;
+				log_assert(it->second[bit.offset] == State::S0 || it->second[bit.offset] == State::Sx);
+				it->second.set(bit.offset, State::Sx);
+			}
 			st.ffP->connections_.at(ID::Q).replace(st.sigP, pm.module->addWire(NEW_ID, GetSize(st.sigP)));
 		}
 
 		log("  clock: %s (%s)\n", log_signal(st.clock), "posedge");
 
 		if (st.ffA)
-			log(" \t ffA:%s\n", log_id(st.ffA));
+			log("  ffA:%s\n", st.ffA);
 		if (st.ffB)
-			log(" \t ffB:%s\n", log_id(st.ffB));
+			log("  ffB:%s\n", st.ffB);
 		if (st.ffD)
-			log(" \t ffD:%s\n", log_id(st.ffD));
+			log("  ffD:%s\n", st.ffD);
 		if (st.ffP)
-			log(" \t ffP:%s\n", log_id(st.ffP));
+			log("  ffP:%s\n", st.ffP);
 	}
 	log("\n");
 
@@ -194,8 +197,8 @@ void microchip_dsp_packC(microchip_dsp_CREG_pm &pm)
 {
 	auto &st = pm.st_microchip_dsp_packC;
 
-	log_debug("Analysing %s.%s for Microchip DSP packing (REG_C).\n", log_id(pm.module), log_id(st.dsp));
-	log_debug("ffC:        %s\n", log_id(st.ffC, "--"));
+	log_debug("Analysing %s.%s for Microchip DSP packing (REG_C).\n", pm.module, st.dsp);
+	log_debug("ffC:        %s\n", st.ffC ? st.ffC->name.unescape() : "--");
 
 	Cell *cell = st.dsp;
 
@@ -209,7 +212,7 @@ void microchip_dsp_packC(microchip_dsp_CREG_pm &pm)
 			SigSpec Q = pm.sigmap(ff->getPort(ID::Q));
 			if (!A.empty())
 				A.replace(Q, D);
-			if (rstport != IdString()) {
+			if (rstport != IdString::Null) {
 				if (ff->type.in(ID($sdff), ID($sdffe))) {
 					SigSpec srst = ff->getPort(ID::SRST);
 					bool rstpol_n = !ff->getParam(ID::SRST_POLARITY).as_bool();
@@ -237,16 +240,6 @@ void microchip_dsp_packC(microchip_dsp_CREG_pm &pm)
 
 			// bypass set to 0
 			cell->setPort(bypass, State::S0);
-
-			for (auto c : Q.chunks()) {
-				auto it = c.wire->attributes.find(ID::init);
-				if (it == c.wire->attributes.end())
-					continue;
-				for (int i = c.offset; i < c.offset + c.width; i++) {
-					log_assert(it->second[i] == State::S0 || it->second[i] == State::Sx);
-					it->second.bits()[i] = State::Sx;
-				}
-			}
 		};
 
 		if (st.ffC) {
@@ -261,10 +254,10 @@ void microchip_dsp_packC(microchip_dsp_CREG_pm &pm)
 			cell->setPort(ID::C, C);
 		}
 
-		log("  clock: %s (%s)", log_signal(st.clock), "posedge");
+		log("  clock: %s (%s)\n", log_signal(st.clock), "posedge");
 
 		if (st.ffC)
-			log(" ffC:%s", log_id(st.ffC));
+			log(" ffC:%s\n", st.ffC);
 		log("\n");
 	}
 

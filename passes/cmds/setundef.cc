@@ -39,9 +39,11 @@ static RTLIL::Wire * add_wire(RTLIL::Module *module, std::string name, int width
 	RTLIL::Wire *wire = NULL;
 	name = RTLIL::escape_id(name);
 
-	if (module->count_id(name) != 0)
+	IdString t = module->twines().add(name);
+
+	if (module->count_id(t) != 0)
 	{
-		log("Module %s already has such an object %s.\n", module->name.c_str(), name.c_str());
+		log("Module %s already has such an object %s.\n", module->name, name);
 		name += "$";
 		return add_wire(module, name, width, flag_input, flag_output);
 	}
@@ -56,7 +58,7 @@ static RTLIL::Wire * add_wire(RTLIL::Module *module, std::string name, int width
 			module->fixup_ports();
 		}
 
-		log("Added wire %s to module %s.\n", name.c_str(), module->name.c_str());
+		log("Added wire %s to module %s.\n", name, module->name);
 	}
 
 	return wire;
@@ -243,7 +245,7 @@ struct SetundefPass : public Pass {
 			{
 				for (auto *cell : module->selected_cells()) {
 					for (auto &parameter : cell->parameters) {
-						for (auto &bit : parameter.second.bits()) {
+						for (auto bit : parameter.second) {
 							if (bit > RTLIL::State::S1)
 								bit = worker.next_bit();
 						}
@@ -310,6 +312,8 @@ struct SetundefPass : public Pass {
 
 					RTLIL::SigSpec sig = undriven_signals.export_all();
 					for (auto &c : sig.chunks()) {
+						if (!design->selected(module, c.wire))
+							continue;
 						RTLIL::Wire * wire;
 						if (c.wire->width == c.width) {
 							wire = c.wire;
@@ -319,7 +323,7 @@ struct SetundefPass : public Pass {
 							wire = add_wire(module, name, c.width, true, false);
 							module->connect(RTLIL::SigSig(c, wire));
 						}
-						log("Exposing undriven wire %s as input.\n", wire->name.c_str());
+						log("Exposing undriven wire %s as input.\n", wire->name);
 					}
 					module->fixup_ports();
 				}
@@ -328,12 +332,12 @@ struct SetundefPass : public Pass {
 					SigMap sigmap(module);
 					SigPool undriven_signals;
 
-					for (auto &it : module->wires_)
-						undriven_signals.add(sigmap(it.second));
+					for (auto wire : module->selected_wires())
+						undriven_signals.add(sigmap(wire));
 
-					for (auto &it : module->wires_)
-						if (it.second->port_input)
-							undriven_signals.del(sigmap(it.second));
+					for (auto wire : module->selected_wires())
+						if (wire->port_input)
+							undriven_signals.del(sigmap(wire));
 
 					CellTypes ct(design);
 					for (auto &it : module->cells_)
@@ -364,7 +368,15 @@ struct SetundefPass : public Pass {
 
 				for (auto cell : module->cells())
 				{
-					if (!RTLIL::builtin_ff_cell_types().count(cell->type))
+					if (!cell->is_builtin_ff())
+						continue;
+
+					bool cell_selected = design->selected(module, cell);
+   	 			bool wire_selected = false;
+					for (auto bit : sigmap(cell->getPort(ID::Q)))
+						if (bit.wire && design->selected(module, bit.wire))
+							wire_selected = true;
+					if (!cell_selected && !wire_selected)
 						continue;
 
 					for (auto bit : sigmap(cell->getPort(ID::Q)))
@@ -390,12 +402,12 @@ struct SetundefPass : public Pass {
 					for (auto wire : initwires)
 					{
 						Const &initval = wire->attributes[ID::init];
-						initval.bits().resize(GetSize(wire), State::Sx);
+						initval.resize(GetSize(wire), State::Sx);
 
 						for (int i = 0; i < GetSize(wire); i++) {
 							SigBit bit = sigmap(SigBit(wire, i));
 							if (initval[i] == State::Sx && ffbits.count(bit)) {
-								initval.bits()[i] = worker.next_bit();
+								initval.set(i, worker.next_bit());
 								ffbits.erase(bit);
 							}
 						}
@@ -414,14 +426,14 @@ struct SetundefPass : public Pass {
 					{
 						for (auto wire : module->wires())
 						{
-							if (wire->name[0] == (wire_types ? '\\' : '$'))
+							if (wire->name.isPublic() == wire_types)
 								continue;
 
 							if (!wire->attributes.count(ID::init))
 								continue;
 
 							Const &initval = wire->attributes[ID::init];
-							initval.bits().resize(GetSize(wire), State::Sx);
+							initval.resize(GetSize(wire), State::Sx);
 
 							if (initval.is_fully_undef()) {
 								wire->attributes.erase(ID::init);
@@ -443,7 +455,7 @@ struct SetundefPass : public Pass {
 					{
 						for (auto wire : module->wires())
 						{
-							if (wire->name[0] == (wire_types ? '\\' : '$'))
+							if (wire->name.isPublic() == wire_types)
 								continue;
 
 							for (auto bit : sigmap(wire))
@@ -464,7 +476,7 @@ struct SetundefPass : public Pass {
 					{
 						for (auto wire : module->wires())
 						{
-							if (wire->name[0] == (wire_types ? '\\' : '$'))
+							if (wire->name.isPublic() == wire_types)
 								continue;
 
 							for (auto bit : sigmap(wire))
@@ -502,14 +514,21 @@ struct SetundefPass : public Pass {
 				}
 			}
 
-			for (auto &it : module->cells_)
-				if (!it.second->get_bool_attribute(ID::xprop_decoder))
-					it.second->rewrite_sigspecs(worker);
-			for (auto &it : module->processes)
-				it.second->rewrite_sigspecs(worker);
+			for (auto cell : module->selected_cells())
+				if (!cell->get_bool_attribute(ID::xprop_decoder))
+					cell->rewrite_sigspecs(worker);
+			for (auto proc : module->selected_processes())
+				proc->rewrite_sigspecs(worker);
 			for (auto &it : module->connections_) {
-				worker(it.first);
-				worker(it.second);
+				SigSpec lhs = it.first;
+				bool selected = false;
+				for (auto &chunk : lhs.chunks())
+					if (chunk.wire && module->design->selected(module, chunk.wire))
+						selected = true;
+				if (selected) {
+					worker(it.first);
+					worker(it.second);
+				}
 			}
 
 			if (worker.next_bit_mode == MODE_ANYSEQ || worker.next_bit_mode == MODE_ANYCONST)

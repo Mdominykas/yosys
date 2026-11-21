@@ -18,6 +18,7 @@
  */
 
 #include "kernel/yosys.h"
+#include "kernel/log_help.h"
 #include "kernel/sigtools.h"
 #include "kernel/ffinit.h"
 #include "kernel/ff.h"
@@ -27,6 +28,11 @@ PRIVATE_NAMESPACE_BEGIN
 
 struct Async2syncPass : public Pass {
 	Async2syncPass() : Pass("async2sync", "convert async FF inputs to sync circuits") { }
+	bool formatted_help() override {
+		auto *help = PrettyHelp::get_current();
+		help->set_group("formal");
+		return false;
+	}
 	void help() override
 	{
 		//   |---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|
@@ -85,7 +91,7 @@ struct Async2syncPass : public Pass {
 					int trg_width = cell->getParam(ID(TRG_WIDTH)).as_int();
 
 					if (trg_width > 1)
-						log_error("$check cell %s with TRG_WIDTH > 1 is not support by async2sync, use clk2fflogic.\n", log_id(cell));
+						log_error("$check cell %s with TRG_WIDTH > 1 is not support by async2sync, use clk2fflogic.\n", cell);
 
 					if (trg_width == 0) {
 						if (initstate == State::S0)
@@ -123,7 +129,7 @@ struct Async2syncPass : public Pass {
 					continue;
 				}
 
-				if (!RTLIL::builtin_ff_cell_types().count(cell->type))
+				if (!cell->is_builtin_ff())
 					continue;
 
 				FfData ff(&initvals, cell);
@@ -141,7 +147,7 @@ struct Async2syncPass : public Pass {
 						ff.unmap_ce_srst();
 
 						log("Replacing %s.%s (%s): SET=%s, CLR=%s, D=%s, Q=%s\n",
-								log_id(module), log_id(cell), log_id(cell->type),
+								module, cell, cell->type.unescape(),
 								log_signal(ff.sig_set), log_signal(ff.sig_clr), log_signal(ff.sig_d), log_signal(ff.sig_q));
 
 						initvals.remove_init(ff.sig_q);
@@ -151,6 +157,7 @@ struct Async2syncPass : public Pass {
 
 						SigSpec sig_set = ff.sig_set;
 						SigSpec sig_clr = ff.sig_clr;
+						SigSpec sig_clr_inv = ff.sig_clr;
 
 						if (!ff.pol_set) {
 							if (!ff.is_fine)
@@ -161,23 +168,41 @@ struct Async2syncPass : public Pass {
 
 						if (ff.pol_clr) {
 							if (!ff.is_fine)
+								sig_clr_inv = module->Not(NEW_ID, sig_clr);
+							else
+								sig_clr_inv = module->NotGate(NEW_ID, sig_clr);
+						} else {
+							if (!ff.is_fine)
 								sig_clr = module->Not(NEW_ID, sig_clr);
 							else
 								sig_clr = module->NotGate(NEW_ID, sig_clr);
 						}
 
+						// At this point, sig_set and sig_clr are now unconditionally
+						// active-high, and sig_clr_inv is inverted sig_clr
+
+						SigSpec set_and_clr;
+						if (!ff.is_fine)
+							set_and_clr = module->And(NEW_ID, sig_set, sig_clr);
+						else
+							set_and_clr = module->AndGate(NEW_ID, sig_set, sig_clr);
+
 						if (!ff.is_fine) {
 							SigSpec tmp = module->Or(NEW_ID, ff.sig_d, sig_set);
-							module->addAnd(NEW_ID, tmp, sig_clr, new_d);
+							tmp = module->And(NEW_ID, tmp, sig_clr_inv);
+							module->addBwmux(NEW_ID, tmp, Const(State::Sx, ff.width), set_and_clr, new_d);
 
 							tmp = module->Or(NEW_ID, new_q, sig_set);
-							module->addAnd(NEW_ID, tmp, sig_clr, ff.sig_q);
+							tmp = module->And(NEW_ID, tmp, sig_clr_inv);
+							module->addBwmux(NEW_ID, tmp, Const(State::Sx, ff.width), set_and_clr, ff.sig_q);
 						} else {
 							SigSpec tmp = module->OrGate(NEW_ID, ff.sig_d, sig_set);
-							module->addAndGate(NEW_ID, tmp, sig_clr, new_d);
+							tmp = module->AndGate(NEW_ID, tmp, sig_clr_inv);
+							module->addMuxGate(NEW_ID, tmp, State::Sx, set_and_clr, new_d);
 
 							tmp = module->OrGate(NEW_ID, new_q, sig_set);
-							module->addAndGate(NEW_ID, tmp, sig_clr, ff.sig_q);
+							tmp = module->AndGate(NEW_ID, tmp, sig_clr_inv);
+							module->addMuxGate(NEW_ID, tmp, State::Sx, set_and_clr, ff.sig_q);
 						}
 
 						ff.sig_d = new_d;
@@ -187,7 +212,7 @@ struct Async2syncPass : public Pass {
 						ff.unmap_ce_srst();
 
 						log("Replacing %s.%s (%s): ALOAD=%s, AD=%s, D=%s, Q=%s\n",
-								log_id(module), log_id(cell), log_id(cell->type),
+								module, cell, cell->type,
 								log_signal(ff.sig_aload), log_signal(ff.sig_ad), log_signal(ff.sig_d), log_signal(ff.sig_q));
 
 						initvals.remove_init(ff.sig_q);
@@ -220,7 +245,7 @@ struct Async2syncPass : public Pass {
 						ff.unmap_srst();
 
 						log("Replacing %s.%s (%s): ARST=%s, D=%s, Q=%s\n",
-								log_id(module), log_id(cell), log_id(cell->type),
+								module, cell, cell->type.unescape(),
 								log_signal(ff.sig_arst), log_signal(ff.sig_d), log_signal(ff.sig_q));
 
 						initvals.remove_init(ff.sig_q);
@@ -254,29 +279,26 @@ struct Async2syncPass : public Pass {
 				{
 					// Latch.
 					log("Replacing %s.%s (%s): EN=%s, D=%s, Q=%s\n",
-							log_id(module), log_id(cell), log_id(cell->type),
+							module, cell, cell->type.unescape(),
 							log_signal(ff.sig_aload), log_signal(ff.sig_ad), log_signal(ff.sig_q));
 
 					initvals.remove_init(ff.sig_q);
 
 					Wire *new_q = module->addWire(NEW_ID, ff.width);
-					Wire *new_d;
+					SigSpec new_d = new_q;
 
 					if (ff.has_aload) {
-						new_d = module->addWire(NEW_ID, ff.width);
 						if (ff.pol_aload) {
 							if (!ff.is_fine)
-								module->addMux(NEW_ID, new_q, ff.sig_ad, ff.sig_aload, new_d);
+								new_d = module->Mux(NEW_ID, new_q, ff.sig_ad, ff.sig_aload);
 							else
-								module->addMuxGate(NEW_ID, new_q, ff.sig_ad, ff.sig_aload, new_d);
+								new_d = module->MuxGate(NEW_ID, new_q, ff.sig_ad, ff.sig_aload);
 						} else {
 							if (!ff.is_fine)
-								module->addMux(NEW_ID, ff.sig_ad, new_q, ff.sig_aload, new_d);
+								new_d = module->Mux(NEW_ID, ff.sig_ad, new_q, ff.sig_aload);
 							else
-								module->addMuxGate(NEW_ID, ff.sig_ad, new_q, ff.sig_aload, new_d);
+								new_d = module->MuxGate(NEW_ID, ff.sig_ad, new_q, ff.sig_aload);
 						}
-					} else {
-						new_d = new_q;
 					}
 
 					if (ff.has_sr) {
@@ -299,27 +321,26 @@ struct Async2syncPass : public Pass {
 
 						if (!ff.is_fine) {
 							SigSpec tmp = module->Or(NEW_ID, new_d, sig_set);
-							module->addAnd(NEW_ID, tmp, sig_clr, ff.sig_q);
+							new_d = module->And(NEW_ID, tmp, sig_clr);
 						} else {
 							SigSpec tmp = module->OrGate(NEW_ID, new_d, sig_set);
-							module->addAndGate(NEW_ID, tmp, sig_clr, ff.sig_q);
+							new_d = module->AndGate(NEW_ID, tmp, sig_clr);
 						}
 					} else if (ff.has_arst) {
 						if (ff.pol_arst) {
 							if (!ff.is_fine)
-								module->addMux(NEW_ID, new_d, ff.val_arst, ff.sig_arst, ff.sig_q);
+								new_d = module->Mux(NEW_ID, new_d, ff.val_arst, ff.sig_arst);
 							else
-								module->addMuxGate(NEW_ID, new_d, ff.val_arst[0], ff.sig_arst, ff.sig_q);
+								new_d = module->MuxGate(NEW_ID, new_d, ff.val_arst[0], ff.sig_arst);
 						} else {
 							if (!ff.is_fine)
-								module->addMux(NEW_ID, ff.val_arst, new_d, ff.sig_arst, ff.sig_q);
+								new_d = module->Mux(NEW_ID, ff.val_arst, new_d, ff.sig_arst);
 							else
-								module->addMuxGate(NEW_ID, ff.val_arst[0], new_d, ff.sig_arst, ff.sig_q);
+								new_d = module->MuxGate(NEW_ID, ff.val_arst[0], new_d, ff.sig_arst);
 						}
-					} else {
-						module->connect(ff.sig_q, new_d);
 					}
 
+					module->connect(ff.sig_q, new_d);
 					ff.sig_d = new_d;
 					ff.sig_q = new_q;
 					ff.has_aload = false;

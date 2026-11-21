@@ -29,6 +29,19 @@ struct SynthGateMatePass : public ScriptPass
 {
 	SynthGateMatePass() : ScriptPass("synth_gatemate", "synthesis for Cologne Chip GateMate FPGAs") { }
 
+	void on_register() override
+	{
+		target_register.emplace("gatemate", Target{
+			"Cologne Chip GateMate",
+			{
+				{"", { // default
+					"",
+					{"+/gatemate/cells_sim.v", "+/gatemate/cells_bb.v"}
+				}}
+			}
+		});
+	}
+
 	void help() override
 	{
 		//   |---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|
@@ -56,6 +69,9 @@ struct SynthGateMatePass : public ScriptPass
 		log("    -noflatten\n");
 		log("        do not flatten design before synthesis.\n");
 		log("\n");
+		log("    -scopename\n");
+		log("        create 'scopename' attributes when flattening the netlist.\n");
+		log("\n");
 		log("    -nobram\n");
 		log("        do not use CC_BRAM_20K or CC_BRAM_40K cells in output netlist.\n");
 		log("\n");
@@ -69,13 +85,14 @@ struct SynthGateMatePass : public ScriptPass
 		log("        do not use CC_MX{8,4} multiplexer cells in output netlist.\n");
 		log("\n");
 		log("    -luttree\n");
-		log("        use new LUT tree mapping approach (EXPERIMENTAL).\n");
+		log("        use LUT tree mapping for output to nextpnr. Do not use this if targeting\n");
+		log("        legacy p_r.\n");
 		log("\n");
 		log("    -dff\n");
-		log("        run 'abc' with -dff option\n");
+		log("        run 'abc9' with -dff option\n");
 		log("\n");
-		log("    -retime\n");
-		log("        run 'abc' with '-dff -D 1' options\n");
+		log("    -abc_new\n");
+		log("        use 'abc_new' instead of 'abc -genlib' for mapping. (EXPERIMENTAL)\n");
 		log("\n");
 		log("    -noiopad\n");
 		log("        disable I/O buffer insertion (useful for hierarchical or \n");
@@ -90,7 +107,7 @@ struct SynthGateMatePass : public ScriptPass
 	}
 
 	string top_opt, vlog_file, json_file;
-	bool noflatten, nobram, noaddf, nomult, nomx4, nomx8, luttree, dff, retime, noiopad, noclkbuf;
+	bool noflatten, scopename, nobram, noaddf, nomult, nomx4, nomx8, luttree, dff, noiopad, noclkbuf, abc_new;
 
 	void clear_flags() override
 	{
@@ -98,6 +115,7 @@ struct SynthGateMatePass : public ScriptPass
 		vlog_file = "";
 		json_file = "";
 		noflatten = false;
+		scopename = false;
 		nobram = false;
 		noaddf = false;
 		nomult = false;
@@ -105,9 +123,9 @@ struct SynthGateMatePass : public ScriptPass
 		nomx8 = false;
 		luttree = false;
 		dff = false;
-		retime = false;
 		noiopad = false;
 		noclkbuf = false;
+		abc_new = false;
 	}
 
 	void execute(std::vector<std::string> args, RTLIL::Design *design) override
@@ -142,6 +160,10 @@ struct SynthGateMatePass : public ScriptPass
 				noflatten = true;
 				continue;
 			}
+			if (args[argidx] == "-scopename") {
+				scopename = true;
+				continue;
+			}
 			if (args[argidx] == "-nobram") {
 				nobram = true;
 				continue;
@@ -171,7 +193,7 @@ struct SynthGateMatePass : public ScriptPass
 				continue;
 			}
 			if (args[argidx] == "-retime") {
-				retime = true;
+				// Removed
 				continue;
 			}
 			if (args[argidx] == "-noiopad") {
@@ -180,6 +202,10 @@ struct SynthGateMatePass : public ScriptPass
 			}
 			if (args[argidx] == "-noclkbuf") {
 				noclkbuf = true;
+				continue;
+			}
+			if (args[argidx] == "-abc_new") {
+				abc_new = true;
 				continue;
 			}
 			break;
@@ -203,20 +229,22 @@ struct SynthGateMatePass : public ScriptPass
 		if (check_label("begin"))
 		{
 			run("read_verilog -lib -specify +/gatemate/cells_sim.v +/gatemate/cells_bb.v");
-			run(stringf("hierarchy -check %s", help_mode ? "-top <top>" : top_opt.c_str()));
+			run(stringf("hierarchy -check %s", help_mode ? "-top <top>" : top_opt));
 		}
 
 		if (check_label("prepare"))
 		{
 			run("proc");
 			if (!noflatten) {
-				run("flatten");
+				run("check");
+				std::string flatten_args = scopename ? " -scopename" : "";
+				run("flatten" + flatten_args);
 			}
 			run("tribuf -logic");
 			run("deminout");
 			run("opt_expr");
-			run("opt_clean");
 			run("check");
+			run("opt_clean");
 			run("opt -nodffe -nosdff");
 			run("fsm");
 			run("opt");
@@ -264,9 +292,6 @@ struct SynthGateMatePass : public ScriptPass
 			}
 			run("techmap -map +/techmap.v " + techmap_args);
 			run("opt -fast");
-			if (retime) {
-				run("abc -dff -D 1", "(only if -retime)");
-			}
 		}
 
 		if (check_label("map_io", "(skip if '-noiopad')") && !noiopad)
@@ -275,7 +300,7 @@ struct SynthGateMatePass : public ScriptPass
 				"-inpad CC_IBUF Y:I "
 				"-outpad CC_OBUF A:O "
 				"-toutpad CC_TOBUF ~T:A:O "
-				"-tinoutpad CC_IOBUF ~T:Y:A:IO"
+				"-tinoutpad CC_IOBUF ~T:Y:A:IO A:top"
 			);
 			run("clean");
 		}
@@ -312,17 +337,22 @@ struct SynthGateMatePass : public ScriptPass
 				if (dff) {
 					abc_args += " -dff";
 				}
-				run("abc " + abc_args, "(with -luttree)");
+				if (abc_new) {
+					run("abc_new " + abc_args, "(with -luttree and -abc_new)");
+					run("scratchpad -unset abc9.script");
+				} else {
+					run("abc " + abc_args, "(with -luttree, without -abc_new)");
+				}
 				run("techmap -map +/gatemate/lut_tree_map.v", "(with -luttree)");
 				run("gatemate_foldinv", "(with -luttree)");
 				run("techmap -map +/gatemate/inv_map.v", "(with -luttree)");
 			}
 			if (!luttree || help_mode) {
-				std::string abc_args = " -dress -lut 4";
+				std::string abc_args = " -lut 4";
 				if (dff) {
 					abc_args += " -dff";
 				}
-				run("abc " + abc_args, "(without -luttree)");
+				run("abc9 " + abc_args, "(without -luttree)");
 			}
 			run("clean");
 		}
@@ -351,14 +381,14 @@ struct SynthGateMatePass : public ScriptPass
 		{
 			run("opt_clean -purge");
 			if (!vlog_file.empty() || help_mode) {
-				run(stringf("write_verilog -noattr %s", help_mode ? "<file-name>" : vlog_file.c_str()));
+				run(stringf("write_verilog -noattr %s", help_mode ? "<file-name>" : vlog_file));
 			}
 		}
 
 		if (check_label("json"))
 		{
 			if (!json_file.empty() || help_mode) {
-				run(stringf("write_json %s", help_mode ? "<file-name>" : json_file.c_str()));
+				run(stringf("write_json %s", help_mode ? "<file-name>" : json_file));
 			}
 		}
 	}

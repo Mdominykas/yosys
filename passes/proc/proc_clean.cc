@@ -97,6 +97,7 @@ void proc_clean_switch(RTLIL::SwitchRule *sw, RTLIL::CaseRule *parent, bool &did
 					all_empty = false;
 			if (all_empty)
 			{
+				did_something = true;
 				for (auto cs : sw->cases)
 					delete cs;
 				sw->cases.clear();
@@ -171,7 +172,7 @@ void proc_clean(RTLIL::Module *mod, RTLIL::Process *proc, int &total_count, bool
 		proc_clean_case(&proc->root_case, did_something, count, -1);
 	}
 	if (count > 0 && !quiet)
-		log("Found and cleaned up %d empty switch%s in `%s.%s'.\n", count, count == 1 ? "" : "es", mod->name.c_str(), proc->name.c_str());
+		log("Found and cleaned up %d empty switch%s in `%s.%s'.\n", count, count == 1 ? "" : "es", mod->name, proc->name);
 	total_count += count;
 }
 
@@ -215,7 +216,7 @@ struct ProcCleanPass : public Pass {
 				if (proc->syncs.size() == 0 && proc->root_case.switches.size() == 0 &&
 						proc->root_case.actions.size() == 0) {
 					if (!quiet)
-						log("Removing empty process `%s.%s'.\n", log_id(mod), proc->name.c_str());
+						log("Removing empty process `%s.%s'.\n", mod, proc->name);
 					delme.push_back(proc);
 				}
 			}

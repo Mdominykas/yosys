@@ -10,7 +10,7 @@ other commands:
    :start-after: #end:
    :caption: Passes called by `fsm`
 
-See also :doc:`/cmd/fsm`.
+See also :doc:`/cmd/index_passes_fsm`.
 
 The algorithms used for FSM detection and extraction are influenced by a more
 general reported technique :cite:p:`fsmextract`.
@@ -92,7 +92,7 @@ transition table. For each state:
 3. Set the state signal to the current state
 4. Try to evaluate the next state and control output
 5. If step 4 was not successful:
-   
+
    -  Recursively goto step 4 with the offending stop-signal set to 0.
    -  Recursively goto step 4 with the offending stop-signal set to 1.
 
@@ -108,9 +108,7 @@ FSM optimization
 The `fsm_opt` pass performs basic optimizations on `$fsm` cells (not including
 state recoding). The following optimizations are performed (in this order):
 
--  Unused control outputs are removed from the `$fsm` cell. The attribute
-   ``unused_bits`` (that is usually set by the `opt_clean` pass) is used to
-   determine which control outputs are unused.
+-  Unused control outputs are removed from the `$fsm` cell.
 
 -  Control inputs that are connected to the same driver are merged.
 

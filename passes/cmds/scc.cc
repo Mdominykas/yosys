@@ -21,12 +21,10 @@
 // Tarjan, R. E. (1972), "Depth-first search and linear graph algorithms", SIAM Journal on Computing 1 (2): 146-160, doi:10.1137/0201010
 // http://en.wikipedia.org/wiki/Tarjan's_strongly_connected_components_algorithm
 
-#include "kernel/register.h"
+#include "kernel/yosys.h"
 #include "kernel/celltypes.h"
 #include "kernel/sigtools.h"
-#include "kernel/log.h"
-#include <stdlib.h>
-#include <stdio.h>
+#include "kernel/log_help.h"
 
 USING_YOSYS_NAMESPACE
 PRIVATE_NAMESPACE_BEGIN
@@ -83,18 +81,18 @@ struct SccWorker
 			}
 			else
 			{
-				log("Found an SCC:");
+				std::string message = "Found an SCC:";
 				pool<RTLIL::Cell*> scc;
 				while (cellsOnStack.count(cell) > 0) {
 					RTLIL::Cell *c = cellStack.back();
 					cellStack.pop_back();
 					cellsOnStack.erase(c);
-					log(" %s", RTLIL::id2cstr(c->name));
+					message += stringf(" %s", c);
 					cell2scc[c] = sccList.size();
 					scc.insert(c);
 				}
 				sccList.push_back(scc);
-				log("\n");
+				log("%s\n", message);
 			}
 		}
 	}
@@ -103,7 +101,7 @@ struct SccWorker
 			design(design), module(module), sigmap(module)
 	{
 		if (module->processes.size() > 0) {
-			log("Skipping module %s as it contains processes (run 'proc' pass first).\n", module->name.c_str());
+			log("Skipping module %s as it contains processes (run 'proc' pass first).\n", module->name);
 			return;
 		}
 
@@ -201,13 +199,13 @@ struct SccWorker
 			sigToNextCells.find(cellToNextSig[cell], cellToNextCell[cell]);
 
 			if (!nofeedbackMode && cellToNextCell[cell].count(cell)) {
-				log("Found an SCC:");
+				std::string message = "Found an SCC:";
 				pool<RTLIL::Cell*> scc;
-				log(" %s", RTLIL::id2cstr(cell->name));
+				message += stringf(" %s", cell);
 				cell2scc[cell] = sccList.size();
 				scc.insert(cell);
 				sccList.push_back(scc);
-				log("\n");
+				log("%s\n", message);
 			}
 		}
 
@@ -223,7 +221,7 @@ struct SccWorker
 			run(cell, 0, maxDepth);
 		}
 
-		log("Found %d SCCs in module %s.\n", int(sccList.size()), RTLIL::id2cstr(module->name));
+		log("Found %d SCCs in module %s.\n", int(sccList.size()), module);
 	}
 
 	void select(RTLIL::Selection &sel)
@@ -252,6 +250,11 @@ struct SccWorker
 
 struct SccPass : public Pass {
 	SccPass() : Pass("scc", "detect strongly connected components (logic loops)") { }
+	bool formatted_help() override {
+		auto *help = PrettyHelp::get_current();
+		help->set_group("passes/status");
+		return false;
+	}
 	void help() override
 	{
 		//   |---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|
@@ -353,7 +356,7 @@ struct SccPass : public Pass {
 				{
 					for (auto attr : setAttr)
 					{
-						IdString attr_name(RTLIL::escape_id(attr.first));
+						IdString attr_name = design->twines().add(RTLIL::escape_id(attr.first));
 						string attr_valstr = attr.second;
 						string index = stringf("%d", scc_counter);
 

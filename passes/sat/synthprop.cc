@@ -18,7 +18,9 @@
  *  OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  *
  */
+
 #include "kernel/yosys.h"
+#include "kernel/log_help.h"
 
 YOSYS_NAMESPACE_BEGIN
 
@@ -35,8 +37,6 @@ struct SynthPropWorker
 	// pointer to main design
 	RTLIL::Design *design;
 
-	RTLIL::IdString top_name;
-
 	RTLIL::Module *module;
 
 	std::string map_file;
@@ -50,7 +50,7 @@ struct SynthPropWorker
 	bool reset_pol;
 
 	// basic contrcutor
-	SynthPropWorker(RTLIL::Design *design) : design(design), or_outputs(false), port_name(RTLIL::escape_id("assertions")) {}
+	SynthPropWorker(RTLIL::Design *design) : design(design), or_outputs(false), port_name(design->twines().add("\\assertions")) {}
 
 	void tracing(RTLIL::Module *mod, int depth, TrackingData &tracing_data, std::string hier_path);
 	void run();
@@ -58,20 +58,20 @@ struct SynthPropWorker
 
 void SynthPropWorker::tracing(RTLIL::Module *mod, int depth, TrackingData &tracing_data, std::string hier_path)
 {
-	log("%*sTracing in module %s..\n", 2*depth, "", log_id(mod));
+	log("%*sTracing in module %s..\n", 2*depth, "", mod);
 	tracing_data[mod] = TrackingItem();
 	int cnt = 0;
 	for (auto cell : mod->cells()) {
 		if (cell->type == ID($assert)) {
-			log("%*sFound assert %s..\n", 2*(depth+1), "", log_id(cell));
+			log("%*sFound assert %s..\n", 2*(depth+1), "", cell);
 			tracing_data[mod].assertion_cells.emplace(cell);
 			if (!or_outputs) {
-				tracing_data[mod].names.push_back(hier_path + "." + log_id(cell));
+				tracing_data[mod].names.push_back(hier_path + "." + cell->name.unescape());
 			}
 			cnt++;
 		}
 		else if (RTLIL::Module *submod = design->module(cell->type)) {
-			tracing(submod, depth+1, tracing_data, hier_path + "." + log_id(cell));
+			tracing(submod, depth+1, tracing_data, hier_path + "." + cell->name.unescape());
 			if (!or_outputs) {
 				for (size_t i = 0; i < tracing_data[submod].names.size(); i++)
 					tracing_data[mod].names.push_back(tracing_data[submod].names[i]);
@@ -91,11 +91,13 @@ void SynthPropWorker::run()
 		log_error("Module is not TOP module\n");
 
 	TrackingData tracing_data;
-	tracing(module, 0, tracing_data, log_id(module->name));
+	tracing(module, 0, tracing_data, module->name.unescape());
+
+	IdString port_ref = port_name;
 
 	for (auto &data : tracing_data) {
 		if (data.second.names.size() == 0) continue;
-		RTLIL::Wire *wire = data.first->addWire(port_name, data.second.names.size());
+		RTLIL::Wire *wire = data.first->addWire(port_ref, data.second.names.size());
 		wire->port_output = true;
 		data.first->fixup_ports();
 	}
@@ -103,7 +105,7 @@ void SynthPropWorker::run()
 	RTLIL::Wire *output = nullptr;
 	for (auto &data : tracing_data) {
 		int num = 0;
-		RTLIL::Wire *port_wire = data.first->wire(port_name);
+		RTLIL::Wire *port_wire = data.first->wire(port_ref);
 		if (!reset_name.empty() && data.first == module) {
 			port_wire = data.first->addWire(NEW_ID, data.second.names.size());
 			output = port_wire;
@@ -128,10 +130,10 @@ void SynthPropWorker::run()
 			if (RTLIL::Module *submod = design->module(cell->type)) {
 				if (tracing_data[submod].names.size() > 0) {
 					if (!or_outputs) {
-						cell->setPort(port_name, SigChunk(port_wire, num, tracing_data[submod].names.size()));
+						cell->setPort(port_ref, SigChunk(port_wire, num, tracing_data[submod].names.size()));
 					} else {
 						RTLIL::Wire *result_wire = data.first->addWire(NEW_ID);
-						cell->setPort(port_name, result_wire);
+						cell->setPort(port_ref, result_wire);
 						connected.emplace(result_wire);
 					}
 					num += tracing_data[submod].names.size();
@@ -157,18 +159,18 @@ void SynthPropWorker::run()
 	if (tracing_data[module].names.size() == 0) return;
 
 	if (!reset_name.empty()) {
-		int width = tracing_data[module].names.size();		
+		int width = tracing_data[module].names.size();
 		SigSpec reset = module->wire(reset_name);
 		reset.extend_u0(width, true);
 
-		module->addDlatchsr(NEW_ID, State::S1, Const(State::S0,width), reset, output, module->wire(port_name), true, true, reset_pol);
+		module->addDlatchsr(NEW_ID, State::S1, Const(State::S0,width), reset, output, module->wire(port_ref), true, true, reset_pol);
 	}
 
 	if (!map_file.empty()) {
 		std::ofstream fout;
 		fout.open(map_file, std::ios::out | std::ios::trunc);
 		if (!fout.is_open())
-			log_error("Could not open file \"%s\" with write access.\n", map_file.c_str());
+			log_error("Could not open file \"%s\" with write access.\n", map_file);
 
 		for (auto name : tracing_data[module].names) {
 			fout << name << std::endl;
@@ -179,7 +181,13 @@ void SynthPropWorker::run()
 struct SyntProperties : public Pass {
 	SyntProperties() : Pass("synthprop", "synthesize SVA properties") { }
 
-	virtual void help()
+	bool formatted_help() override {
+		auto *help = PrettyHelp::get_current();
+		help->set_group("formal");
+		return false;
+	}
+
+	void help() override
 	{
 		//   |---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|
 		log("\n");
@@ -208,7 +216,7 @@ struct SyntProperties : public Pass {
 		log("\n");
 	}
 
-	virtual void execute(std::vector<std::string> args, RTLIL::Design* design)
+	void execute(std::vector<std::string> args, RTLIL::Design* design) override
 	{
 		log_header(design, "Executing SYNTHPROP pass.\n");
 		SynthPropWorker worker(design);
@@ -216,7 +224,7 @@ struct SyntProperties : public Pass {
 		for (argidx = 1; argidx < args.size(); argidx++)
 		{
 			if (args[argidx] == "-name" && argidx+1 < args.size()) {
-				worker.port_name = RTLIL::escape_id(args[++argidx]);
+				worker.port_name = design->twines().add(RTLIL::escape_id(args[++argidx]));
 				continue;
 			}
 			if (args[argidx] == "-map" && argidx+1 < args.size()) {
@@ -224,12 +232,12 @@ struct SyntProperties : public Pass {
 				continue;
 			}
 			if (args[argidx] == "-reset" && argidx+1 < args.size()) {
-				worker.reset_name = RTLIL::escape_id(args[++argidx]);
+				worker.reset_name = design->twines().add(RTLIL::escape_id(args[++argidx]));
 				worker.reset_pol = true;
 				continue;
 			}
 			if (args[argidx] == "-resetn" && argidx+1 < args.size()) {
-				worker.reset_name = RTLIL::escape_id(args[++argidx]);
+				worker.reset_name = design->twines().add(RTLIL::escape_id(args[++argidx]));
 				worker.reset_pol = false;
 				continue;
 			}

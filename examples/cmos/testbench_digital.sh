@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 set -ex
 
@@ -12,4 +12,3 @@ iverilog -o counter_tb counter.v counter_tb.v
 
 # requires ngspice with xspice support enabled:
 ngspice testbench_digital.sp
-

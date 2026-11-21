@@ -17,15 +17,18 @@
  *
  */
 
-#include "kernel/register.h"
-#include "kernel/rtlil.h"
-#include "kernel/log.h"
-#include <stdlib.h>
+#include "kernel/yosys.h"
+#include "kernel/log_help.h"
 
 USING_YOSYS_NAMESPACE
 PRIVATE_NAMESPACE_BEGIN
 struct SetenvPass : public Pass {
 	SetenvPass() : Pass("setenv", "set an environment variable") { }
+	bool formatted_help() override {
+		auto *help = PrettyHelp::get_current();
+		help->set_group("passes/status");
+		return false;
+	}
 	void help() override
 	{
 		//   |---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|
@@ -44,14 +47,14 @@ struct SetenvPass : public Pass {
 		std::string name = args[1];
 		std::string value = args[2];
 		if (value.front() == '\"' && value.back() == '\"') value = value.substr(1, value.size() - 2);
-		
+
 #if defined(_WIN32)
 		_putenv_s(name.c_str(), value.c_str());
 #else
 		if (setenv(name.c_str(), value.c_str(), 1))
-			log_cmd_error("Invalid name \"%s\".\n", name.c_str());
+			log_cmd_error("Invalid name \"%s\".\n", name);
 #endif
-		
+
 	}
 } SetenvPass;
 

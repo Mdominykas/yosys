@@ -9,7 +9,7 @@ Writing extensions
 .. todo:: update to use :file:`/code_examples/extensions/test*.log`
 
 This chapter contains some bits and pieces of information about programming
-yosys extensions. Don't be afraid to ask questions on the YosysHQ Slack.
+yosys extensions. Don't be afraid to ask questions on the YosysHQ Discourse.
 
 .. todo:: mention coding guide
 
@@ -68,7 +68,7 @@ with, and lists off the current design's modules.
    :language: c++
    :lines: 1, 4, 6, 7-20
    :caption: Example command :yoscrypt:`my_cmd` from :file:`my_cmd.cc`
-   
+
 Note that we are making a global instance of a class derived from
 ``Yosys::Pass``, which we get by including :file:`kernel/yosys.h`.
 
@@ -201,12 +201,6 @@ Use ``log_signal()`` to create a C-string for a SigSpec object:
 The pointer returned by ``log_signal()`` is automatically freed by the log
 framework at a later time.
 
-Use ``log_id()`` to create a C-string for an ``RTLIL::IdString``:
-
-.. code:: C++
-
-    log("Name of this module: %s\n", log_id(module->name));
-
 Use ``log_header()`` and ``log_push()``/\ ``log_pop()`` to structure log
 messages:
 
@@ -230,8 +224,7 @@ Use ``log_error()`` to report a non-recoverable error:
 .. code:: C++
 
     if (design->modules.count(module->name) != 0)
-        log_error("A module with the name %s already exists!\n",
-                   RTLIL::id2cstr(module->name));
+        log_error("A module with the name %s already exists!\n", module);
 
 Use ``log_cmd_error()`` to report a recoverable error:
 

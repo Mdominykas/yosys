@@ -64,19 +64,19 @@ void write_kiss2(struct RTLIL::Module *module, struct RTLIL::Cell *cell, std::st
 		kiss_name.assign(attr_it->second.decode_string());
 	}
 	else {
-		kiss_name.assign(log_id(module) + std::string("-") + log_id(cell) + ".kiss2");
+		kiss_name.assign(module->name.unescape() + std::string("-") + cell->name.unescape() + ".kiss2");
 	}
 
 	log("\n");
 	log("Exporting FSM `%s' from module `%s' to file `%s'.\n",
-			cell->name.c_str(),
-			module->name.c_str(),
-			kiss_name.c_str());
+			cell->name,
+			module->name,
+			kiss_name);
 
 	kiss_file.open(kiss_name, std::ios::out | std::ios::trunc);
 
 	if (!kiss_file.is_open()) {
-		log_error("Could not open file \"%s\" with write access.\n", kiss_name.c_str());
+		log_error("Could not open file \"%s\" with write access.\n", kiss_name);
 	}
 
 	fsm_data.copy_from_cell(cell);

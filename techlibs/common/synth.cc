@@ -49,7 +49,7 @@ struct SynthPass : public ScriptPass {
 		log("\n");
 		log("    -hieropt\n");
 		log("        enable hierarchical optimization. this option is useful when `-flatten'\n");
-		log("        is not used, or when selected modules are marked with 'keep_hierarchy'\n.");
+		log("        is not used, or when selected modules are marked with 'keep_hierarchy'\n");
 		log("        to prevent their dissolution.\n");
 		log("\n");
 		log("    -encfile <file>\n");
@@ -67,12 +67,19 @@ struct SynthPass : public ScriptPass {
 		log("    -booth\n");
 		log("        run the booth pass to map $mul to Booth encoded multipliers\n");
 		log("\n");
+		log("    -arith_tree\n");
+		log("        run the arith_tree pass to convert $add/$sub chains and $macc cells to\n");
+		log("        carry-save adder trees.\n");
+		log("\n");
 		log("    -noalumacc\n");
 		log("        do not run 'alumacc' pass. i.e. keep arithmetic operators in\n");
 		log("        their direct form ($add, $sub, etc.).\n");
 		log("\n");
 		log("    -nordff\n");
 		log("        passed to 'memory'. prohibits merging of FFs into memory read ports\n");
+		log("\n");
+		log("    -latches <info|warn|error>\n");
+		log("        controls how the inference of a latch is reported.\n");
 		log("\n");
 		log("    -noshare\n");
 		log("        do not run SAT-based resource sharing\n");
@@ -81,12 +88,6 @@ struct SynthPass : public ScriptPass {
 		log("        only run the commands between the labels (see below). an empty\n");
 		log("        from label is synonymous to 'begin', and empty to label is\n");
 		log("        synonymous to the end of the command list.\n");
-		log("\n");
-		log("    -abc9\n");
-		log("        use new ABC9 flow (EXPERIMENTAL)\n");
-		log("\n");
-		log("    -flowmap\n");
-		log("        use FlowMap LUT techmapping instead of ABC\n");
 		log("\n");
 		log("    -no-rw-check\n");
 		log("        marks all recognized read ports as \"return don't-care value on\n");
@@ -98,13 +99,17 @@ struct SynthPass : public ScriptPass {
 		log("        mapping library in the `techmap` step. this option can be\n");
 		log("        repeated.\n");
 		log("\n");
+		log("    -relativeshare\n");
+		log("        use paths relative to share directory for source locations\n");
+		log("        where possible (experimental).\n");
+		log("\n");
 		log("The following commands are executed by this synthesis command:\n");
 		help_script();
 		log("\n");
 	}
 
-	string top_module, fsm_opts, memory_opts, abc;
-	bool autotop, flatten, noalumacc, nofsm, noabc, noshare, flowmap, booth, hieropt;
+	string top_module, fsm_opts, memory_opts, abc, latches_opt;
+	bool autotop, flatten, noalumacc, nofsm, noabc, noshare, booth, arith_tree, hieropt, relative_share;
 	int lut;
 	std::vector<std::string> techmap_maps;
 
@@ -113,6 +118,7 @@ struct SynthPass : public ScriptPass {
 		top_module.clear();
 		fsm_opts.clear();
 		memory_opts.clear();
+		latches_opt.clear();
 
 		autotop = false;
 		flatten = false;
@@ -121,9 +127,10 @@ struct SynthPass : public ScriptPass {
 		nofsm = false;
 		noabc = false;
 		noshare = false;
-		flowmap = false;
 		booth = false;
+		arith_tree = false;
 		hieropt = false;
+		relative_share = false;
 		abc = "abc";
 		techmap_maps.clear();
 	}
@@ -164,6 +171,7 @@ struct SynthPass : public ScriptPass {
 			}
 			if (args[argidx] == "-lut" && argidx + 1 < args.size()) {
 				lut = atoi(args[++argidx].c_str());
+				abc = "abc9";
 				continue;
 			}
 			if (args[argidx] == "-nofsm") {
@@ -182,9 +190,16 @@ struct SynthPass : public ScriptPass {
 				booth = true;
 				continue;
 			}
-
+			if (args[argidx] == "-arith_tree") {
+				arith_tree = true;
+				continue;
+			}
 			if (args[argidx] == "-nordff") {
 				memory_opts += " -nordff";
+				continue;
+			}
+			if (args[argidx] == "-latches" && argidx + 1 < args.size()) {
+				latches_opt += " -latches " + args[++argidx];
 				continue;
 			}
 			if (args[argidx] == "-noshare") {
@@ -192,11 +207,7 @@ struct SynthPass : public ScriptPass {
 				continue;
 			}
 			if (args[argidx] == "-abc9") {
-				abc = "abc9";
-				continue;
-			}
-			if (args[argidx] == "-flowmap") {
-				flowmap = true;
+				// Removed: ABC9 is the default if -lut.
 				continue;
 			}
 			if (args[argidx] == "-no-rw-check") {
@@ -211,17 +222,17 @@ struct SynthPass : public ScriptPass {
 				hieropt = true;
 				continue;
 			}
+			if (args[argidx] == "-relativeshare") {
+				relative_share = true;
+				log_experimental("synth -relativeshare");
+				continue;
+			}
 			break;
 		}
 		extra_args(args, argidx, design);
 
 		if (!design->full_selection())
 			log_cmd_error("This command only operates on fully selected designs!\n");
-
-		if (abc == "abc9" && !lut)
-			log_cmd_error("ABC9 flow only supported for FPGA synthesis (using '-lut' option)\n");
-		if (flowmap && !lut)
-			log_cmd_error("FlowMap is only supported for FPGA synthesis (using '-lut' option)\n");
 
 		log_header(design, "Executing SYNTH pass.\n");
 		log_push();
@@ -239,6 +250,10 @@ struct SynthPass : public ScriptPass {
 		else
 			hieropt_flag = hieropt ? " -hier" : "";
 
+		std::string techmap_cmd = "techmap";
+		if (relative_share)
+			techmap_cmd += " -relativeshare";
+
 		if (check_label("begin")) {
 			if (help_mode) {
 				run("hierarchy -check [-top <top> | -auto-top]");
@@ -249,17 +264,19 @@ struct SynthPass : public ScriptPass {
 					else
 						run("hierarchy -check");
 				} else
-					run(stringf("hierarchy -check -top %s", top_module.c_str()));
+					run(stringf("hierarchy -check -top %s", top_module));
 			}
 		}
 
 		if (check_label("coarse")) {
-			run("proc");
-			if (flatten || help_mode)
+			run("proc" + latches_opt);
+			if (flatten || help_mode) {
+				run("check");
 				run("flatten", "  (if -flatten)");
+			}
 			run("opt_expr");
-			run("opt_clean");
 			run("check");
+			run("opt_clean");
 			run("opt -nodffe -nosdff");
 			if (!nofsm || help_mode)
 				run("fsm" + fsm_opts, "      (unless -nofsm)");
@@ -268,13 +285,15 @@ struct SynthPass : public ScriptPass {
 			run("peepopt");
 			run("opt_clean");
 			if (help_mode)
-				run("techmap -map +/cmp2lut.v -map +/cmp2lcu.v", " (if -lut)");
+				run(techmap_cmd + " -map +/cmp2lut.v -map +/cmp2lcu.v", " (if -lut)");
 			else if (lut)
-				run(stringf("techmap -map +/cmp2lut.v -map +/cmp2lcu.v -D LUT_WIDTH=%d", lut));
+				run(stringf("%s -map +/cmp2lut.v -map +/cmp2lcu.v -D LUT_WIDTH=%d", techmap_cmd, lut));
 			if (booth || help_mode)
 				run("booth", "    (if -booth)");
 			if (!noalumacc)
 				run("alumacc", "  (unless -noalumacc)");
+			if (arith_tree || help_mode)
+				run("arith_tree", " (if -arith_tree)");
 			if (!noshare)
 				run("share", "    (unless -noshare)");
 			run("opt" + hieropt_flag);
@@ -287,38 +306,35 @@ struct SynthPass : public ScriptPass {
 			run("memory_map");
 			run("opt -full");
 			if (help_mode) {
-				run("techmap", "                  (unless -extra-map)");	
-				run("techmap -map +/techmap.v -map <inject>", "  (if -extra-map)");
+				run(techmap_cmd, "                  (unless -extra-map)");
+				run(techmap_cmd + " -map +/techmap.v -map <inject>", "  (if -extra-map)");
 			} else {
 				std::string techmap_opts;
 				if (!techmap_maps.empty())
 					techmap_opts += " -map +/techmap.v";
 				for (auto fn : techmap_maps)
-					techmap_opts += stringf(" -map %s", fn.c_str());
-				run("techmap" + techmap_opts);
+					techmap_opts += stringf(" -map %s", fn);
+				run(techmap_cmd + techmap_opts);
 			}
 			if (help_mode) {
-				run("techmap -map +/gate2lut.v", "(if -noabc and -lut)");
+				run(techmap_cmd + " -map +/gate2lut.v", "(if -noabc and -lut)");
 				run("clean; opt_lut", "           (if -noabc and -lut)");
-				run("flowmap -maxlut K", "        (if -flowmap and -lut)");
 			} else if (noabc && lut) {
-				run(stringf("techmap -map +/gate2lut.v -D LUT_WIDTH=%d", lut));
+				run(stringf("%s -map +/gate2lut.v -D LUT_WIDTH=%d", techmap_cmd, lut));
 				run("clean; opt_lut");
-			} else if (flowmap) {
-				run(stringf("flowmap -maxlut %d", lut));
 			}
 			run("opt -fast" + hieropt_flag);
 
-			if ((!noabc && !flowmap) || help_mode) {
+			if (!noabc || help_mode) {
 #ifdef YOSYS_ENABLE_ABC
 				if (help_mode) {
-					run(abc + " -fast", "       (unless -noabc, unless -lut)");
-					run(abc + " -fast -lut k", "(unless -noabc, if -lut)");
+					run(abc, "       (unless -noabc, unless -lut)");
+					run(abc + " -lut k", "(unless -noabc, if -lut)");
 				} else {
 					if (lut)
-						run(stringf("%s -fast -lut %d", abc.c_str(), lut));
+						run(stringf("%s -lut %d", abc, lut));
 					else
-						run(abc + " -fast");
+						run(abc);
 				}
 				run("opt -fast", "       (unless -noabc)");
 #endif

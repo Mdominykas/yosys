@@ -17,26 +17,1059 @@
  *
  *  ---
  *
- *  A very simple and straightforward frontend for the RTLIL text
- *  representation.
+ *  A handwritten recursive-descent parser for the RTLIL text representation.
  *
  */
 
-#include "rtlil_frontend.h"
 #include "kernel/register.h"
 #include "kernel/log.h"
-
-void rtlil_frontend_yyerror(char const *s)
-{
-	YOSYS_NAMESPACE_PREFIX log_error("Parser error in line %d: %s\n", rtlil_frontend_yyget_lineno(), s);
-}
-
-void rtlil_frontend_yywarning(char const *s)
-{
-	YOSYS_NAMESPACE_PREFIX log_warning("In line %d: %s\n", rtlil_frontend_yyget_lineno(), s);
-}
+#include "kernel/rtlil.h"
+#include "kernel/utils.h"
+#include "kernel/twine.h"
+#include <charconv>
+#include <deque>
+#include <optional>
 
 YOSYS_NAMESPACE_BEGIN
+
+struct RTLILFrontendWorker {
+	std::istream *f = nullptr;
+	RTLIL::Design *design;
+	bool flag_nooverwrite = false;
+	bool flag_overwrite = false;
+	bool flag_lib = false;
+	bool flag_legalize = false;
+
+	int line_num;
+	std::string line_buf;
+	// Substring of line_buf. Always newline-terminated, thus never empty.
+	std::string_view line;
+
+	RTLIL::Module *current_module;
+	dict<RTLIL::IdString, RTLIL::Const> attrbuf;
+	std::vector<std::vector<RTLIL::SwitchRule*>*> switch_stack;
+	std::vector<RTLIL::CaseRule*> case_stack;
+
+	dict<size_t, IdString> twine_remap;
+	std::vector<IdString> twine_parser_holds;
+
+	struct TwineDesc {
+		enum Kind { Root, Suffix } kind;
+		std::string text;
+		size_t parent = 0;
+		bool materializing = false;
+	};
+	dict<size_t, TwineDesc> twine_descs;
+
+
+
+	template <typename... Args>
+	[[noreturn]]
+	void error(FmtString<TypeIdentity<Args>...> fmt, const Args &... args)
+	{
+		log_error("Parser error in line %d: %s\n", line_num, fmt.format(args...));
+	}
+
+	template <typename... Args>
+	void warning(FmtString<TypeIdentity<Args>...> fmt, const Args &... args)
+	{
+		log_warning("In line %d: %s\n", line_num, fmt.format(args...));
+	}
+
+	// May return an empty line if the stream is not good().
+	void advance_to_next_nonempty_line()
+	{
+		if (!f->good()) {
+			line = "\n";
+			return;
+		}
+		while (true) {
+			std::getline(*f, line_buf);
+			line_num++;
+			if (line_buf.empty() || line_buf[line_buf.size() - 1] != '\n')
+				line_buf += '\n';
+			line = line_buf;
+			consume_whitespace_and_comments();
+			if (line[0] != '\n' || !f->good())
+				break;
+		}
+	}
+
+	void consume_whitespace_and_comments()
+	{
+		while (true) {
+			switch (line[0]) {
+			case ' ':
+			case '\t':
+				line = line.substr(1);
+				break;
+			case '#':
+				line = "\n";
+				return;
+			default:
+				return;
+			}
+		}
+	}
+
+	bool try_parse_keyword(std::string_view keyword)
+	{
+		int keyword_size = keyword.size();
+		if (keyword != line.substr(0, keyword_size))
+			return false;
+		// This index is safe because `line` is always newline-terminated
+		// and `keyword` never contains a newline.
+		char ch = line[keyword_size];
+		if (ch >= 'a' && ch <= 'z')
+			return false;
+		line = line.substr(keyword_size);
+		consume_whitespace_and_comments();
+		return true;
+	}
+
+	std::string error_token()
+	{
+		std::string result;
+		for (char ch : line) {
+			if (ch == '\n' || ch == ' ' || ch == '\t')
+				break;
+			result += ch;
+		}
+		return result;
+	}
+
+	void expect_keyword(std::string_view keyword)
+	{
+		if (!try_parse_keyword(keyword))
+			error("Expected token `%s', got `%s'.", keyword, error_token());
+	}
+
+	bool try_parse_char(char ch)
+	{
+		if (line[0] != ch)
+			return false;
+		line = line.substr(1);
+		consume_whitespace_and_comments();
+		return true;
+	}
+
+	void expect_char(char ch)
+	{
+		if (!try_parse_char(ch))
+			error("Expected `%c', got `%s'.", ch, error_token());
+	}
+
+	bool try_parse_eol()
+	{
+		if (line[0] != '\n')
+			return false;
+		advance_to_next_nonempty_line();
+		return true;
+	}
+
+	void expect_eol()
+	{
+		if (!try_parse_eol())
+			error("Expected EOL, got `%s'.", error_token());
+	}
+
+	std::optional<std::string> try_parse_id()
+	{
+		char ch = line[0];
+		if (ch != '\\' && ch != '$')
+			return std::nullopt;
+		int idx = 1;
+		while (true) {
+			ch = line[idx];
+			if (ch <= ' ' && (ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r'))
+				break;
+			++idx;
+		}
+		std::string result(line.substr(0, idx));
+		line = line.substr(idx);
+		consume_whitespace_and_comments();
+		return result;
+	}
+
+	std::string parse_id()
+	{
+		std::optional<std::string> id = try_parse_id();
+		if (!id.has_value())
+			error("Expected ID, got `%s'.", error_token());
+		return std::move(*id);
+	}
+
+	long long parse_integer()
+	{
+		long long result = parse_integer_alone();
+		consume_whitespace_and_comments();
+		return result;
+	}
+
+	long long parse_integer_alone()
+	{
+		int idx = 0;
+		if (line[idx] == '-')
+			++idx;
+		while (true) {
+			char ch = line[idx];
+			if (ch < '0' || ch > '9')
+				break;
+			++idx;
+		}
+		long long result;
+		if (std::from_chars(line.data(), line.data() + idx, result, 10).ec != std::errc{})
+			error("Invalid integer `%s'.", error_token());
+		line = line.substr(idx);
+		return result;
+	}
+
+	std::string parse_string()
+	{
+		if (line[0] != '\"')
+			error("Expected string, got `%s'.", error_token());
+		std::string str;
+		int idx = 1;
+		while (true) {
+			int start_idx = idx;
+			char ch;
+			while (true) {
+				ch = line[idx];
+				if (ch == '"' || ch == '\n' || ch == '\\' || ch == 0)
+					break;
+				++idx;
+			}
+			str.append(line.data() + start_idx, line.data() + idx);
+			++idx;
+			if (ch == '"')
+				break;
+			if (ch == 0)
+				error("Null byte in string literal: `%s'.", line);
+			if (ch == '\n')
+				error("Unterminated string literal: `%s'.", line);
+			ch = line[idx++];
+			if (ch == 'n') {
+				ch = '\n';
+			} else if (ch == 't') {
+				ch = '\t';
+			} else if (ch >= '0' && ch <= '7') {
+				int v = ch - '0';
+				char next_ch = line[idx + 1];
+				if (next_ch >= '0' && next_ch <= '7') {
+					++idx;
+					v = v*8 + (next_ch - '0');
+					next_ch = line[idx + 1];
+					if (next_ch >= '0' && next_ch <= '7') {
+						++idx;
+						v = v*8 + (next_ch - '0');
+					}
+				}
+				ch = v;
+			}
+			str += ch;
+		}
+		line = line.substr(idx);
+		consume_whitespace_and_comments();
+		return str;
+	}
+
+	RTLIL::Const parse_const()
+	{
+		if (line[0] == '"')
+			return RTLIL::Const(parse_string());
+
+		bool negative_value = line[0] == '-';
+		long long width = parse_integer_alone();
+		// Can't test value<0 here because we need to stop parsing after '-0'
+		if (negative_value || line[0] != '\'') {
+			if (width < INT_MIN || width > INT_MAX)
+				error("Integer %lld out of range before `%s'.", width, error_token());
+			consume_whitespace_and_comments();
+			return RTLIL::Const(width);
+		}
+
+		int idx = 1;
+		bool is_signed = line[1] == 's';
+		if (is_signed)
+			++idx;
+
+		std::vector<RTLIL::State> bits;
+		if (width >= RTLIL::WIDTH_LIMIT)
+			error("Constant width %lld out of range before `%s`.", width, error_token());
+		bits.reserve(width);
+		int start_idx = idx;
+		while (true) {
+			RTLIL::State bit;
+			switch (line[idx]) {
+			case '0': bit = RTLIL::S0; break;
+			case '1': bit = RTLIL::S1; break;
+			case 'x': bit = RTLIL::Sx; break;
+			case 'z': bit = RTLIL::Sz; break;
+			case 'm': bit = RTLIL::Sm; break;
+			case '-': bit = RTLIL::Sa; break;
+			default: goto done;
+			}
+			bits.push_back(bit);
+			++idx;
+		}
+	done:
+		if (start_idx < idx)
+			std::reverse(bits.begin(), bits.end());
+
+		if (GetSize(bits) > width)
+			bits.resize(width);
+		else if (GetSize(bits) < width) {
+			RTLIL::State extbit = RTLIL::Sx;
+			if (!bits.empty()) {
+				extbit = bits.back();
+				if (extbit == RTLIL::S1)
+					extbit = RTLIL::S0;
+			}
+			bits.resize(width, extbit);
+		}
+
+		RTLIL::Const val(std::move(bits));
+		if (is_signed)
+			val.flags |= RTLIL::CONST_FLAG_SIGNED;
+		line = line.substr(idx);
+		consume_whitespace_and_comments();
+		return val;
+	}
+
+	RTLIL::Wire *legalize_wire(RTLIL::IdString id)
+	{
+		int wires_size = current_module->wires_size();
+		if (wires_size == 0)
+			error("No wires found for legalization");
+		int hash = hash_ops<RTLIL::IdString>::hash(id).yield();
+		RTLIL::Wire *wire = current_module->wire_at(abs(hash % wires_size));
+		log("Legalizing wire `%s' to `%s'.\n", PooledName(current_module->design, id).unescape(), wire);
+		return wire;
+	}
+
+	RTLIL::SigSpec parse_sigspec()
+	{
+		RTLIL::SigSpec sig;
+
+		if (try_parse_char('{')) {
+			std::vector<SigSpec> parts;
+			while (!try_parse_char('}'))
+				parts.push_back(parse_sigspec());
+			for (auto it = parts.rbegin(); it != parts.rend(); ++it)
+				sig.append(std::move(*it));
+		} else if (std::optional<IdString> handle = try_parse_twine_handle()) {
+			IdString ref = *handle;
+			RTLIL::Wire *wire = current_module->wire(ref);
+			if (wire == nullptr) {
+				if (flag_legalize)
+					wire = legalize_wire(ref);
+				else
+					error("Wire %s not found.", design->twines().str(ref).c_str());
+			}
+			sig = RTLIL::SigSpec(wire);
+		} else {
+			// We could add a special path for parsing IdStrings that must already exist,
+			// as here.
+			// We don't need to addref/release in this case.
+			std::optional<std::string> id = try_parse_id();
+			if (id.has_value()) {
+				RTLIL::Wire *wire = current_module->wire(design->twines().find(*id));
+				if (wire == nullptr) {
+					if (flag_legalize)
+						wire = legalize_wire(design->twines().add(*id));
+					else
+						error("Wire `%s' not found.", *id);
+				}
+				sig = RTLIL::SigSpec(wire);
+			} else {
+				sig = RTLIL::SigSpec(parse_const());
+			}
+		}
+
+		while (try_parse_char('[')) {
+			int left = parse_integer();
+			if (left >= sig.size() || left < 0) {
+				if (flag_legalize) {
+					int legalized;
+					if (sig.size() == 0)
+						legalized = 0;
+					else
+						legalized = std::max(0, std::min(left, sig.size() - 1));
+					log("Legalizing bit index %d to %d.\n", left, legalized);
+					left = legalized;
+				} else {
+					error("bit index %d out of range", left);
+				}
+			}
+			if (try_parse_char(':')) {
+				int right = parse_integer();
+				if (right < 0) {
+					if (flag_legalize) {
+						log("Legalizing bit index %d to %d.\n", right, 0);
+						right = 0;
+					} else
+						error("bit index %d out of range", right);
+				}
+				if (left < right) {
+					if (flag_legalize) {
+						log("Legalizing bit index %d to %d.\n", left, right);
+						left = right;
+					} else
+						error("invalid slice [%d:%d]", left, right);
+				}
+				if (flag_legalize && left >= sig.size())
+					log("Legalizing slice %d:%d by igoring it\n", left, right);
+				else
+					sig = sig.extract(right, left - right + 1);
+			} else {
+				if (flag_legalize && left >= sig.size())
+					log("Legalizing slice %d by igoring it\n", left);
+				else
+					sig = sig.extract(left);
+			}
+			expect_char(']');
+		}
+
+		return sig;
+	}
+
+	void parse_module()
+	{
+		IdString module_name = parse_twine();
+		expect_eol();
+
+		bool delete_current_module = false;
+		if (design->has(module_name)) {
+			RTLIL::Module *existing_mod = design->module(module_name);
+			if (!flag_overwrite && (flag_lib || (attrbuf.count(ID::blackbox) && attrbuf.at(ID::blackbox).as_bool()))) {
+				log("Ignoring blackbox re-definition of module %s.\n", design->twines().str(module_name));
+				delete_current_module = true;
+			} else if (!flag_nooverwrite && !flag_overwrite && !existing_mod->get_bool_attribute(ID::blackbox)) {
+				error("RTLIL error: redefinition of module %s.", design->twines().str(module_name).c_str());
+			} else if (flag_nooverwrite) {
+				log("Ignoring re-definition of module %s.\n", design->twines().str(module_name));
+				delete_current_module = true;
+			} else {
+				log("Replacing existing%s module %s.\n", existing_mod->get_bool_attribute(ID::blackbox) ? " blackbox" : "", design->twines().str(module_name));
+				design->remove(existing_mod);
+			}
+		}
+
+		current_module = new RTLIL::Module(design);
+		current_module->name = std::move(module_name);
+		current_module->attributes = std::move(attrbuf);
+		if (!delete_current_module)
+			design->add(current_module);
+
+		while (true)
+		{
+			if (try_parse_keyword("attribute")) {
+				parse_attribute();
+				continue;
+			}
+			if (try_parse_keyword("parameter")) {
+				parse_parameter();
+				continue;
+			}
+			if (try_parse_keyword("connect")) {
+				parse_connect();
+				continue;
+			}
+			if (try_parse_keyword("wire")) {
+				parse_wire();
+				continue;
+			}
+			if (try_parse_keyword("cell")) {
+				parse_cell();
+				continue;
+			}
+			if (try_parse_keyword("memory")) {
+				parse_memory();
+				continue;
+			}
+			if (try_parse_keyword("process")) {
+				parse_process();
+				continue;
+			}
+			if (try_parse_keyword("end")) {
+				expect_eol();
+				break;
+			}
+			error("Unexpected token in module body: %s", error_token());
+		}
+
+		if (attrbuf.size() != 0)
+			error("dangling attribute");
+		current_module->fixup_ports();
+		if (delete_current_module)
+			delete current_module;
+		else if (flag_lib)
+			current_module->makeblackbox();
+		current_module = nullptr;
+	}
+
+	void parse_attribute()
+	{
+		IdString id = parse_twine();
+		RTLIL::Const c = parse_const();
+		attrbuf.insert({std::move(id), std::move(c)});
+		expect_eol();
+	}
+
+	bool static_ids_match(const std::vector<size_t> &ordered_ids)
+	{
+		for (size_t id : ordered_ids) {
+			if (id >= STATIC_TWINE_END)
+				continue;
+			const TwineDesc &desc = twine_descs.at(id);
+			IdString found;
+			if (desc.kind == TwineDesc::Root)
+				found = design->twines().find(TwineSpec{TwineSpec::Root{desc.text}});
+			else
+				found = design->twines().find(TwineSpec{TwineSpec::Suffix{
+						IdString(desc.parent), desc.text}});
+			if (found == IdString::Null || found.untag().raw() != id)
+				return false;
+		}
+		return true;
+	}
+
+	IdString resolve_file_twine(size_t id, bool is_public = false)
+	{
+		return materialize_file_twine(id).tag(is_public);
+	}
+
+	IdString materialize_file_twine(size_t id)
+	{
+		auto rit = twine_remap.find(id);
+		if (rit != twine_remap.end())
+			return rit->second;
+		auto dit = twine_descs.find(id);
+		if (dit == twine_descs.end()) {
+			if (id < STATIC_TWINE_END)
+				return IdString(id);
+			error("Unknown twine reference @%zu at line %d", id, line_num);
+		}
+		TwineDesc &desc = dit->second;
+		if (desc.materializing)
+			error("Cyclic twine reference @%zu at line %d", id, line_num);
+		desc.materializing = true;
+		IdString ref;
+		switch (desc.kind) {
+		case TwineDesc::Root:
+			ref = design->twines().add(TwineSpec::Root{desc.text});
+			break;
+		case TwineDesc::Suffix:
+			ref = design->twines().add(TwineSpec::Suffix{
+					materialize_file_twine(desc.parent),
+					desc.text});
+			break;
+		}
+		desc.materializing = false;
+		twine_remap[id] = ref;
+		return ref;
+	}
+
+	std::optional<IdString> try_parse_twine_handle()
+	{
+		bool is_public;
+		size_t prefix = IdString::handle_token_prefix(line, is_public);
+		if (prefix == 0)
+			return std::nullopt;
+		line = line.substr(prefix);
+		return resolve_file_twine(parse_integer(), is_public);
+	}
+
+	std::optional<IdString> try_parse_twine()
+	{
+		if (std::optional<IdString> handle = try_parse_twine_handle())
+			return handle;
+		std::optional<std::string> id = try_parse_id();
+		if (!id)
+			return std::nullopt;
+		return design->twines().add(std::move(*id));
+	}
+
+	IdString parse_twine()
+	{
+		std::optional<IdString> t = try_parse_twine();
+		if (!t)
+			error("Expected twine reference or ID, got `%s'.", error_token());
+		return *t;
+	}
+
+	void parse_twines()
+	{
+		expect_eol();
+		while (true) {
+			if (try_parse_keyword("end"))
+				break;
+			if (try_parse_keyword("root")) {
+				size_t file_id = parse_integer();
+				TwineDesc &desc = twine_descs[file_id];
+				desc.kind = TwineDesc::Root;
+				desc.text = parse_string();
+				expect_eol();
+				continue;
+			}
+			if (try_parse_keyword("suffix")) {
+				size_t file_id = parse_integer();
+				TwineDesc &desc = twine_descs[file_id];
+				desc.kind = TwineDesc::Suffix;
+				desc.parent = parse_integer();
+				desc.text = parse_string();
+				expect_eol();
+				continue;
+			}
+			error("Expected `root` or `suffix` inside twines block, got `%s'.",
+					error_token());
+		}
+		std::vector<size_t> ordered_ids;
+		ordered_ids.reserve(twine_descs.size());
+		for (auto &it : twine_descs)
+			ordered_ids.push_back(it.first);
+		std::sort(ordered_ids.begin(), ordered_ids.end());
+		if (static_ids_match(ordered_ids)) {
+			std::vector<size_t> dynamic_ids;
+			dynamic_ids.reserve(ordered_ids.size());
+			for (size_t id : ordered_ids) {
+				if (id < STATIC_TWINE_END)
+					twine_descs.erase(id);
+				else
+					dynamic_ids.push_back(id);
+			}
+			ordered_ids.swap(dynamic_ids);
+		}
+		for (size_t id : ordered_ids)
+			materialize_file_twine(id);
+		twine_descs.clear();
+		expect_eol();
+	}
+
+	void parse_metadata()
+	{
+		expect_eol();
+		while (!try_parse_keyword("end")) {
+			if (try_parse_keyword("twines"))
+				parse_twines();
+			else
+				error("Unexpected section `%s' in metadata block.", error_token());
+		}
+		expect_eol();
+	}
+
+	void parse_parameter()
+	{
+		IdString id = parse_twine();
+		current_module->avail_parameters(id);
+		if (try_parse_eol())
+			return;
+		RTLIL::Const c = parse_const();
+		current_module->parameter_default_values.insert({std::move(id), std::move(c)});
+		expect_eol();
+	}
+
+	void parse_wire()
+	{
+		RTLIL::Wire *wire;
+		int width = 1;
+		int start_offset = 0;
+		int port_id = 0;
+		bool port_input = false;
+		bool port_output = false;
+		bool upto = false;
+		bool is_signed = false;
+
+		while (true)
+		{
+			std::optional<IdString> name = try_parse_twine();
+			if (name) {
+				IdString wire_name = *name;
+				if (current_module->wire(wire_name) != nullptr) {
+					if (flag_legalize) {
+						log("Legalizing redefinition of wire %s.\n", design->twines().str(wire_name));
+						pool<RTLIL::Wire*> wires = {current_module->wire(wire_name)};
+						current_module->remove(wires);
+					} else
+						error("RTLIL error: redefinition of wire %s.", design->twines().str(wire_name).c_str());
+				}
+				wire = current_module->addWire(wire_name);
+				break;
+			}
+			if (try_parse_keyword("width")){
+				long long width_val = parse_integer();
+				if (width_val < 0 || width_val >= RTLIL::WIDTH_LIMIT)
+					error("Wire width %lld out of range before `%s`.", width_val, error_token());
+				width = width_val;
+			}
+			else if (try_parse_keyword("upto"))
+				upto = true;
+			else if (try_parse_keyword("signed"))
+				is_signed = true;
+			else if (try_parse_keyword("offset")) {
+				long long offset_val = parse_integer();
+				if (offset_val < INT_MIN || offset_val > INT_MAX)
+					error("Wire offset %lld out of range before `%s`.", offset_val, error_token());
+				start_offset = offset_val;
+			}
+			else if (try_parse_keyword("input")) {
+				port_id = parse_integer();
+				port_input = true;
+			} else if (try_parse_keyword("output")) {
+				port_id = parse_integer();
+				port_output = true;
+			} else if (try_parse_keyword("inout")) {
+				port_id = parse_integer();
+				port_input = true;
+				port_output = true;
+			} else if (try_parse_eol())
+				error("Missing wire ID");
+			else
+				error("Unexpected wire option: %s", error_token());
+		}
+
+		wire->attributes = std::move(attrbuf);
+		wire->width = width;
+		wire->upto = upto;
+		wire->start_offset = start_offset;
+		wire->is_signed = is_signed;
+		wire->port_id = port_id;
+		wire->port_input = port_input;
+		wire->port_output = port_output;
+		expect_eol();
+	}
+
+	void parse_memory()
+	{
+		RTLIL::Memory *memory = new RTLIL::Memory(current_module);
+		memory->attributes = std::move(attrbuf);
+
+		int width = 1;
+		int start_offset = 0;
+		int size = 0;
+		IdString mem_name;
+		while (true)
+		{
+			std::optional<IdString> name = try_parse_twine();
+			if (name.has_value()) {
+				mem_name = *name;
+				if (current_module->memories.count(mem_name) != 0) {
+					if (flag_legalize) {
+						log("Legalizing redefinition of memory %s.\n", design->twines().str(mem_name));
+						current_module->remove(current_module->memories.at(mem_name));
+					} else
+						error("RTLIL error: redefinition of memory %s.", design->twines().str(mem_name).c_str());
+				}
+				memory->name = mem_name;
+				break;
+			}
+			if (try_parse_keyword("width")){
+				long long width_val = parse_integer();
+				if (width_val < 0 || width_val >= RTLIL::WIDTH_LIMIT)
+					error("Memory width %lld out of range before `%s`.", width_val, error_token());
+				width = width_val;
+			}
+			else if (try_parse_keyword("size")) {
+				long long size_val = parse_integer();
+				if (size_val < INT_MIN || size_val > INT_MAX)
+					error("Memory size %lld out of range before `%s`.", size_val, error_token());
+				size = size_val;
+			}
+			else if (try_parse_keyword("offset")) {
+				long long offset_val = parse_integer();
+				if (offset_val < INT_MIN || offset_val > INT_MAX)
+					error("Memory offset %lld out of range before `%s`.", offset_val, error_token());
+				start_offset = offset_val;
+			}
+			else if (try_parse_eol())
+				error("Missing memory ID");
+			else
+				error("Unexpected memory option: %s", error_token());
+		}
+		memory->width = width;
+		memory->start_offset = start_offset;
+		memory->size = size;
+		memory->module = current_module;
+		current_module->memories.insert({mem_name, memory});
+		expect_eol();
+	}
+
+	void legalize_width_parameter(RTLIL::Cell *cell, RTLIL::IdString port_name)
+	{
+		IdString width_param = design->twines().find(design->twines().str(port_name) + "_WIDTH");
+		if (width_param == IdString::Null || cell->parameters.count(width_param) == 0)
+			return;
+		RTLIL::Const &param = cell->parameters.at(width_param);
+		if (param.as_int() != 0)
+			return;
+		cell->parameters[width_param] = RTLIL::Const(cell->getPort(port_name).size());
+	}
+
+	void parse_cell()
+	{
+		IdString cell_type_ref = parse_twine();
+		IdString cell_name_ref = parse_twine();
+		expect_eol();
+
+		if (current_module->cell(cell_name_ref) != nullptr) {
+			if (flag_legalize) {
+				std::string base = design->twines().str(cell_name_ref);
+				std::string new_name_str;
+				int suffix = 1;
+				do {
+					new_name_str = base + "_" + std::to_string(suffix);
+					cell_name_ref = design->twines().add(new_name_str);
+					++suffix;
+				} while (current_module->cell(cell_name_ref) != nullptr);
+				log("Legalizing redefinition of cell %s by renaming to %s.\n", base, new_name_str);
+			} else
+				error("RTLIL error: redefinition of cell %s.", design->twines().str(cell_name_ref).c_str());
+		}
+		RTLIL::Cell *cell = current_module->addCell(cell_name_ref, cell_type_ref);
+		cell->attributes = std::move(attrbuf);
+
+		while (true)
+		{
+			if (try_parse_keyword("parameter")) {
+				bool is_signed = false;
+				bool is_real = false;
+				bool is_unsized = false;
+				if (try_parse_keyword("signed")) {
+					is_signed = true;
+				} else if (try_parse_keyword("real")) {
+					is_real = true;
+				} else if (try_parse_keyword("unsized")) {
+					is_unsized = true;
+				}
+				IdString param_name = parse_twine();
+				RTLIL::Const val = parse_const();
+				if (is_signed)
+					val.flags |= RTLIL::CONST_FLAG_SIGNED;
+				if (is_real)
+					val.flags |= RTLIL::CONST_FLAG_REAL;
+				if (is_unsized)
+					val.flags |= RTLIL::CONST_FLAG_UNSIZED;
+				cell->parameters.insert({std::move(param_name), std::move(val)});
+				expect_eol();
+			} else if (try_parse_keyword("connect")) {
+				IdString port_name = parse_twine();
+				if (cell->hasPort(port_name)) {
+					if (flag_legalize)
+						log("Legalizing redefinition of cell port %s.\n", design->twines().str(port_name));
+					else
+						error("RTLIL error: redefinition of cell port %s.", design->twines().str(port_name).c_str());
+				}
+				cell->setPort(port_name, parse_sigspec());
+				if (flag_legalize)
+					legalize_width_parameter(cell, port_name);
+				expect_eol();
+			} else if (try_parse_keyword("end")) {
+				expect_eol();
+				break;
+			} else {
+				error("Unexpected token in cell body: %s", error_token());
+			}
+		}
+	}
+
+	void parse_connect()
+	{
+		if (attrbuf.size() != 0)
+			error("dangling attribute");
+		RTLIL::SigSpec s1 = parse_sigspec();
+		RTLIL::SigSpec s2 = parse_sigspec();
+		if (flag_legalize) {
+			int min_size = std::min(s1.size(), s2.size());
+			s1 = s1.extract(0, min_size);
+			s2 = s2.extract(0, min_size);
+		}
+		current_module->connect(std::move(s1), std::move(s2));
+		expect_eol();
+	}
+
+	void parse_case_body(RTLIL::CaseRule *current_case)
+	{
+		while (true)
+		{
+			if (try_parse_keyword("attribute"))
+				parse_attribute();
+			else if (try_parse_keyword("switch"))
+				parse_switch();
+			else if (try_parse_keyword("assign")) {
+				if (attrbuf.size() != 0)
+					error("dangling attribute");
+				// See https://github.com/YosysHQ/yosys/pull/4765 for discussion on this
+				// warning
+				if (!switch_stack.back()->empty())
+					warning("case rule assign statements after switch statements may cause unexpected behaviour. "
+						"The assign statement is reordered to come before all switch statements.");
+				RTLIL::SigSpec s1 = parse_sigspec();
+				RTLIL::SigSpec s2 = parse_sigspec();
+				current_case->actions.push_back({std::move(s1), std::move(s2)});
+				expect_eol();
+			} else
+				return;
+		}
+	}
+
+	void parse_switch()
+	{
+		RTLIL::SwitchRule *rule = new RTLIL::SwitchRule;
+		rule->signal = parse_sigspec();
+		rule->attributes = std::move(attrbuf);
+		switch_stack.back()->push_back(rule);
+		expect_eol();
+
+		while (true) {
+			if (try_parse_keyword("attribute")) {
+				parse_attribute();
+				continue;
+			}
+
+			if (try_parse_keyword("end")) {
+				expect_eol();
+				break;
+			}
+
+			expect_keyword("case");
+			RTLIL::CaseRule *case_rule = new RTLIL::CaseRule;
+			case_rule->attributes = std::move(attrbuf);
+			rule->cases.push_back(case_rule);
+			switch_stack.push_back(&case_rule->switches);
+			case_stack.push_back(case_rule);
+
+			if (!try_parse_eol()) {
+				while (true) {
+					case_rule->compare.push_back(parse_sigspec());
+					if (try_parse_eol())
+						break;
+					expect_char(',');
+				}
+			}
+
+			parse_case_body(case_rule);
+
+			switch_stack.pop_back();
+			case_stack.pop_back();
+		}
+	}
+
+	void parse_process()
+	{
+		IdString proc_name = parse_twine();
+		expect_eol();
+
+		if (current_module->processes.count(proc_name) != 0) {
+			if (flag_legalize) {
+				log("Legalizing redefinition of process %s.\n", design->twines().str(proc_name));
+				current_module->remove(current_module->processes.at(proc_name));
+			} else
+				error("RTLIL error: redefinition of process %s.", design->twines().str(proc_name).c_str());
+		}
+		RTLIL::Process *proc = current_module->addProcess(std::move(proc_name));
+		proc->attributes = std::move(attrbuf);
+
+		switch_stack.clear();
+		switch_stack.push_back(&proc->root_case.switches);
+		case_stack.clear();
+		case_stack.push_back(&proc->root_case);
+
+		parse_case_body(&proc->root_case);
+
+		while (try_parse_keyword("sync"))
+		{
+			RTLIL::SyncRule *rule = new RTLIL::SyncRule;
+
+			if (try_parse_keyword("low")) rule->type = RTLIL::ST0;
+			else if (try_parse_keyword("high")) rule->type = RTLIL::ST1;
+			else if (try_parse_keyword("posedge")) rule->type = RTLIL::STp;
+			else if (try_parse_keyword("negedge")) rule->type = RTLIL::STn;
+			else if (try_parse_keyword("edge")) rule->type = RTLIL::STe;
+			else if (try_parse_keyword("always")) rule->type = RTLIL::STa;
+			else if (try_parse_keyword("global")) rule->type = RTLIL::STg;
+			else if (try_parse_keyword("init")) rule->type = RTLIL::STi;
+			else error("Unexpected sync type: %s", error_token());
+
+			if (rule->type != RTLIL::STa && rule->type != RTLIL::STg && rule->type != RTLIL::STi)
+				rule->signal = parse_sigspec();
+			proc->syncs.push_back(rule);
+			expect_eol();
+
+			bool attributes_in_update_list = false;
+			while (true)
+			{
+				if (try_parse_keyword("update")) {
+					RTLIL::SigSpec s1 = parse_sigspec();
+					RTLIL::SigSpec s2 = parse_sigspec();
+					rule->actions.push_back({std::move(s1), std::move(s2)});
+					expect_eol();
+					continue;
+				}
+
+				if (try_parse_keyword("attribute")) {
+					attributes_in_update_list = true;
+					parse_attribute();
+					continue;
+				}
+
+				if (!try_parse_keyword("memwr"))
+					break;
+
+				RTLIL::MemWriteAction act;
+				act.attributes = std::move(attrbuf);
+				act.memid = parse_twine();
+				act.address = parse_sigspec();
+				act.data = parse_sigspec();
+				act.enable = parse_sigspec();
+				act.priority_mask = parse_const();
+				rule->mem_write_actions.push_back(std::move(act));
+				expect_eol();
+			}
+			// The old parser allowed dangling attributes before a "sync" to carry through
+			// the "sync", so we will too, for now.
+			if (attributes_in_update_list && attrbuf.size() > 0)
+				error("dangling attribute");
+		}
+
+		expect_keyword("end");
+		expect_eol();
+	}
+
+	RTLILFrontendWorker(RTLIL::Design *design) : design(design) {}
+
+	void parse(std::istream *f)
+	{
+		this->f = f;
+		line_num = 0;
+		advance_to_next_nonempty_line();
+		while (f->good())
+		{
+			if (try_parse_keyword("attribute")) {
+				parse_attribute();
+				continue;
+			}
+			if (try_parse_keyword("module")) {
+				parse_module();
+				continue;
+			}
+			if (try_parse_keyword("autoidx")) {
+				design->twines().ensure_autoidx(parse_integer());
+				expect_eol();
+				continue;
+			}
+			if (try_parse_keyword("metadata")) {
+				parse_metadata();
+				continue;
+			}
+			error("Unexpected token: %s", error_token());
+		}
+		if (attrbuf.size() != 0)
+			error("dangling attribute");
+
+		twine_parser_holds.clear();
+		twine_remap.clear();
+	}
+};
 
 struct RTLILFrontend : public Frontend {
 	RTLILFrontend() : Frontend("rtlil", "read modules from RTLIL file") { }
@@ -60,12 +1093,15 @@ struct RTLILFrontend : public Frontend {
 		log("    -lib\n");
 		log("        only create empty blackbox modules\n");
 		log("\n");
+		log("    -legalize\n");
+		log("        prevent semantic errors (e.g. reference to unknown wire, redefinition of wire/cell)\n");
+		log("        by deterministically rewriting the input into something valid. Useful when using\n");
+		log("        fuzzing to generate random but valid RTLIL.\n");
+		log("\n");
 	}
 	void execute(std::istream *&f, std::string filename, std::vector<std::string> args, RTLIL::Design *design) override
 	{
-		RTLIL_FRONTEND::flag_nooverwrite = false;
-		RTLIL_FRONTEND::flag_overwrite = false;
-		RTLIL_FRONTEND::flag_lib = false;
+		RTLILFrontendWorker worker(design);
 
 		log_header(design, "Executing RTLIL frontend.\n");
 
@@ -73,33 +1109,31 @@ struct RTLILFrontend : public Frontend {
 		for (argidx = 1; argidx < args.size(); argidx++) {
 			std::string arg = args[argidx];
 			if (arg == "-nooverwrite") {
-				RTLIL_FRONTEND::flag_nooverwrite = true;
-				RTLIL_FRONTEND::flag_overwrite = false;
+				worker.flag_nooverwrite = true;
+				worker.flag_overwrite = false;
 				continue;
 			}
 			if (arg == "-overwrite") {
-				RTLIL_FRONTEND::flag_nooverwrite = false;
-				RTLIL_FRONTEND::flag_overwrite = true;
+				worker.flag_nooverwrite = false;
+				worker.flag_overwrite = true;
 				continue;
 			}
 			if (arg == "-lib") {
-				RTLIL_FRONTEND::flag_lib = true;
+				worker.flag_lib = true;
+				continue;
+			}
+			if (arg == "-legalize") {
+				worker.flag_legalize = true;
 				continue;
 			}
 			break;
 		}
 		extra_args(f, filename, args, argidx);
 
-		log("Input filename: %s\n", filename.c_str());
+		log("Input filename: %s\n", filename);
 
-		RTLIL_FRONTEND::lexin = f;
-		RTLIL_FRONTEND::current_design = design;
-		rtlil_frontend_yydebug = false;
-		rtlil_frontend_yyrestart(NULL);
-		rtlil_frontend_yyparse();
-		rtlil_frontend_yylex_destroy();
+		worker.parse(f);
 	}
 } RTLILFrontend;
 
 YOSYS_NAMESPACE_END
-

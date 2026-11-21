@@ -20,14 +20,21 @@
 #include "kernel/yosys.h"
 #include "kernel/sigtools.h"
 #include "kernel/celledges.h"
-#include "kernel/celltypes.h"
+#include "kernel/newcelltypes.h"
 #include "kernel/utils.h"
+#include "kernel/log_help.h"
+#include "kernel/mem.h"
 
 USING_YOSYS_NAMESPACE
 PRIVATE_NAMESPACE_BEGIN
 
 struct CheckPass : public Pass {
 	CheckPass() : Pass("check", "check for obvious problems in the design") { }
+	bool formatted_help() override {
+		auto *help = PrettyHelp::get_current();
+		help->set_group("passes/status");
+		return false;
+	}
 	void help() override
 	{
 		//   |---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|
@@ -39,6 +46,8 @@ struct CheckPass : public Pass {
 		log("  - combinatorial loops\n");
 		log("  - two or more conflicting drivers for one wire\n");
 		log("  - used wires that do not have a driver\n");
+		log("  - cells of an internal ($-prefixed) type that is neither a known cell type\n");
+		log("    nor a module in the design\n");
 		log("\n");
 		log("Options:\n");
 		log("\n");
@@ -52,6 +61,16 @@ struct CheckPass : public Pass {
 		log("    -mapped\n");
 		log("        also check for internal cells that have not been mapped to cells of the\n");
 		log("        target architecture\n");
+		log("\n");
+		log("    -nolatches\n");
+		log("        also check for latch cells ($dlatch, $adlatch, $dlatchsr and their\n");
+		log("        $_DLATCH_*/$_DLATCHSR_* mappings) remaining in the design. Use this\n");
+		log("        before techmapping in flows that must not emit latches. Cells marked\n");
+		log("        with the 'always_latch' attribute are not reported.\n");
+		log("\n");
+		log("    -latchonly\n");
+		log("        check only for latch cells (as listed under -nolatches), skipping all\n");
+		log("        other checks.\n");
 		log("\n");
 		log("    -allow-tbuf\n");
 		log("        modify the -mapped behavior to still allow $_TBUF_ cells\n");
@@ -72,6 +91,8 @@ struct CheckPass : public Pass {
 		bool noinit = false;
 		bool initdrv = false;
 		bool mapped = false;
+		bool nolatches = false;
+		bool latchonly = false;
 		bool allow_tbuf = false;
 		bool assert_mode = false;
 		bool force_detailed_loop_check = false;
@@ -89,6 +110,14 @@ struct CheckPass : public Pass {
 			}
 			if (args[argidx] == "-mapped") {
 				mapped = true;
+				continue;
+			}
+			if (args[argidx] == "-nolatches") {
+				nolatches = true;
+				continue;
+			}
+			if (args[argidx] == "-latchonly") {
+				latchonly = true;
 				continue;
 			}
 			if (args[argidx] == "-allow-tbuf") {
@@ -111,7 +140,19 @@ struct CheckPass : public Pass {
 
 		for (auto module : design->selected_whole_modules_warn())
 		{
-			log("Checking module %s...\n", log_id(module));
+			log("Checking module %s...\n", module);
+
+			// latch-only mode only flags latches, skipping the (potentially false-positive mid-flow) undriven/driver/loop checks below
+			if (latchonly) {
+				for (auto cell : module->cells())
+					if (!cell->get_bool_attribute(ID::always_latch) && (
+						cell->type.in(ID($dlatch), ID($adlatch), ID($dlatchsr)) ||
+						cell->type.begins_with("$_DLATCH_") || cell->type.begins_with("$_DLATCHSR_"))) {
+						log_warning("Cell %s.%s is a latch of type %s.\n", module, cell, cell->type.unescape());
+						counter++;
+					}
+				continue;
+			}
 
 			SigMap sigmap(module);
 			dict<SigBit, vector<string>> wire_drivers;
@@ -121,13 +162,17 @@ struct CheckPass : public Pass {
 			TopoSort<std::pair<RTLIL::IdString, int>> topo;
 			for (auto &proc_it : module->processes)
 			{
+				pool<SigBit> proc_driven_bits;
 				std::vector<RTLIL::CaseRule*> all_cases = {&proc_it.second->root_case};
 				for (size_t i = 0; i < all_cases.size(); i++) {
 					for (auto action : all_cases[i]->actions) {
-						for (auto bit : sigmap(action.first))
+						for (auto bit : sigmap(action.first)) {
 							wire_drivers[bit].push_back(
 								stringf("action %s <= %s (case rule) in process %s",
-										log_signal(action.first), log_signal(action.second), log_id(proc_it.first)));
+										log_signal(action.first), log_signal(action.second), module->twines().unescaped_str(proc_it.first)));
+							if (bit.wire)
+								proc_driven_bits.insert(bit);
+						}
 
 						for (auto bit : sigmap(action.second))
 							if (bit.wire) used_wires.insert(bit);
@@ -145,10 +190,13 @@ struct CheckPass : public Pass {
 					for (auto bit : sigmap(sync->signal))
 						if (bit.wire) used_wires.insert(bit);
 					for (auto action : sync->actions) {
-						for (auto bit : sigmap(action.first))
+						for (auto bit : sigmap(action.first)) {
 							wire_drivers[bit].push_back(
 								stringf("action %s <= %s (sync rule) in process %s",
-										log_signal(action.first), log_signal(action.second), log_id(proc_it.first)));
+										log_signal(action.first), log_signal(action.second), module->twines().unescaped_str(proc_it.first)));
+							if (bit.wire && sync->type != RTLIL::SyncType::STi)
+								proc_driven_bits.insert(bit);
+						}
 						for (auto bit : sigmap(action.second))
 							if (bit.wire) used_wires.insert(bit);
 					}
@@ -161,6 +209,8 @@ struct CheckPass : public Pass {
 							if (bit.wire) used_wires.insert(bit);
 					}
 				}
+				for (auto bit : proc_driven_bits)
+					wire_drivers_count[bit]++;
 			}
 
 			struct CircuitEdgesDatabase : AbstractCellEdgesDatabase {
@@ -181,7 +231,7 @@ struct CheckPass : public Pass {
 					SigBit to = sigmap(to_portsig[to_bit]);
 
 					if (from.wire && to.wire)
-						topo.edge(std::make_pair(from.wire->name, from.offset), std::make_pair(to.wire->name, to.offset));
+						topo.edge(std::make_pair(IdString(from.wire->name), from.offset), std::make_pair(IdString(to.wire->name), to.offset));
 				}
 
 				bool detail_costly(Cell *cell) {
@@ -189,21 +239,28 @@ struct CheckPass : public Pass {
 					// in port widths are those for us to check.
 					if (!cell->type.in(
 							ID($add), ID($sub),
-							ID($shl), ID($shr), ID($sshl), ID($sshr), ID($shift), ID($shiftx)))
+							ID($shl), ID($shr), ID($sshl), ID($sshr), ID($shift), ID($shiftx),
+							ID($pmux), ID($bmux)))
 						return false;
 
 					int in_widths = 0, out_widths = 0;
 
-					for (auto &conn : cell->connections()) {
-						if (cell->input(conn.first))
-							in_widths += conn.second.size();
-						if (cell->output(conn.first))
-							out_widths += conn.second.size();
+					if (cell->type.in(ID($pmux), ID($bmux))) {
+						// We're skipping inputs A and B, since each of their bits contributes only one edge
+						in_widths = GetSize(cell->getPort(ID::S));
+						out_widths = GetSize(cell->getPort(ID::Y));
+					} else {
+						for (auto &conn : cell->connections()) {
+							if (cell->input(conn.first))
+								in_widths += conn.second.size();
+							if (cell->output(conn.first))
+								out_widths += conn.second.size();
+						}
 					}
 
 					const int threshold = 1024;
 
-					// if the multiplication may overflow we will catch it here 
+					// if the multiplication may overflow we will catch it here
 					if (in_widths + out_widths >= threshold)
 						return true;
 
@@ -224,14 +281,14 @@ struct CheckPass : public Pass {
 						if (cell->input(conn.first))
 						for (auto bit : sigmap(conn.second))
 						if (bit.wire)
-							topo.edge(std::make_pair(bit.wire->name, bit.offset),
-									  std::make_pair(cell->name, -1));
+							topo.edge(std::make_pair(IdString(bit.wire->name), bit.offset),
+									  std::make_pair(IdString(cell->name), -1));
 
 						if (cell->output(conn.first))
 						for (auto bit : sigmap(conn.second))
 						if (bit.wire)
-							topo.edge(std::make_pair(cell->name, -1),
-									  std::make_pair(bit.wire->name, bit.offset));
+							topo.edge(std::make_pair(IdString(cell->name), -1),
+									  std::make_pair(IdString(bit.wire->name), bit.offset));
 					}
 
 					// Return false to signify the fallback
@@ -244,11 +301,25 @@ struct CheckPass : public Pass {
 			pool<Cell *> coarsened_cells;
 			for (auto cell : module->cells())
 			{
+				if (cell->type.begins_with("$") && !yosys_celltypes.cell_known(cell->type) && design->module(cell->type) == nullptr) {
+					log_warning("Cell %s.%s has unknown internal type %s.\n", module, cell, cell->type.unescape());
+					counter++;
+				}
+
 				if (mapped && cell->type.begins_with("$") && design->module(cell->type) == nullptr) {
 					if (allow_tbuf && cell->type == ID($_TBUF_)) goto cell_allowed;
-					log_warning("Cell %s.%s is an unmapped internal cell of type %s.\n", log_id(module), log_id(cell), log_id(cell->type));
+					log_warning("Cell %s.%s is an unmapped internal cell of type %s.\n", module, cell, cell->type.unescape());
 					counter++;
 				cell_allowed:;
+				}
+
+				if (
+					nolatches && !cell->get_bool_attribute(ID::always_latch) && (
+					cell->type.in(ID($dlatch), ID($adlatch), ID($dlatchsr)) ||
+					cell->type.begins_with("$_DLATCH_") || cell->type.begins_with("$_DLATCHSR_"))
+				) {
+					log_warning("Cell %s.%s is a latch of type %s.\n", module, cell, cell->type.unescape());
+					counter++;
 				}
 
 				for (auto &conn : cell->connections()) {
@@ -262,17 +333,17 @@ struct CheckPass : public Pass {
 						if (input && bit.wire)
 							used_wires.insert(bit);
 						if (output && !input && bit.wire)
-							wire_drivers_count[bit]++;
+						wire_drivers_count[bit]++;
 						if (output && (bit.wire || !input))
-							wire_drivers[bit].push_back(stringf("port %s[%d] of cell %s (%s)", log_id(conn.first), i,
-																log_id(cell), log_id(cell->type)));
+							wire_drivers[bit].push_back(stringf("port %s[%d] of cell %s (%s)", cell->twines().unescaped_str(conn.first), i,
+																cell, cell->type.unescape()));
 						if (output)
 							driver_cells[bit] = cell;
 					}
 				}
 
-				if (yosys_celltypes.cell_evaluable(cell->type) || cell->type.in(ID($mem_v2), ID($memrd), ID($memrd_v2)) \
-						|| RTLIL::builtin_ff_cell_types().count(cell->type)) {
+				if (yosys_celltypes.cell_evaluable(cell->type) || cell->type.in(ID($mem_v2), ID($memrd), ID($memrd_v2), ID($barrier)) \
+						|| cell->is_builtin_ff()) {
 					if (!edges_db.add_edges_from_cell(cell))
 						coarsened_cells.insert(cell);
 				}
@@ -285,7 +356,7 @@ struct CheckPass : public Pass {
 					SigSpec sig = sigmap(wire);
 					for (int i = 0; i < GetSize(sig); i++)
 						if (sig[i].wire || !wire->port_output)
-							wire_drivers[sig[i]].push_back(stringf("module input %s[%d]", log_id(wire), i));
+							wire_drivers[sig[i]].push_back(stringf("module input %s[%d]", wire, i));
 				}
 				if (wire->port_output)
 					for (auto bit : sigmap(wire))
@@ -299,7 +370,7 @@ struct CheckPass : public Pass {
 						if (initval[i] == State::S0 || initval[i] == State::S1)
 							init_bits.insert(sigmap(SigBit(wire, i)));
 					if (noinit) {
-						log_warning("Wire %s.%s has an unprocessed 'init' attribute.\n", log_id(module), log_id(wire));
+						log_warning("Wire %s.%s has an unprocessed 'init' attribute.\n", module, wire);
 						counter++;
 					}
 				}
@@ -309,29 +380,29 @@ struct CheckPass : public Pass {
 				if (wire_drivers.count(state)) {
 					string message = stringf("Drivers conflicting with a constant %s driver:\n", log_signal(state));
 					for (auto str : wire_drivers[state])
-						message += stringf("    %s\n", str.c_str());
-					log_warning("%s", message.c_str());
+						message += stringf("    %s\n", str);
+					log_warning("%s", message);
 					counter++;
 				}
 
 			for (auto it : wire_drivers)
 				if (wire_drivers_count[it.first] > 1) {
-					string message = stringf("multiple conflicting drivers for %s.%s:\n", log_id(module), log_signal(it.first));
+					string message = stringf("multiple conflicting drivers for %s.%s:\n", module, log_signal(it.first));
 					for (auto str : it.second)
-						message += stringf("    %s\n", str.c_str());
-					log_warning("%s", message.c_str());
+						message += stringf("    %s\n", str);
+					log_warning("%s", message);
 					counter++;
 				}
 
 			for (auto bit : used_wires)
 				if (!wire_drivers.count(bit)) {
-					log_warning("Wire %s.%s is used but has no driver.\n", log_id(module), log_signal(bit));
+					log_warning("Wire %s.%s is used but has no driver.\n", module, log_signal(bit));
 					counter++;
 				}
 
 			topo.sort();
 			for (auto &loop : topo.loops) {
-				string message = stringf("found logic loop in module %s:\n", log_id(module));
+				string message = stringf("found logic loop in module %s:\n", module);
 
 				// `loop` only contains wire bits, or an occasional special helper node for cells for
 				// which we have done the edges fallback. The cell and its ports that led to an edge are
@@ -365,8 +436,8 @@ struct CheckPass : public Pass {
 							SigBit edge_to = sigmap(cell->getPort(to_port))[to_bit];
 
 							if (edge_from == from && edge_to == to && nhits++ < HITS_LIMIT)
-								message += stringf("      %s[%d] --> %s[%d]\n", log_id(from_port), from_bit,
-												   log_id(to_port), to_bit);
+								message += stringf("      %s[%d] --> %s[%d]\n", cell->twines().unescaped_str(from_port), from_bit,
+												   cell->twines().unescaped_str(to_port), to_bit);
 							if (nhits == HITS_LIMIT)
 								message += "      ...\n";
 						}
@@ -374,19 +445,19 @@ struct CheckPass : public Pass {
 
 					Wire *wire = module->wire(pair.first);
 					log_assert(wire);
-					SigBit bit(module->wire(pair.first), pair.second);
+					SigBit bit(wire, pair.second);
 					log_assert(driver_cells.count(bit));
 					Cell *driver = driver_cells.at(bit);
 
 					std::string driver_src;
 					if (driver->has_attribute(ID::src)) {
 						std::string src_attr = driver->get_src_attribute();
-						driver_src = stringf(" source: %s", src_attr.c_str());
+						driver_src = stringf(" source: %s", src_attr);
 					}
 
-					message += stringf("    cell %s (%s)%s\n", log_id(driver), log_id(driver->type), driver_src.c_str());
+					message += stringf("    cell %s (%s)%s\n", driver, driver->type.unescape(), driver_src);
 
-					if (!coarsened_cells.count(driver)) {						
+					if (!coarsened_cells.count(driver)) {
 						MatchingEdgePrinter printer(message, sigmap, prev, bit);
 						printer.add_edges_from_cell(driver);
 					} else {
@@ -398,14 +469,14 @@ struct CheckPass : public Pass {
 						std::string wire_src;
 						if (wire->has_attribute(ID::src)) {
 							std::string src_attr = wire->get_src_attribute();
-							wire_src = stringf(" source: %s", src_attr.c_str());
+							wire_src = stringf(" source: %s", src_attr);
 						}
-						message += stringf("    wire %s%s\n", log_signal(SigBit(wire, pair.second)), wire_src.c_str());						
+						message += stringf("    wire %s%s\n", log_signal(SigBit(wire, pair.second)), wire_src);
 					}
 
 					prev = bit;
 				}
-				log_warning("%s", message.c_str());
+				log_warning("%s", message);
 				counter++;
 			}
 
@@ -413,7 +484,7 @@ struct CheckPass : public Pass {
 			{
 				for (auto cell : module->cells())
 				{
-					if (RTLIL::builtin_ff_cell_types().count(cell->type) == 0)
+					if (cell->is_builtin_ff() == 0)
 						continue;
 
 					for (auto bit : sigmap(cell->getPort(ID::Q)))
@@ -424,7 +495,7 @@ struct CheckPass : public Pass {
 				init_sig.sort_and_unify();
 
 				for (auto chunk : init_sig.chunks()) {
-					log_warning("Wire %s.%s has 'init' attribute and is not driven by an FF cell.\n", log_id(module), log_signal(chunk));
+					log_warning("Wire %s.%s has 'init' attribute and is not driven by an FF cell.\n", module, log_signal(chunk));
 					counter++;
 				}
 			}
@@ -439,5 +510,96 @@ struct CheckPass : public Pass {
 			log_error("Found %d problems in 'check -assert'.\n", counter);
 	}
 } CheckPass;
+
+struct CheckMemPass : public Pass {
+	CheckMemPass() : Pass("check_mem", "check for obvious memory problems in the design") { }
+	bool formatted_help() override {
+		auto *help = PrettyHelp::get_current();
+		help->set_group("passes/status");
+
+		auto content_root = help->get_root();
+
+		content_root->usage("check_mem [selection]");
+		content_root->paragraph(
+			"This pass identifies the following problems in the current design: "
+			"addressing invalid memory."
+		);
+
+		content_root->option("-non-const", "also check non-const address signals (may produce false-positives)");
+		content_root->option("-assert", "produce a runtime error if any problems are found in the current design");
+
+		return true;
+	}
+	void execute(std::vector<std::string> args, RTLIL::Design *design) override
+	{
+		int counter = 0;
+		bool assert_mode = false;
+		bool nonconst_mode = false;
+		size_t argidx;
+		for (argidx = 1; argidx < args.size(); argidx++) {
+			if (args[argidx] == "-assert") {
+				assert_mode = true;
+				continue;
+			}
+			if (args[argidx] == "-non-const") {
+				nonconst_mode = true;
+				continue;
+			}
+			break;
+		}
+
+		extra_args(args, argidx, design);
+
+		log_header(design, "Executing CHECK_MEM pass.\n");
+
+		for (auto *module : design->selected_unboxed_modules_warn()) {
+			for (auto mem : Mem::get_selected_memories(module)) {
+				int min_addr = mem.mem->start_offset;
+				int max_addr = mem.mem->size + min_addr - 1;
+				for (auto &init : mem.inits) {
+					int start = init.addr.as_int();
+					if (start < min_addr) {
+						log_warning("Mem %s.%s starts at %d but initializes address %d.\n", module, mem.mem, min_addr, start);
+						counter++;
+					}
+					int end = start + (GetSize(init.data) / mem.width) - 1;
+					if (end > max_addr) {
+						log_warning("Mem %s.%s ends at %d but initializes address %d.\n", module, mem.mem, max_addr, end);
+						counter++;
+					}
+				}
+
+				auto check_addr = [min_addr, max_addr, &counter, module, &mem, &nonconst_mode](SigSpec &addr_sig, const char* access) {
+					if (addr_sig.is_fully_const()) {
+						auto addr = addr_sig.as_int();
+						if (addr < min_addr || addr > max_addr) {
+							log_warning("Mem %s.%s contains entries for addresses %d..%d but %s address %d.\n", module, mem.mem, min_addr, max_addr, access, addr);
+							counter++;
+						}
+					} else if (nonconst_mode) {
+						// TODO check addr_sig.has_const() for constant MSb/LSb that may change effective min/max
+						// TODO consider sat solver for variable addresses
+						int addr_sig_min = 0;
+						int addr_sig_max = (1 << addr_sig.size()) - 1;
+						if (min_addr > addr_sig_min || max_addr < addr_sig_max) {
+							log_warning("Mem %s.%s contains entries for addresses %d..%d but has a potentially dangerous non-const input %s\n", module, mem.mem, min_addr, max_addr, log_signal(addr_sig));
+							counter++;
+						}
+					}
+				};
+
+				// TODO test ABITS and WIDTH?
+				// TODO can we limit ports via selection?
+				for (auto &rd_port : mem.rd_ports)
+					check_addr(rd_port.addr, "reads");
+				for (auto &wr_port : mem.wr_ports)
+					check_addr(wr_port.addr, "writes");
+			}
+		}
+
+		if (assert_mode && counter > 0)
+			log_error("Found %d problems in 'check_mem -assert'.\n", counter);
+	}
+} CheckMemPass;
 
 PRIVATE_NAMESPACE_END

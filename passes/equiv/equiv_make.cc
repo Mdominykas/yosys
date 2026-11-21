@@ -47,7 +47,7 @@ struct EquivMakeWorker
 		{
 			std::ifstream f(fn);
 			if (f.fail())
-				log_cmd_error("Can't open blacklist file '%s'!\n", fn.c_str());
+				log_cmd_error("Can't open blacklist file '%s'!\n", fn);
 
 			string line, token;
 			while (std::getline(f, line)) {
@@ -55,7 +55,9 @@ struct EquivMakeWorker
 					token = next_token(line);
 					if (token.empty())
 						break;
-					blacklist_names.insert(RTLIL::escape_id(token));
+					IdString name = gold_mod->twines().find(RTLIL::escape_id(token));
+					if (name != IdString::Null)
+						blacklist_names.insert(name);
 				}
 			}
 		}
@@ -67,7 +69,7 @@ struct EquivMakeWorker
 		{
 			std::ifstream f(fn);
 			if (f.fail())
-				log_cmd_error("Can't open encfile '%s'!\n", fn.c_str());
+				log_cmd_error("Can't open encfile '%s'!\n", fn);
 
 			dict<Const, Const> *ed = nullptr;
 			string line, token;
@@ -78,10 +80,11 @@ struct EquivMakeWorker
 					continue;
 
 				if (token == ".fsm") {
-					IdString modname = RTLIL::escape_id(next_token(line));
-					IdString signame = RTLIL::escape_id(next_token(line));
+					IdString modname = gold_mod->twines().find(RTLIL::escape_id(next_token(line)));
+					(void)modname;
+					IdString signame = gold_mod->twines().find(RTLIL::escape_id(next_token(line)));
 					if (encdata.count(signame))
-						log_cmd_error("Re-definition of signal '%s' in encfile '%s'!\n", signame.c_str(), fn.c_str());
+						log_cmd_error("Re-definition of signal '%s' in encfile '%s'!\n", PooledName(gold_mod->design, signame).unescape(), fn);
 					encdata[signame] = dict<Const, Const>();
 					ed = &encdata[signame];
 					continue;
@@ -94,7 +97,7 @@ struct EquivMakeWorker
 					continue;
 				}
 
-				log_cmd_error("Syntax error in encfile '%s'!\n", fn.c_str());
+				log_cmd_error("Syntax error in encfile '%s'!\n", fn);
 			}
 		}
 	}
@@ -151,18 +154,18 @@ struct EquivMakeWorker
 
 		for (auto id : wire_names)
 		{
-			IdString gold_id = id.str() + "_gold";
-			IdString gate_id = id.str() + "_gate";
+			IdString gold_id = equiv_mod->twines().find(equiv_mod->twines().str(id) + "_gold");
+			IdString gate_id = equiv_mod->twines().find(equiv_mod->twines().str(id) + "_gate");
 
 			Wire *gold_wire = equiv_mod->wire(gold_id);
 			Wire *gate_wire = equiv_mod->wire(gate_id);
 
 			if (encdata.count(id))
 			{
-				log("Creating encoder/decoder for signal %s.\n", log_id(id));
+				log("Creating encoder/decoder for signal %s.\n", PooledName(equiv_mod->design, id).unescape());
 
-				Wire *dec_wire = equiv_mod->addWire(id.str() + "_decoded", gold_wire->width);
-				Wire *enc_wire = equiv_mod->addWire(id.str() + "_encoded", gate_wire->width);
+				Wire *dec_wire = equiv_mod->addWire(equiv_mod->twines().str(id) + "_decoded", gold_wire->width);
+				Wire *enc_wire = equiv_mod->addWire(equiv_mod->twines().str(id) + "_encoded", gate_wire->width);
 
 				SigSpec dec_a, dec_b, dec_s;
 				SigSpec enc_a, enc_b, enc_s;
@@ -226,15 +229,15 @@ struct EquivMakeWorker
 
 			if (gold_wire == nullptr || gate_wire == nullptr || gold_wire->width != gate_wire->width) {
 				if (gold_wire && gold_wire->port_id)
-					log_error("Can't match gold port `%s' to a gate port.\n", log_id(gold_wire));
+					log_error("Can't match gold port `%s' to a gate port.\n", gold_wire);
 				if (gate_wire && gate_wire->port_id)
-					log_error("Can't match gate port `%s' to a gold port.\n", log_id(gate_wire));
+					log_error("Can't match gate port `%s' to a gold port.\n", gate_wire);
 				continue;
 			}
 
 			log("Presumably equivalent wires: %s (%s), %s (%s) -> %s\n",
-					log_id(gold_wire), log_signal(assign_map(gold_wire)),
-					log_id(gate_wire), log_signal(assign_map(gate_wire)), log_id(id));
+					gold_wire, log_signal(assign_map(gold_wire)),
+					gate_wire, log_signal(assign_map(gate_wire)), PooledName(equiv_mod->design, id).unescape());
 
 			if (gold_wire->port_output || gate_wire->port_output)
 			{
@@ -284,11 +287,11 @@ struct EquivMakeWorker
 
 					for (int i = 0; i < wire->width; i++) {
 						if (undriven_bits.count(assign_map(SigBit(gold_wire, i)))) {
-							log("  Skipping signal bit %s [%d]: undriven on gold side.\n", id2cstr(gold_wire->name), i);
+							log("  Skipping signal bit %s [%d]: undriven on gold side.\n", gold_wire, i);
 							continue;
 						}
 						if (undriven_bits.count(assign_map(SigBit(gate_wire, i)))) {
-							log("  Skipping signal bit %s [%d]: undriven on gate side.\n", id2cstr(gate_wire->name), i);
+							log("  Skipping signal bit %s [%d]: undriven on gate side.\n", gate_wire, i);
 							continue;
 						}
 						equiv_mod->addEquiv(NEW_ID, SigSpec(gold_wire, i), SigSpec(gate_wire, i), SigSpec(wire, i));
@@ -313,7 +316,7 @@ struct EquivMakeWorker
 						new_sig[i] = old_sig[i];
 				if (old_sig != new_sig) {
 					log("Changing input %s of cell %s (%s): %s -> %s\n",
-							log_id(conn.first), log_id(c), log_id(c->type),
+							PooledName(equiv_mod, conn.first).unescape(), c, c->type.unescape(),
 							log_signal(old_sig), log_signal(new_sig));
 					c->setPort(conn.first, new_sig);
 				}
@@ -328,8 +331,8 @@ struct EquivMakeWorker
 
 		for (auto id : cell_names)
 		{
-			IdString gold_id = id.str() + "_gold";
-			IdString gate_id = id.str() + "_gate";
+			IdString gold_id = equiv_mod->twines().find(equiv_mod->twines().str(id) + "_gold");
+			IdString gate_id = equiv_mod->twines().find(equiv_mod->twines().str(id) + "_gate");
 
 			Cell *gold_cell = equiv_mod->cell(gold_id);
 			Cell *gate_cell = equiv_mod->cell(gate_id);
@@ -344,7 +347,7 @@ struct EquivMakeWorker
 					goto try_next_cell_name;
 
 			log("Presumably equivalent cells: %s %s (%s) -> %s\n",
-					log_id(gold_cell), log_id(gate_cell), log_id(gold_cell->type), log_id(id));
+					gold_cell, gate_cell, gold_cell->type.unescape(), PooledName(equiv_mod->design, id).unescape());
 
 			for (auto gold_conn : gold_cell->connections())
 			{
@@ -448,7 +451,7 @@ struct EquivMakePass : public Pass {
 		log("\n");
 		log("    -make_assert\n");
 		log("        Check equivalence with $assert cells instead of $equiv.\n");
-		log("        $eqx (===) is used to compare signals.");
+		log("        $eqx (===) is used to compare signals.\n");
 		log("\n");
 		log("Note: The circuit created by this command is not a miter (with something like\n");
 		log("a trigger output), but instead uses $equiv cells to encode the equivalence\n");
@@ -492,13 +495,13 @@ struct EquivMakePass : public Pass {
 		worker.equiv_mod = design->module(RTLIL::escape_id(args[argidx+2]));
 
 		if (worker.gold_mod == nullptr)
-			log_cmd_error("Can't find gold module %s.\n", args[argidx].c_str());
+			log_cmd_error("Can't find gold module %s.\n", args[argidx]);
 
 		if (worker.gate_mod == nullptr)
-			log_cmd_error("Can't find gate module %s.\n", args[argidx+1].c_str());
+			log_cmd_error("Can't find gate module %s.\n", args[argidx+1]);
 
 		if (worker.equiv_mod != nullptr)
-			log_cmd_error("Equiv module %s already exists.\n", args[argidx+2].c_str());
+			log_cmd_error("Equiv module %s already exists.\n", args[argidx+2]);
 
 		if (worker.gold_mod->has_memories() || worker.gold_mod->has_processes())
 			log_cmd_error("Gold module contains memories or processes. Run 'memory' or 'proc' respectively.\n");

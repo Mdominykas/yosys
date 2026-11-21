@@ -79,20 +79,20 @@ void gen_dffsr_complex(RTLIL::Module *mod, RTLIL::SigSpec sig_d, RTLIL::SigSpec 
 	}
 
 	std::stringstream sstr;
-	sstr << "$procdff$" << (autoidx++);
+	sstr << "$procdff$" << (mod->twines().next_autoidx());
 
 	RTLIL::Cell *cell = mod->addDffsr(sstr.str(), clk, sig_sr_set, sig_sr_clr, sig_d, sig_q, clk_polarity);
 	cell->attributes = proc->attributes;
 
 	log("  created %s cell `%s' with %s edge clock and multiple level-sensitive resets.\n",
-			cell->type.c_str(), cell->name.c_str(), clk_polarity ? "positive" : "negative");
+			cell->type, cell->name, clk_polarity ? "positive" : "negative");
 }
 
 void gen_aldff(RTLIL::Module *mod, RTLIL::SigSpec sig_in, RTLIL::SigSpec sig_set, RTLIL::SigSpec sig_out,
 		bool clk_polarity, bool set_polarity, RTLIL::SigSpec clk, RTLIL::SigSpec set, RTLIL::Process *proc)
 {
 	std::stringstream sstr;
-	sstr << "$procdff$" << (autoidx++);
+	sstr << "$procdff$" << (mod->twines().next_autoidx());
 
 	RTLIL::Cell *cell = mod->addCell(sstr.str(), ID($aldff));
 	cell->attributes = proc->attributes;
@@ -106,7 +106,7 @@ void gen_aldff(RTLIL::Module *mod, RTLIL::SigSpec sig_in, RTLIL::SigSpec sig_set
 	cell->setPort(ID::CLK, clk);
 	cell->setPort(ID::ALOAD, set);
 
-	log("  created %s cell `%s' with %s edge clock and %s level non-const reset.\n", cell->type.c_str(), cell->name.c_str(),
+	log("  created %s cell `%s' with %s edge clock and %s level non-const reset.\n", cell->type, cell->name,
 			clk_polarity ? "positive" : "negative", set_polarity ? "positive" : "negative");
 }
 
@@ -114,7 +114,7 @@ void gen_dff(RTLIL::Module *mod, RTLIL::SigSpec sig_in, RTLIL::Const val_rst, RT
 		bool clk_polarity, bool arst_polarity, RTLIL::SigSpec clk, RTLIL::SigSpec *arst, RTLIL::Process *proc)
 {
 	std::stringstream sstr;
-	sstr << "$procdff$" << (autoidx++);
+	sstr << "$procdff$" << (mod->twines().next_autoidx());
 
 	RTLIL::Cell *cell = mod->addCell(sstr.str(), clk.empty() ? ID($ff) : arst ? ID($adff) : ID($dff));
 	cell->attributes = proc->attributes;
@@ -135,13 +135,14 @@ void gen_dff(RTLIL::Module *mod, RTLIL::SigSpec sig_in, RTLIL::Const val_rst, RT
 	if (!clk.empty())
 		cell->setPort(ID::CLK, clk);
 
+	std::string message;
 	if (!clk.empty())
-		log("  created %s cell `%s' with %s edge clock", cell->type.c_str(), cell->name.c_str(), clk_polarity ? "positive" : "negative");
+		message = stringf("  created %s cell `%s' with %s edge clock", cell->type, cell->name, clk_polarity ? "positive" : "negative");
 	else
-		log("  created %s cell `%s' with global clock", cell->type.c_str(), cell->name.c_str());
+		message = stringf("  created %s cell `%s' with global clock", cell->type, cell->name);
 	if (arst)
-		log(" and %s level reset", arst_polarity ? "positive" : "negative");
-	log(".\n");
+		message += stringf(" and %s level reset", arst_polarity ? "positive" : "negative");
+	log("%s.\n", message);
 }
 
 void proc_dff(RTLIL::Module *mod, RTLIL::Process *proc, ConstEval &ce)
@@ -154,7 +155,7 @@ void proc_dff(RTLIL::Module *mod, RTLIL::Process *proc, ConstEval &ce)
 			break;
 
 		log("Creating register for signal `%s.%s' using process `%s.%s'.\n",
-				mod->name.c_str(), log_signal(sig), mod->name.c_str(), proc->name.c_str());
+				mod->name, log_signal(sig), mod->name, proc->name);
 
 		RTLIL::SigSpec insig = RTLIL::SigSpec(RTLIL::State::Sz, sig.size());
 		RTLIL::SyncRule *sync_edge = NULL;

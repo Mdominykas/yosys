@@ -5,6 +5,8 @@ pattern muldiv_c
 // y = (a * b_const) / c_const   ===>   a * eval(b_const / c_const)
 //
 
+udata <bool> did_something
+
 state <SigSpec> a b_const mul_y
 
 match mul
@@ -34,6 +36,7 @@ match div
 	// Check that b_const and c_const is constant
 	filter b_const.is_fully_const()
 	filter port(div, \B).is_fully_const()
+	filter param(div, \A_SIGNED).as_bool() == param(mul, \A_SIGNED).as_bool()
 	index <SigSpec> remove_bottom_padding(port(div, \A)) === mul_y
 endmatch
 
@@ -55,19 +58,19 @@ code
 	int c_const_int = c_const.as_int(c_const_signed);
 	int b_const_int_shifted = b_const_int << offset;
 
-	// Helper lambdas for two's complement math	
+	// Helper lambdas for two's complement math
 	auto sign2sComplement = [](auto value, int numBits) {
   		if (value & (1 << (numBits - 1))) {
-   			return -1; 
+   			return -1;
   		} else {
-   		    return 1; 
+   		    return 1;
   		}
 	};
 	auto twosComplement = [](auto value, int numBits) {
   		if (value & (1 << (numBits - 1))) {
    			return (~value) + 1; // invert bits before adding 1
   		} else {
-   		    return value; 
+   		    return value;
   		}
 	};
 
@@ -119,7 +122,8 @@ code
 	autoremove(div);
 
 	// Log, fixup, accept
-	log("muldiv_const pattern in %s: mul=%s, div=%s\n", log_id(module), log_id(mul), log_id(div));
+	log("muldiv_const pattern in %s: mul=%s, div=%s\n", module, mul, div);
 	mul->fixup_parameters();
+	did_something = true;
 	accept;
 endcode

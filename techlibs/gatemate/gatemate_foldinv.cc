@@ -82,7 +82,7 @@ struct FoldInvWorker {
         Const result(State::S0, GetSize(lut));
         for (int i = 0; i < GetSize(lut); i++) {
             int j = i ^ (1 << bit);
-            result.bits()[j] = lut[i];
+            result.set(j, lut[i]);
         }
         return result;
     }
@@ -91,7 +91,7 @@ struct FoldInvWorker {
     {
         Const result(State::S0, GetSize(lut));
         for (int i = 0; i < GetSize(lut); i++)
-            result.bits()[i] = (lut[i] == State::S1) ? State::S0 : State::S1;
+            result.set(i, (lut[i] == State::S1) ? State::S0 : State::S1);
         return result;
     }
 
@@ -125,6 +125,10 @@ struct FoldInvWorker {
     void fold_output_inverters()
     {
         pool<SigBit> used_bits;
+        for (auto wire : module->wires())
+            if (wire->port_output)
+                for (auto bit : sigmap(SigSpec(wire)))
+                    used_bits.insert(bit);
         // Find bits that are actually used
         for (auto cell : module->selected_cells()) {
             for (auto conn : cell->connections()) {
@@ -211,9 +215,8 @@ struct GatemateFoldInvPass : public Pass {
         for (Module *module : design->selected_modules()) {
             FoldInvWorker worker(module);
             worker();
-        }        
+        }
     }
 } GatemateFoldInvPass;
 
 PRIVATE_NAMESPACE_END
-

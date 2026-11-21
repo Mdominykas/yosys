@@ -61,7 +61,7 @@ struct ScopeinfoExamplePass : public Pass {
 
 		if (do_wires) {
 			for (auto module : design->selected_modules()) {
-				log("Source hierarchy for all selected wires within %s:\n", log_id(module));
+				log("Source hierarchy for all selected wires within %s:\n", module);
 				ModuleHdlnameIndex index(module);
 
 				index.index_scopeinfo_cells();
@@ -73,13 +73,14 @@ struct ScopeinfoExamplePass : public Pass {
 					auto wire_scope = index.containing_scope(wire);
 
 					if (!wire_scope.first.valid()) {
-						log_warning("Couldn't find containing scope for %s in index\n", log_id(wire));
+						log_warning("Couldn't find containing scope for %s in index\n", wire);
 						continue;
 					}
 
-					log("%s %s\n", wire_scope.first.path_str().c_str(), log_id(wire_scope.second));
+					log("%s %s\n", wire_scope.first.path_str(design),
+							design->twines().unescaped_str(wire_scope.second));
 					for (auto src : index.sources(wire))
-						log(" - %s\n", src.c_str());
+						log(" - %s\n", src);
 				}
 			}
 		}
@@ -127,9 +128,11 @@ struct ScopeinfoExamplePass : public Pass {
 							continue;
 
 						log("common_ancestor(%s %s%s%s, %s %s%s%s) = %s %s\n",
-							log_id(module), scope_i.first.path_str().c_str(), scope_i.first.is_root() ? "" : " ", log_id(scope_i.second),
-							log_id(module), scope_j.first.path_str().c_str(), scope_j.first.is_root() ? "" : " ", log_id(scope_j.second),
-							log_id(module), common.path_str().c_str()
+							module, scope_i.first.path_str(design), scope_i.first.is_root() ? "" : " ",
+							design->twines().unescaped_str(scope_i.second),
+							module, scope_j.first.path_str(design), scope_j.first.is_root() ? "" : " ",
+							design->twines().unescaped_str(scope_j.second),
+							module, common.path_str(design)
 						);
 
 						if (++limit == 10)

@@ -30,6 +30,19 @@ struct SynthAnlogicPass : public ScriptPass
 {
 	SynthAnlogicPass() : ScriptPass("synth_anlogic", "synthesis for Anlogic FPGAs") { }
 
+	void on_register() override
+	{
+		target_register.emplace("anlogic", Target{
+			"Anlogic",
+			{
+				{"", { // default
+					"",
+					{"+/anlogic/cells_sim.v", "+/anlogic/eagle_bb.v"}
+				}}
+			}
+		});
+	}
+
 	void help() override
 	{
 		//   |---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|
@@ -57,9 +70,6 @@ struct SynthAnlogicPass : public ScriptPass
 		log("    -noflatten\n");
 		log("        do not flatten design before synthesis\n");
 		log("\n");
-		log("    -retime\n");
-		log("        run 'abc' with '-dff -D 1' options\n");
-		log("\n");
 		log("    -nolutram\n");
 		log("        do not use EG_LOGIC_DRAM16X4 cells in output netlist\n");
 		log("\n");
@@ -81,7 +91,6 @@ struct SynthAnlogicPass : public ScriptPass
 		edif_file = "";
 		json_file = "";
 		flatten = true;
-		retime = false;
 		nolutram = false;
 		nobram = false;
 	}
@@ -126,10 +135,6 @@ struct SynthAnlogicPass : public ScriptPass
 				nobram = true;
 				continue;
 			}
-			if (args[argidx] == "-retime") {
-				retime = true;
-				continue;
-			}
 			break;
 		}
 		extra_args(args, argidx, design);
@@ -150,12 +155,13 @@ struct SynthAnlogicPass : public ScriptPass
 		if (check_label("begin"))
 		{
 			run("read_verilog -lib +/anlogic/cells_sim.v +/anlogic/eagle_bb.v");
-			run(stringf("hierarchy -check %s", help_mode ? "-top <top>" : top_opt.c_str()));
+			run(stringf("hierarchy -check %s", help_mode ? "-top <top>" : top_opt));
 		}
 
 		if (flatten && check_label("flatten", "(unless -noflatten)"))
 		{
 			run("proc");
+			run("check");
 			run("flatten");
 			run("tribuf -logic");
 			run("deminout");
@@ -192,8 +198,6 @@ struct SynthAnlogicPass : public ScriptPass
 		{
 			run("techmap -map +/techmap.v -map +/anlogic/arith_map.v");
 			run("opt -fast");
-			if (retime || help_mode)
-				run("abc -dff -D 1", "(only if -retime)");
 		}
 
 		if (check_label("map_ffs"))
@@ -206,7 +210,7 @@ struct SynthAnlogicPass : public ScriptPass
 
 		if (check_label("map_luts"))
 		{
-			run("abc -lut 4:6");
+			run("abc9 -lut 4:6");
 			run("clean");
 		}
 
@@ -233,13 +237,13 @@ struct SynthAnlogicPass : public ScriptPass
 		if (check_label("edif"))
 		{
 			if (!edif_file.empty() || help_mode)
-				run(stringf("write_edif %s", help_mode ? "<file-name>" : edif_file.c_str()));
+				run(stringf("write_edif %s", help_mode ? "<file-name>" : edif_file));
 		}
 
 		if (check_label("json"))
 		{
 			if (!json_file.empty() || help_mode)
-				run(stringf("write_json %s", help_mode ? "<file-name>" : json_file.c_str()));
+				run(stringf("write_json %s", help_mode ? "<file-name>" : json_file));
 		}
 	}
 } SynthAnlogicPass;

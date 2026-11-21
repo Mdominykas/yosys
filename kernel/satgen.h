@@ -59,12 +59,13 @@ struct SatSolver
 
 struct ezSatPtr : public std::unique_ptr<ezSAT> {
 	ezSatPtr() : unique_ptr<ezSAT>(yosys_satsolver->create()) { }
+	explicit ezSatPtr(SatSolver *solver) : unique_ptr<ezSAT>((solver ? solver : yosys_satsolver)->create()) { }
 };
 
 struct SatGen
 {
 	ezSAT *ez;
-	SigMap *sigmap;
+	const SigMap *sigmap;
 	std::string prefix;
 	SigPool initial_state;
 	std::map<std::string, RTLIL::SigSpec> asserts_a, asserts_en;
@@ -74,13 +75,14 @@ struct SatGen
 	bool ignore_div_by_zero;
 	bool model_undef;
 	bool def_formal = false;
+	bool model_barriers = false;
 
-	SatGen(ezSAT *ez, SigMap *sigmap, std::string prefix = std::string()) :
+	SatGen(ezSAT *ez, const SigMap *sigmap, std::string prefix = std::string()) :
 			ez(ez), sigmap(sigmap), prefix(prefix), ignore_div_by_zero(false), model_undef(false)
 	{
 	}
 
-	void setContext(SigMap *sigmap, std::string prefix = std::string())
+	void setContext(const SigMap *sigmap, std::string prefix = std::string())
 	{
 		this->sigmap = sigmap;
 		this->prefix = prefix;
@@ -101,9 +103,9 @@ struct SatGen
 				else
 					vec.push_back(bit == (undef_mode ? RTLIL::State::Sx : RTLIL::State::S1) ? ez->CONST_TRUE : ez->CONST_FALSE);
 			} else {
-				std::string wire_name = RTLIL::unescape_id(bit.wire->name);
+				std::string wire_name = bit.wire->name.unescape();
 				std::string name = pf +
-					(bit.wire->width == 1 ? wire_name : stringf("%s [%d]", wire_name.c_str(), bit.offset));
+					(bit.wire->width == 1 ? wire_name : stringf("%s [%d]", wire_name, bit.offset));
 				vec.push_back(ez->frozen_literal(name));
 				imported_signals[pf][bit] = vec.back();
 			}
@@ -291,6 +293,8 @@ struct SatGen
 
 	bool importCell(RTLIL::Cell *cell, int timestep = -1);
 };
+
+void report_missing_model(bool warn_only, RTLIL::Cell* cell);
 
 YOSYS_NAMESPACE_END
 

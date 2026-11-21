@@ -32,7 +32,6 @@ struct AigerReader
     RTLIL::IdString clk_name;
     RTLIL::Module *module;
     std::string map_filename;
-    bool wideports;
     const int aiger_autoidx;
 
     unsigned M, I, L, O, A;
@@ -46,8 +45,9 @@ struct AigerReader
     std::vector<RTLIL::Wire*> bad_properties;
     std::vector<RTLIL::Cell*> boxes;
     std::vector<int> mergeability, initial_state;
+    dict<unsigned, RTLIL::Wire*> aiger_wires;
 
-    AigerReader(RTLIL::Design *design, std::istream &f, RTLIL::IdString module_name, RTLIL::IdString clk_name, std::string map_filename, bool wideports);
+    AigerReader(RTLIL::Design *design, std::istream &f, RTLIL::IdString module_name, RTLIL::IdString clk_name, std::string map_filename);
     void parse_aiger();
     void parse_xaiger();
     void parse_aiger_ascii();
@@ -55,6 +55,8 @@ struct AigerReader
     void post_process();
 
     RTLIL::Wire* createWireIfNotExists(RTLIL::Module *module, unsigned literal);
+    RTLIL::Wire* getOrCreateNormalWire(RTLIL::Module *module, unsigned variable);
+    RTLIL::Wire* getOrCreateInvertedWire(RTLIL::Module *module, unsigned variable);
 };
 
 YOSYS_NAMESPACE_END

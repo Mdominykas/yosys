@@ -18,15 +18,21 @@
  */
 
 #include "kernel/yosys.h"
-#include "kernel/celltypes.h"
+#include "kernel/newcelltypes.h"
 #include "kernel/sigtools.h"
 #include "kernel/utils.h"
+#include "kernel/log_help.h"
 
 USING_YOSYS_NAMESPACE
 PRIVATE_NAMESPACE_BEGIN
 
 struct TorderPass : public Pass {
 	TorderPass() : Pass("torder", "print cells in topological order") { }
+	bool formatted_help() override {
+		auto *help = PrettyHelp::get_current();
+		help->set_group("passes/status");
+		return false;
+	}
 	void help() override
 	{
 		//   |---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|
@@ -53,8 +59,8 @@ struct TorderPass : public Pass {
 		size_t argidx;
 		for (argidx = 1; argidx < args.size(); argidx++) {
 			if (args[argidx] == "-stop" && argidx+2 < args.size()) {
-				IdString cell_type = RTLIL::escape_id(args[++argidx]);
-				IdString cell_port = RTLIL::escape_id(args[++argidx]);
+				IdString cell_type = design->twines().add(RTLIL::escape_id(args[++argidx]));
+				IdString cell_port = design->twines().add(RTLIL::escape_id(args[++argidx]));
 				stop_db[cell_type].insert(cell_port);
 				continue;
 			}
@@ -68,16 +74,16 @@ struct TorderPass : public Pass {
 
 		for (auto module : design->selected_modules())
 		{
-			log("module %s\n", log_id(module));
+			log("module %s\n", module);
 
 			SigMap sigmap(module);
 			dict<SigBit, pool<IdString>> bit_drivers, bit_users;
-			TopoSort<IdString, RTLIL::sort_by_id_str> toposort;
+			TopoSort<IdString, RTLIL::sort_by_id_str> toposort(RTLIL::sort_by_id_str(module->twines()));
 
 			for (auto cell : module->selected_cells())
 			for (auto conn : cell->connections())
 			{
-				if (stop_db.count(cell->type) && stop_db.at(cell->type).count(conn.first))
+				if (stop_db.count(IdString(cell->type)) && stop_db.at(IdString(cell->type)).count(conn.first))
 					continue;
 
 				if (!noautostop && yosys_celltypes.cell_known(cell->type)) {
@@ -108,14 +114,14 @@ struct TorderPass : public Pass {
 			toposort.sort();
 
 			for (auto &it : toposort.loops) {
-				log("  loop");
+				std::string message = "  loop";
 				for (auto cell : it)
-					log(" %s", log_id(cell));
-				log("\n");
+					message += stringf(" %s", design->twines().str(cell));
+				log("%s\n", message);
 			}
 
 			for (auto cell : toposort.sorted)
-					log("  cell %s\n", log_id(cell));
+					log("  cell %s\n", design->twines().str(cell));
 		}
 	}
 } TorderPass;

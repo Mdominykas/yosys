@@ -19,10 +19,10 @@
 
 #include "kernel/yosys.h"
 #include "kernel/hashlib.h"
-#include "libs/sha1/sha1.h"
 #define CXXOPTS_VECTOR_DELIMITER '\0'
 #include "libs/cxxopts/include/cxxopts.hpp"
 #include <iostream>
+#include <chrono>
 
 #ifdef YOSYS_ENABLE_READLINE
 #  include <readline/readline.h>
@@ -37,10 +37,17 @@
 #  include <tcl.h>
 #endif
 
+#ifdef YOSYS_ENABLE_PYTHON
+#  include <Python.h>
+#  include <pybind11/pybind11.h>
+namespace py = pybind11;
+#endif
+
 #include <stdio.h>
 #include <string.h>
 #include <limits.h>
 #include <errno.h>
+#include <fcntl.h>
 #ifndef __STDC_FORMAT_MACROS
 #  define __STDC_FORMAT_MACROS
 #endif
@@ -61,92 +68,14 @@
 #  include <unistd.h>
 #endif
 
+#include <fmt/color.h>
+#include <fmt/format.h>
+
 USING_YOSYS_NAMESPACE
-
-#ifdef EMSCRIPTEN
-#  include <sys/stat.h>
-#  include <sys/types.h>
-#  include <emscripten.h>
-
-extern "C" int main(int, char**);
-extern "C" void run(const char*);
-extern "C" const char *errmsg();
-extern "C" const char *prompt();
-
-int main(int argc, char **argv)
-{
-	EM_ASM(
-		if (ENVIRONMENT_IS_NODE)
-		{
-			FS.mkdir('/hostcwd');
-			FS.mount(NODEFS, { root: '.' }, '/hostcwd');
-			FS.mkdir('/hostfs');
-			FS.mount(NODEFS, { root: '/' }, '/hostfs');
-		}
-	);
-
-	mkdir("/work", 0777);
-	chdir("/work");
-	log_files.push_back(stdout);
-	log_error_stderr = true;
-	yosys_banner();
-	yosys_setup();
-#ifdef WITH_PYTHON
-	PyRun_SimpleString(("sys.path.append(\""+proc_self_dirname()+"\")").c_str());
-	PyRun_SimpleString(("sys.path.append(\""+proc_share_dirname()+"plugins\")").c_str());
-#endif
-
-	if (argc == 2)
-	{
-		// Run the first argument as a script file
-		run_frontend(argv[1], "script");
-	}
-}
-
-void run(const char *command)
-{
-	int selSize = GetSize(yosys_get_design()->selection_stack);
-	try {
-		log_last_error = "Internal error (see JavaScript console for details)";
-		run_pass(command);
-		log_last_error = "";
-	} catch (...) {
-		while (GetSize(yosys_get_design()->selection_stack) > selSize)
-			yosys_get_design()->pop_selection();
-		throw;
-	}
-}
-
-const char *errmsg()
-{
-	return log_last_error.c_str();
-}
-
-const char *prompt()
-{
-	const char *p = create_prompt(yosys_get_design(), 0);
-	while (*p == '\n') p++;
-	return p;
-}
-
-#else /* EMSCRIPTEN */
 
 #if defined(YOSYS_ENABLE_READLINE) || defined(YOSYS_ENABLE_EDITLINE)
 int yosys_history_offset = 0;
 std::string yosys_history_file;
-#endif
-
-#if defined(__wasm)
-extern "C" {
-	// FIXME: WASI does not currently support exceptions.
-	void* __cxa_allocate_exception(size_t thrown_size) throw() {
-		return malloc(thrown_size);
-	}
-	bool __cxa_uncaught_exception() throw();
-	void __cxa_throw(void* thrown_exception, struct std::type_info * tinfo, void (*dest)(void*)) {
-		std::terminate();
-	}
-}
 #endif
 
 void yosys_atexit()
@@ -181,13 +110,136 @@ extern char yosys_path[PATH_MAX];
 #endif
 #ifdef YOSYS_ENABLE_TCL
 namespace Yosys {
-	extern int yosys_tcl_iterp_init(Tcl_Interp *interp);
+	extern int yosys_tcl_interp_init(Tcl_Interp *interp);
 	extern void yosys_tcl_activate_repl();
 };
 #endif
 
+namespace Yosys {
+	extern bool log_stderr_sink_forced;
+};
+
+class ColorConsoleLogSink : public LogSink
+{
+public:
+	explicit ColorConsoleLogSink(bool err, bool quiet) : error_output(err), quiet_warnings(quiet) {}
+	void log(const LogMessage &msg) override;
+	bool should_log(const LogMessage &msg) const override;
+	void flush() override;
+	FILE *file_handle() override { return error_output ? nullptr : stdout; }
+private:
+	bool error_output;
+	bool quiet_warnings;
+};
+
+bool no_color = false;
+
+bool is_colored(FILE *file)
+{
+	if (no_color)
+		return false;
+
+#if defined(_WIN32)
+	HANDLE handle = reinterpret_cast<HANDLE>(_get_osfhandle(_fileno(file)));
+	DWORD mode;
+	return handle != INVALID_HANDLE_VALUE &&
+			GetConsoleMode(handle, &mode);
+#else
+	return isatty(fileno(file));
+#endif
+}
+
+void ColorConsoleLogSink::flush()
+{
+	fflush(stdout);
+	fflush(stderr);
+}
+
+bool next_print_log = true;
+
+void ColorConsoleLogSink::log(const LogMessage &msg)
+{
+	FILE *f = (error_output || msg.severity == LogSeverity::Error) ? stderr : stdout;
+
+	if (logger().get_log_time() && next_print_log) {
+		std::string time_str = stringf("[%05d.%06d] ", int(msg.timestamp_us / 1'000'000), int(msg.timestamp_us % 1'000'000));
+		fmt::print(f, fg(fmt::terminal_color::blue), "{}", time_str);
+		next_print_log = false;
+	}
+
+	if (!msg.src.filename.empty())
+		fmt::print(f, fg(fmt::terminal_color::bright_cyan), "{}:{}: ", msg.src.filename, msg.src.start_line);
+
+	switch (msg.severity) {
+		case LogSeverity::Warning:
+			fmt::print(f, fg(fmt::terminal_color::bright_yellow), "{}", msg.prefix);
+			fmt::print(f, fg(fmt::terminal_color::blue) | fmt::emphasis::bold, "{}", msg.message);
+			break;
+
+		case LogSeverity::Error:
+		case LogSeverity::NonFatalError:
+			fmt::print(f, fg(fmt::terminal_color::bright_red), "{}", msg.prefix);
+			fmt::print(f, fg(fmt::terminal_color::blue) | fmt::emphasis::bold, "{}", msg.message);
+			break;
+
+		case LogSeverity::Header:
+			fmt::print(f, fg(fmt::terminal_color::cyan) | fmt::emphasis::bold, "{}", msg.prefix);
+			fmt::print(f, fg(fmt::terminal_color::white) | fmt::emphasis::bold, "{}", msg.message);
+			break;
+
+		case LogSeverity::Highlight:
+			fmt::print(f, fg(fmt::terminal_color::cyan) | fmt::emphasis::bold, "{}{}", msg.prefix, msg.message);
+			break;
+
+		case LogSeverity::Comment:
+		case LogSeverity::Debug:
+			fmt::print(f, fg(fmt::terminal_color::bright_black), "{}{}", msg.prefix, msg.message);
+			break;
+
+		case LogSeverity::Info:
+		default:
+			if (!msg.prefix.empty())
+				fmt::print(f, fg(fmt::terminal_color::bright_black), "{}", msg.prefix);
+			fmt::print(f, "{}", msg.message);
+			break;
+	}
+	if (!msg.message.empty())
+		next_print_log = msg.message.back() == '\n';
+}
+
+bool ColorConsoleLogSink::should_log(const LogMessage &msg) const
+{
+	return (!error_output) || (msg.severity == LogSeverity::Error || msg.severity == LogSeverity::NonFatalError ||
+			(msg.severity == LogSeverity::Warning && !quiet_warnings) ||
+			log_stderr_sink_forced);
+}
+
+#ifdef _WIN32
+int wmain(int argc, wchar_t **wargv)
+{
+	// Configure ASCII functions like fopen() to use UTF-8 filenames.
+	// See https://learn.microsoft.com/en-us/cpp/c-runtime-library/reference/setlocale-wsetlocale?view=msvc-170#utf-8-support
+#ifdef _UCRT
+	setlocale(LC_ALL, ".UTF-8");
+#endif
+	// Configure the Win32 console to use UTF-8.
+	SetConsoleCP(CP_UTF8);
+	SetConsoleOutputCP(CP_UTF8);
+
+	std::vector<char*> uargs;
+	for (int i = 0; i < argc; i++) {
+		int usize = WideCharToMultiByte(CP_UTF8, 0, wargv[i], -1, NULL, 0, NULL, NULL);
+		char *uarg = (char *)malloc(usize);
+		WideCharToMultiByte(CP_UTF8, 0, wargv[i], -1, uarg, usize, NULL, NULL);
+		uargs.push_back(uarg);
+	}
+	uargs.push_back(NULL);
+	char **argv = uargs.data();
+#else
 int main(int argc, char **argv)
 {
+#endif
+	auto wall_clock_start = std::chrono::steady_clock::now();
 	std::string frontend_command = "auto";
 	std::string backend_command = "auto";
 	std::vector<std::string> vlog_defines;
@@ -210,6 +262,9 @@ int main(int argc, char **argv)
 	bool run_tcl_shell = false;
 	bool mode_v = false;
 	bool mode_q = false;
+	bool quiet_warnings = false;
+	bool log_stderr = false;
+	no_color = std::getenv("NO_COLOR") != nullptr;
 
 	cxxopts::Options options(argv[0], "Yosys Open SYnthesis Suite");
 	options.set_width(SIZE_MAX);
@@ -226,10 +281,10 @@ int main(int argc, char **argv)
 			cxxopts::value<std::string>(),"<tcl_scriptfile>")
 		("C,tcl-interactive", "enters TCL interactive shell mode")
 #endif // YOSYS_ENABLE_TCL
-#ifdef WITH_PYTHON
+#ifdef YOSYS_ENABLE_PYTHON
 		("y,py-scriptfile", "execute the Python <script>",
 			cxxopts::value<std::string>(), "<script>")
-#endif // WITH_PYTHON
+#endif // YOSYS_ENABLE_PYTHON
 		("p,commands", "execute <commands> (to chain commands, separate them with semicolon + whitespace: 'cmd1; cmd2')",
 			cxxopts::value<std::vector<std::string>>(), "<commands>")
 		("r,top", "elaborate the specified HDL <top> module",
@@ -248,6 +303,7 @@ int main(int argc, char **argv)
 		("h,help", "print this help message. If given, print help for <command>.",
 			cxxopts::value<std::string>(), "[<command>]")
 		("V,version", "print version information and exit")
+		("git-hash", "print git commit hash and exit")
 		("infile", "input files", cxxopts::value<std::vector<std::string>>())
 	;
 	options.add_options("logging")
@@ -279,14 +335,11 @@ int main(int argc, char **argv)
 			cxxopts::value<std::vector<std::string>>(), "<regex>")
 		("E,deps-file", "write a Makefile dependencies file <depsfile> with input and output file names",
 			cxxopts::value<std::string>(), "<depsfile>")
+		("no-color", "disable colored output");
 	;
 	options.add_options("developer")
 		("X,trace", "enable tracing of core data structure changes. for debugging")
 		("M,randomize-pointers", "will slightly randomize allocated pointer addresses. for debugging")
-		("autoidx", "start counting autoidx up from <seed>, similar effect to --hash-seed",
-			cxxopts::value<uint64_t>(), "<idx>")
-		("hash-seed", "mix up hashing values with <seed>, for extreme optimization and testing",
-			cxxopts::value<uint64_t>(), "<seed>")
 		("A,abort", "will call abort() at the end of the script. for debugging")
 		("x,experimental", "do not print warnings for the experimental <feature>",
 			cxxopts::value<std::vector<std::string>>(), "<feature>")
@@ -325,12 +378,16 @@ int main(int argc, char **argv)
 			std::cout << yosys_version_str << std::endl;
 			exit(0);
 		}
+		if (result.count("git-hash")) {
+			std::cout << yosys_git_hash_str << std::endl;
+			exit(0);
+		}
 		if (result.count("S")) {
 			passes_commands.push_back("synth");
 			run_shell = false;
 		}
 		if (result.count("C")) run_tcl_shell = true;
-		if (result.count("g")) log_force_debug++;
+		if (result.count("g")) logger().force_debug_on();
 		if (result.count("m")) plugin_filenames = result["m"].as<std::vector<std::string>>();
 		if (result.count("f")) frontend_command = result["f"].as<std::string>();
 		if (result.count("H")) {
@@ -358,27 +415,27 @@ int main(int argc, char **argv)
 		for (const auto& key : {"l", "L"}) {
 			if (result.count(key)) {
 				for (const auto& filename : result[key].as<std::vector<std::string>>()) {
-					if (FILE* f = fopen(filename.c_str(), "wt")) {
-						log_files.push_back(f);
-						if (key[0] == 'L') setvbuf(f, NULL, _IOLBF, 0);
-					} else {
-						std::cerr << "Can't open log file `" << filename << "' for writing!\n";
-						exit(1);
+					try {
+						logger().add_sink<FileLogSink>(filename, key[0] == 'L', false);
+					} catch (const std::runtime_error &e) {
+ 					   std::cerr << e.what();
+					   exit(1);
 					}
 				}
 			}
 		}
 		if (result.count("q")) {
 			mode_q = true;
-			if (log_errfile == stderr) log_quiet_warnings = true;
-			log_errfile = stderr;
+			if (log_stderr) quiet_warnings = true;
+			log_stderr = true;
 		}
 		if (result.count("v")) {
 			mode_v = true;
-			log_errfile = stderr;
-			log_verbose_level = result["v"].as<int>();
+			log_stderr = true;
+			logger().set_verbose_level(result["v"].as<int>());
 		}
-		if (result.count("t")) log_time = true;
+		if (result.count("t")) logger().set_log_time(true);
+		if (result.count("no-color")) no_color = true;
 		if (result.count("d")) timing_details = true;
 		for (const auto& key : {"s", "c"}) {
 			if (result.count(key)) {
@@ -397,11 +454,11 @@ int main(int argc, char **argv)
 				auto regexes = result[key].as<std::vector<std::string>>();
 				for (const auto& regex : regexes) {
 					if (std::string(key) == "W")
-						log_warn_regexes.push_back(std::regex(regex));
+						logger().add_warn(regex);
 					if (std::string(key) == "w")
-						log_nowarn_regexes.push_back(std::regex(regex));
+						logger().add_nowarn(regex);
 					if (std::string(key) == "e")
-						log_werror_regexes.push_back(std::regex(regex));
+						logger().add_werror(regex);
 				}
 			}
 		}
@@ -416,7 +473,7 @@ int main(int argc, char **argv)
 						std::cerr << "Invalid number of tokens in -P ALL." << std::endl;
 						exit(1);
 					}
-					log_hdump_all = true;
+					logger().set_hdump_all(true);
 				} else {
 					if (!tokens.empty() && !tokens[0].empty() && tokens[0].back() == '.')
 						tokens[0].pop_back();
@@ -426,32 +483,28 @@ int main(int argc, char **argv)
 						std::cerr << "Invalid number of tokens in -P." << std::endl;
 						exit(1);
 					}
-					log_hdump[tokens[0]].insert(tokens[1]);
+					logger().add_hdump(tokens[0],tokens[1]);
 				}
 			}
 		}
 		if (result.count("E")) depsfile = result["E"].as<std::string>();
 		if (result.count("x")) {
-			auto ignores = result["x"].as<std::vector<std::string>>();
-			log_experimentals_ignored.insert(ignores.begin(), ignores.end());
+			for (const auto &ignore : result["x"].as<std::vector<std::string>>())
+    			logger().add_experimental_ignore(ignore);
 		}
 		if (result.count("perffile")) perffile = result["perffile"].as<std::string>();
 		if (result.count("infile")) {
 			frontend_files = result["infile"].as<std::vector<std::string>>();
 		}
-		if (result.count("autoidx")) {
-			int idx = result["autoidx"].as<uint64_t>();
-			autoidx = idx;
-		}
-		if (result.count("hash-seed")) {
-			int seed = result["hash-seed"].as<uint64_t>();
-			Hasher::set_fudge((Hasher::hash_t)seed);
-		}
 
-		if (log_errfile == NULL) {
-			log_files.push_back(stdout);
-			log_error_stderr = true;
-		}
+		if (!is_colored(stdout) || !is_colored(stderr)) {
+			if (!log_stderr) {
+				logger().add_sink<ConsoleLogSink>();
+			} else {
+				logger().add_sink<StderrLogSink>(quiet_warnings);
+			}
+		} else
+			logger().add_sink<ColorConsoleLogSink>(log_stderr, quiet_warnings);
 
 		if (print_banner)
 			yosys_banner();
@@ -494,7 +547,7 @@ int main(int argc, char **argv)
 #endif
 
 	if (print_stats)
-		log_hasher = new SHA1;
+		logger().start_hasher();
 
 #if defined(__OpenBSD__)
 	// save the executable origin for proc_self_dirname()
@@ -515,9 +568,10 @@ int main(int argc, char **argv)
 #endif
 
 	yosys_setup();
-#ifdef WITH_PYTHON
-	PyRun_SimpleString(("sys.path.append(\""+proc_self_dirname()+"\")").c_str());
-	PyRun_SimpleString(("sys.path.append(\""+proc_share_dirname()+"plugins\")").c_str());
+#ifdef YOSYS_ENABLE_PYTHON
+	py::object sys = py::module_::import("sys");
+	sys.attr("path").attr("append")(proc_self_dirname());
+	sys.attr("path").attr("append")(proc_share_dirname());
 #endif
 	log_error_atexit = yosys_atexit;
 
@@ -566,31 +620,28 @@ int main(int argc, char **argv)
 			log_error("Can't execute TCL script: this version of yosys is not built with TCL support enabled.\n");
 #endif
 		} else if (scriptfile_python) {
-#ifdef WITH_PYTHON
-			PyObject *sys = PyImport_ImportModule("sys");
+#ifdef YOSYS_ENABLE_PYTHON
+			py::list new_argv;
 			int py_argc = special_args.size() + 1;
-			PyObject *new_argv = PyList_New(py_argc);
-			PyList_SetItem(new_argv, 0, PyUnicode_FromString(scriptfile.c_str()));
+			new_argv.append(scriptfile);
 			for (int i = 1; i < py_argc; ++i)
-				PyList_SetItem(new_argv, i, PyUnicode_FromString(special_args[i - 1].c_str()));
+				new_argv.append(special_args[i - 1]);
 
-			PyObject *old_argv = PyObject_GetAttrString(sys, "argv");
-			PyObject_SetAttrString(sys, "argv", new_argv);
-			Py_DECREF(old_argv);
+			py::setattr(sys, "argv", new_argv);
 
-			PyObject *py_path = PyUnicode_FromString(scriptfile.c_str());
-			PyObject_SetAttrString(sys, "_yosys_script_path", py_path);
-			Py_DECREF(py_path);
-			PyRun_SimpleString("import os, sys; sys.path.insert(0, os.path.dirname(os.path.abspath(sys._yosys_script_path)))");
+			py::object Path = py::module_::import("pathlib").attr("Path");
+			py::object scriptfile_python_path = Path(scriptfile).attr("parent");
+
+			sys.attr("path").attr("insert")(0, py::str(scriptfile_python_path));
 
 			FILE *scriptfp = fopen(scriptfile.c_str(), "r");
 			if (scriptfp == nullptr) {
-				log_error("Failed to open file '%s' for reading.\n", scriptfile.c_str());
+				log_error("Failed to open file '%s' for reading.\n", scriptfile);
 			}
 			if (PyRun_SimpleFile(scriptfp, scriptfile.c_str()) != 0) {
 				log_flush();
 				PyErr_Print();
-				log_error("Python interpreter encountered an exception.");
+				log_error("Python interpreter encountered an exception.\n");
 			}
 #else
 			log_error("Can't execute Python script: this version of yosys is not built with Python support enabled.\n");
@@ -605,21 +656,21 @@ int main(int argc, char **argv)
 	if (run_tcl_shell) {
 #ifdef YOSYS_ENABLE_TCL
 		yosys_tcl_activate_repl();
-		Tcl_Main(argc, argv, yosys_tcl_iterp_init);
+		Tcl_Main(argc, argv, yosys_tcl_interp_init);
 #else
 		log_error("Can't exectue TCL shell: this version of yosys is not built with TCL support enabled.\n");
 #endif
 	} else {
 		if (run_shell)
-			shell(yosys_design);
+			shell(yosys_design.get());
 		else
 			run_backend(output_filename, backend_command);
 	}
 
 	yosys_design->check();
-	for (auto it : saved_designs)
+	for (auto &it : saved_designs)
 		it.second->check();
-	for (auto it : pushed_designs)
+	for (auto &it : pushed_designs)
 		it->check();
 
 	if (!depsfile.empty())
@@ -640,31 +691,33 @@ int main(int argc, char **argv)
 		fprintf(f, "\n");
 	}
 
-	if (log_expect_no_warnings && log_warnings_count_noexpect)
-		log_error("Unexpected warnings found: %d unique messages, %d total, %d expected\n", GetSize(log_warnings),
-					log_warnings_count, log_warnings_count - log_warnings_count_noexpect);
+	logger().report_unexpected_error();
 
 	if (print_stats)
 	{
-		std::string hash = log_hasher->final().substr(0, 10);
-		delete log_hasher;
-		log_hasher = nullptr;
-
-		log_time = false;
+		std::string hash = logger().finish_hasher();
+		logger().set_log_time(false);
 		yosys_xtrace = 0;
 		log_spacer();
 
-		if (mode_v && !mode_q)
-			log_files.push_back(stderr);
+		log_stderr_sink_forced = mode_v && !mode_q;
+		if (logger().get_warnings_total())
+			log("Warnings: %d unique messages, %d total\n", logger().get_warnings_unique(), logger().get_warnings_total());
 
-		if (log_warnings_count)
-			log("Warnings: %d unique messages, %d total\n", GetSize(log_warnings), log_warnings_count);
+		if (GetSize(logger().get_experimental()) != 0)
+			log("Warnings: %d experimental features used (not excluded with -x).\n", GetSize(logger().get_experimental()));
 
-		if (!log_experimentals.empty())
-			log("Warnings: %d experimental features used (not excluded with -x).\n", GetSize(log_experimentals));
-
+		if (GetSize(logger().get_deprecated()) != 0) {
+			log("Deprecated features used:\n");
+			for (auto &[feature, earliest_removal] : logger().get_deprecated())
+				if (earliest_removal.empty())
+					log("    %s\n", feature);
+				else
+					log("    %s (may be removed as soon as Yosys %s)\n", feature, earliest_removal);
+		}
 #ifdef _WIN32
-		log("End of script. Logfile hash: %s\n", hash.c_str());
+		log("End of script. Logfile hash: %s\n", hash);
+		(void)wall_clock_start;
 #else
 		std::string meminfo;
 		std::string stats_divider = ", ";
@@ -690,9 +743,12 @@ int main(int argc, char **argv)
 		meminfo = stringf(", MEM: %.2f MB peak",
 				ru_buffer.ru_maxrss / (1024.0 * 1024.0));
 #endif
-		log("End of script. Logfile hash: %s%sCPU: user %.2fs system %.2fs%s\n", hash.c_str(),
-				stats_divider.c_str(), ru_buffer.ru_utime.tv_sec + 1e-6 * ru_buffer.ru_utime.tv_usec,
-				ru_buffer.ru_stime.tv_sec + 1e-6 * ru_buffer.ru_stime.tv_usec, meminfo.c_str());
+		double wall_seconds = std::chrono::duration<double>(
+				std::chrono::steady_clock::now() - wall_clock_start).count();
+
+		log("End of script. Logfile hash: %s%stime: %.2fs, user: %.2fs, system: %.2fs%s\n", hash,
+				stats_divider, wall_seconds, ru_buffer.ru_utime.tv_sec + 1e-6 * ru_buffer.ru_utime.tv_usec,
+				ru_buffer.ru_stime.tv_sec + 1e-6 * ru_buffer.ru_stime.tv_usec, meminfo);
 #endif
 		log("%s\n", yosys_maybe_version());
 
@@ -701,31 +757,37 @@ int main(int argc, char **argv)
 
 		for (auto &it : pass_register)
 			if (it.second->call_counter) {
-				total_ns += it.second->runtime_ns + 1;
-				timedat.insert(make_tuple(it.second->runtime_ns + 1, it.second->call_counter, it.first));
+				auto pass_ns = it.second->runtime_ns + 1;
+				total_ns += pass_ns;
+				timedat.insert(make_tuple(pass_ns, it.second->call_counter, it.first));
 			}
+		if (twine_gc_count) {
+			total_ns += twine_gc_ns;
+			timedat.insert(make_tuple(twine_gc_ns, twine_gc_count, "twine_gc"));
+		}
 
 		if (timing_details)
 		{
 			log("Time spent:\n");
 			for (auto it = timedat.rbegin(); it != timedat.rend(); it++) {
 				log("%5d%% %5d calls %8.3f sec %s\n", int(100*std::get<0>(*it) / total_ns),
-						std::get<1>(*it), std::get<0>(*it) / 1000000000.0, std::get<2>(*it).c_str());
+						std::get<1>(*it), std::get<0>(*it) / 1000000000.0, std::get<2>(*it));
 			}
 		}
 		else
 		{
 			int out_count = 0;
-			log("Time spent:");
+			std::string message = "Time spent:";
 			for (auto it = timedat.rbegin(); it != timedat.rend() && out_count < 4; it++, out_count++) {
 				if (out_count >= 2 && (std::get<0>(*it) < 1000000000 || int(100*std::get<0>(*it) / total_ns) < 20)) {
-					log(", ...");
+					message += ", ...";
 					break;
 				}
-				log("%s %d%% %dx %s (%d sec)", out_count ? "," : "", int(100*std::get<0>(*it) / total_ns),
-						std::get<1>(*it), std::get<2>(*it).c_str(), int(std::get<0>(*it) / 1000000000));
+				message += stringf("%s %d%% %dx %s (%d sec)", out_count ? "," : "", int(100*std::get<0>(*it) / total_ns),
+						std::get<1>(*it), std::get<2>(*it), int(std::get<0>(*it) / 1000000000));
 			}
-			log("%s\n", out_count ? "" : " no commands executed");
+			message += out_count ? "" : " no commands executed";
+			log("%s\n", message);
 		}
 		if(!perffile.empty())
 		{
@@ -752,34 +814,7 @@ int main(int argc, char **argv)
 		}
 	}
 
-#if defined(YOSYS_ENABLE_COVER) && (defined(__linux__) || defined(__FreeBSD__))
-	if (getenv("YOSYS_COVER_DIR") || getenv("YOSYS_COVER_FILE"))
-	{
-		string filename;
-		FILE *f;
-
-		if (getenv("YOSYS_COVER_DIR")) {
-			filename = stringf("%s/yosys_cover_%d_XXXXXX.txt", getenv("YOSYS_COVER_DIR"), getpid());
-			filename = make_temp_file(filename);
-		} else {
-			filename = getenv("YOSYS_COVER_FILE");
-		}
-
-		f = fopen(filename.c_str(), "a+");
-
-		if (f == NULL)
-			log_error("Can't create coverage file `%s'.\n", filename.c_str());
-
-		log("<writing coverage file \"%s\">\n", filename.c_str());
-
-		for (auto &it : get_coverage_data())
-			fprintf(f, "%-60s %10d %s\n", it.second.first.c_str(), it.second.second, it.first.c_str());
-
-		fclose(f);
-	}
-#endif
-
-	log_check_expected();
+	logger().check_expected();
 
 	yosys_atexit();
 
@@ -788,15 +823,13 @@ int main(int argc, char **argv)
 		abort();
 
 	log_flush();
+
+	yosys_shutdown();
+
 #if defined(_MSC_VER)
 	_exit(0);
 #elif defined(_WIN32)
 	_Exit(0);
 #endif
-
-	yosys_shutdown();
-
 	return 0;
 }
-
-#endif /* EMSCRIPTEN */

@@ -26,6 +26,8 @@ PRIVATE_NAMESPACE_BEGIN
 
 struct rules_t
 {
+	Design *design = nullptr;
+
 	struct portinfo_t {
 		int group, index, dupidx;
 		int wrmode, enable, transp, clocks, clkpol;
@@ -36,41 +38,49 @@ struct rules_t
 	};
 
 	struct bram_t {
-		IdString name;
+		PooledName name;
 		int variant;
 
 		int groups, abits, dbits, init;
 		vector<int> ports, wrmode, enable, transp, clocks, clkpol;
 
+		static std::string int_list_str(const vector<int> &values)
+		{
+			std::string str;
+			for (int v : values)
+				str += stringf("%4d", v);
+			return str;
+		}
+
 		void dump_config() const
 		{
-			log("      bram %s # variant %d\n", log_id(name), variant);
+			log("      bram %s # variant %d\n", name.unescape(), variant);
 			log("        init %d\n", init);
 			log("        abits %d\n", abits);
 			log("        dbits %d\n", dbits);
 			log("        groups %d\n", groups);
 
-			log("        ports "); for (int v : ports)  log("%4d", v); log("\n");
-			log("        wrmode"); for (int v : wrmode) log("%4d", v); log("\n");
-			log("        enable"); for (int v : enable) log("%4d", v); log("\n");
-			log("        transp"); for (int v : transp) log("%4d", v); log("\n");
-			log("        clocks"); for (int v : clocks) log("%4d", v); log("\n");
-			log("        clkpol"); for (int v : clkpol) log("%4d", v); log("\n");
+			log("        ports %s\n", int_list_str(ports));
+			log("        wrmode%s\n", int_list_str(wrmode));
+			log("        enable%s\n", int_list_str(enable));
+			log("        transp%s\n", int_list_str(transp));
+			log("        clocks%s\n", int_list_str(clocks));
+			log("        clkpol%s\n", int_list_str(clkpol));
 			log("      endbram\n");
 		}
 
 		void check_vectors() const
 		{
-			if (groups != GetSize(ports))  log_error("Bram %s variant %d has %d groups but only %d entries in 'ports'.\n",  log_id(name), variant, groups, GetSize(ports));
-			if (groups != GetSize(wrmode)) log_error("Bram %s variant %d has %d groups but only %d entries in 'wrmode'.\n", log_id(name), variant, groups, GetSize(wrmode));
-			if (groups != GetSize(enable)) log_error("Bram %s variant %d has %d groups but only %d entries in 'enable'.\n", log_id(name), variant, groups, GetSize(enable));
-			if (groups != GetSize(transp)) log_error("Bram %s variant %d has %d groups but only %d entries in 'transp'.\n", log_id(name), variant, groups, GetSize(transp));
-			if (groups != GetSize(clocks)) log_error("Bram %s variant %d has %d groups but only %d entries in 'clocks'.\n", log_id(name), variant, groups, GetSize(clocks));
-			if (groups != GetSize(clkpol)) log_error("Bram %s variant %d has %d groups but only %d entries in 'clkpol'.\n", log_id(name), variant, groups, GetSize(clkpol));
+			if (groups != GetSize(ports))  log_error("Bram %s variant %d has %d groups but only %d entries in 'ports'.\n",  name.unescape(), variant, groups, GetSize(ports));
+			if (groups != GetSize(wrmode)) log_error("Bram %s variant %d has %d groups but only %d entries in 'wrmode'.\n", name.unescape(), variant, groups, GetSize(wrmode));
+			if (groups != GetSize(enable)) log_error("Bram %s variant %d has %d groups but only %d entries in 'enable'.\n", name.unescape(), variant, groups, GetSize(enable));
+			if (groups != GetSize(transp)) log_error("Bram %s variant %d has %d groups but only %d entries in 'transp'.\n", name.unescape(), variant, groups, GetSize(transp));
+			if (groups != GetSize(clocks)) log_error("Bram %s variant %d has %d groups but only %d entries in 'clocks'.\n", name.unescape(), variant, groups, GetSize(clocks));
+			if (groups != GetSize(clkpol)) log_error("Bram %s variant %d has %d groups but only %d entries in 'clkpol'.\n", name.unescape(), variant, groups, GetSize(clkpol));
 
 			int group = 0;
 			for (auto e : enable)
-				if (e > dbits) log_error("Bram %s variant %d group %d has %d enable bits but only %d dbits.\n", log_id(name), variant, group, e, dbits);
+				if (e > dbits) log_error("Bram %s variant %d group %d has %d enable bits but only %d dbits.\n", name.unescape(), variant, group, e, dbits);
 		}
 
 		vector<portinfo_t> make_portinfos() const
@@ -95,12 +105,12 @@ struct rules_t
 			return portinfos;
 		}
 
-		void find_variant_params(dict<IdString, Const> &variant_params, const bram_t &other) const
+		void find_variant_params(TwinePool &twines, dict<IdString, Const> &variant_params, const bram_t &other) const
 		{
 			log_assert(name == other.name);
 
 			if (groups != other.groups)
-				log_error("Bram %s variants %d and %d have different values for 'groups'.\n", log_id(name), variant, other.variant);
+				log_error("Bram %s variants %d and %d have different values for 'groups'.\n", name.unescape(), variant, other.variant);
 
 			if (abits != other.abits)
 				variant_params[ID::CFG_ABITS] = abits;
@@ -112,23 +122,24 @@ struct rules_t
 			for (int i = 0; i < groups; i++)
 			{
 				if (ports[i] != other.ports[i])
-					log_error("Bram %s variants %d and %d have different number of %c-ports.\n", log_id(name), variant, other.variant, 'A'+i);
+					log_error("Bram %s variants %d and %d have different number of %c-ports.\n", name.unescape(), variant, other.variant, 'A'+i);
 				if (wrmode[i] != other.wrmode[i])
-					variant_params[stringf("\\CFG_WRMODE_%c", 'A' + i)] = wrmode[i];
+					variant_params[twines.add(stringf("\\CFG_WRMODE_%c", 'A' + i))] = wrmode[i];
 				if (enable[i] != other.enable[i])
-					variant_params[stringf("\\CFG_ENABLE_%c", 'A' + i)] = enable[i];
+					variant_params[twines.add(stringf("\\CFG_ENABLE_%c", 'A' + i))] = enable[i];
 				if (transp[i] != other.transp[i])
-					variant_params[stringf("\\CFG_TRANSP_%c", 'A' + i)] = transp[i];
+					variant_params[twines.add(stringf("\\CFG_TRANSP_%c", 'A' + i))] = transp[i];
 				if (clocks[i] != other.clocks[i])
-					variant_params[stringf("\\CFG_CLOCKS_%c", 'A' + i)] = clocks[i];
+					variant_params[twines.add(stringf("\\CFG_CLOCKS_%c", 'A' + i))] = clocks[i];
 				if (clkpol[i] != other.clkpol[i])
-					variant_params[stringf("\\CFG_CLKPOL_%c", 'A' + i)] = clkpol[i];
+					variant_params[twines.add(stringf("\\CFG_CLKPOL_%c", 'A' + i))] = clkpol[i];
 			}
 		}
+
 	};
 
 	struct match_t {
-		IdString name;
+		PooledName name;
 		dict<string, int> min_limits, max_limits;
 		bool or_next_if_better, make_transp, make_outreg;
 		char shuffle_enable;
@@ -211,7 +222,7 @@ struct rules_t
 
 	void parse_bram()
 	{
-		IdString bram_name = RTLIL::escape_id(tokens[1]);
+		PooledName bram_name(design, design->twines().add(RTLIL::escape_id(tokens[1])));
 
 		if (GetSize(tokens) != 2)
 			syntax_error();
@@ -296,7 +307,7 @@ struct rules_t
 			syntax_error();
 
 		match_t data;
-		data.name = RTLIL::escape_id(tokens[1]);
+		data.name = PooledName(design, design->twines().add(RTLIL::escape_id(tokens[1])));
 		data.or_next_if_better = false;
 		data.make_transp = false;
 		data.make_outreg = false;
@@ -349,7 +360,7 @@ struct rules_t
 					size_t c1 = tokens[idx][0] == '!' ? 1 : 0;
 					size_t c2 = tokens[idx].find("=");
 					bool exists = (c1 == 0);
-					IdString key = RTLIL::escape_id(tokens[idx].substr(c1, c2));
+					IdString key = design->twines().add(RTLIL::escape_id(tokens[idx].substr(c1, c2)));
 					Const val = c2 != std::string::npos ? tokens[idx].substr(c2+1) : RTLIL::Const(1);
 
 					data.attributes.back().emplace_back(exists, key, map_case(val));
@@ -361,15 +372,16 @@ struct rules_t
 		}
 	}
 
-	void parse(string filename)
+	void parse(string filename, Design *design)
 	{
+		this->design = design;
 		rewrite_filename(filename);
 		infile.open(filename);
 		linecount = 0;
 		attr_icase = false;
 
 		if (infile.fail())
-			log_error("Can't open rules file `%s'.\n", filename.c_str());
+			log_error("Can't open rules file `%s'.\n", filename);
 
 		while (next_line())
 		{
@@ -428,7 +440,7 @@ bool replace_memory(Mem &mem, const rules_t &rules, FfInitVals *initvals, const 
 		transp_max = max(transp_max, pi.transp);
 	}
 
-	log("    Mapping to bram type %s (variant %d):\n", log_id(bram.name), bram.variant);
+	log("    Mapping to bram type %s (variant %d):\n", bram.name.unescape(), bram.variant);
 	// bram.dump_config();
 
 	std::vector<int> shuffle_map;
@@ -460,10 +472,10 @@ bool replace_memory(Mem &mem, const rules_t &rules, FfInitVals *initvals, const 
 				shuffle_map.push_back(-1);
 		}
 
-		log("      Results of bit order shuffling:");
+		std::string message = "      Results of bit order shuffling:";
 		for (int v : shuffle_map)
-			log(" %d", v);
-		log("\n");
+			message += stringf(" %d", v);
+		log("%s\n", message);
 
 		// update mem_*, wr_*, and rd_* variables
 	} else {
@@ -715,21 +727,21 @@ grow_read_ports:;
 		for (auto it : match.min_limits) {
 			if (!match_properties.count(it.first))
 				log_error("Unknown property '%s' in match rule for bram type %s.\n",
-						it.first.c_str(), log_id(match.name));
+						it.first, match.name.unescape());
 			if (match_properties[it.first] >= it.second)
 				continue;
 			log("    Rule for bram type %s rejected: requirement 'min %s %d' not met.\n",
-					log_id(match.name), it.first.c_str(), it.second);
+					match.name.unescape(), it.first, it.second);
 			return false;
 		}
 		for (auto it : match.max_limits) {
 			if (!match_properties.count(it.first))
 				log_error("Unknown property '%s' in match rule for bram type %s.\n",
-						it.first.c_str(), log_id(match.name));
+						it.first, match.name.unescape());
 			if (match_properties[it.first] <= it.second)
 				continue;
 			log("    Rule for bram type %s rejected: requirement 'max %s %d' not met.\n",
-					log_id(match.name), it.first.c_str(), it.second);
+					match.name.unescape(), it.first, it.second);
 			return false;
 		}
 
@@ -759,13 +771,13 @@ grow_read_ports:;
 				if (!exists)
 					ss << "!";
 				IdString key = std::get<1>(sums.front());
-				ss << log_id(key);
+				ss << PooledName(mem.module, key).unescape();
 				const Const &value = rules.map_case(std::get<2>(sums.front()));
 				if (exists && value != Const(1))
 					ss << "=\"" << value.decode_string() << "\"";
 
 				log("    Rule for bram type %s rejected: requirement 'attribute %s ...' not met.\n",
-						log_id(match.name), ss.str().c_str());
+						match.name.unescape(), ss.str());
 				return false;
 			}
 		}
@@ -848,9 +860,9 @@ grow_read_ports:;
 		for (int i = 0; i < mem.width; i++)
 			if (shuffle_map[i] != -1) {
 				module->connect(port.data[shuffle_map[i]], new_data[i]);
-				new_init_value.bits()[i] = port.init_value[shuffle_map[i]];
-				new_arst_value.bits()[i] = port.arst_value[shuffle_map[i]];
-				new_srst_value.bits()[i] = port.srst_value[shuffle_map[i]];
+				new_init_value.set(i, port.init_value[shuffle_map[i]]);
+				new_arst_value.set(i, port.arst_value[shuffle_map[i]]);
+				new_srst_value.set(i, port.srst_value[shuffle_map[i]]);
 			}
 		port.data = new_data;
 		port.init_value = new_init_value;
@@ -862,7 +874,7 @@ grow_read_ports:;
 
 	dict<IdString, Const> variant_params;
 	for (auto &other_bram : rules.brams.at(bram.name))
-		bram.find_variant_params(variant_params, other_bram);
+		bram.find_variant_params(module->twines(), variant_params, other_bram);
 
 	// actually replace that memory cell
 
@@ -873,8 +885,8 @@ grow_read_ports:;
 		for (int grid_a = 0; grid_a < acells; grid_a++)
 		for (int dupidx = 0; dupidx < dup_count; dupidx++)
 		{
-			Cell *c = module->addCell(module->uniquify(stringf("%s.%d.%d.%d", mem.memid.c_str(), grid_d, grid_a, dupidx)), bram.name);
-			log("      Creating %s cell at grid position <%d %d %d>: %s\n", log_id(bram.name), grid_d, grid_a, dupidx, log_id(c));
+			Cell *c = module->addCell(module->uniquify(stringf("%s.%d.%d.%d", mem.memid.str(), grid_d, grid_a, dupidx)), bram.name);
+			log("      Creating %s cell at grid position <%d %d %d>: %s\n", bram.name.unescape(), grid_d, grid_a, dupidx, c);
 
 			for (auto &vp : variant_params)
 				c->setParam(vp.first, vp.second);
@@ -887,9 +899,9 @@ grow_read_ports:;
 				for (int i = 0; i < init_size; i++)
 					for (int j = 0; j < bram.dbits; j++)
 						if (init_offset+i < GetSize(initdata) && init_offset+i >= 0)
-							initparam.bits()[i*bram.dbits+j] = initdata[init_offset+i][init_shift+j];
+							initparam.set(i*bram.dbits+j, initdata[init_offset+i][init_shift+j]);
 						else
-							initparam.bits()[i*bram.dbits+j] = State::Sx;
+							initparam.set(i*bram.dbits+j, State::Sx);
 				c->setParam(ID::INIT, initparam);
 			}
 
@@ -1004,7 +1016,7 @@ grow_read_ports:;
 
 void handle_memory(Mem &mem, const rules_t &rules, FfInitVals *initvals)
 {
-	log("Processing %s.%s:\n", log_id(mem.module), log_id(mem.memid));
+	log("Processing %s.%s:\n", mem.module, mem.memid.unescape());
 	mem.narrow();
 
 	bool cell_init = !mem.inits.empty();
@@ -1018,10 +1030,10 @@ void handle_memory(Mem &mem, const rules_t &rules, FfInitVals *initvals)
 	match_properties["bits"]   = match_properties["words"] * match_properties["dbits"];
 	match_properties["ports"]  = match_properties["wports"] + match_properties["rports"];
 
-	log("  Properties:");
+	std::string message = "  Properties:";
 	for (auto &it : match_properties)
-		log(" %s=%d", it.first.c_str(), it.second);
-	log("\n");
+		message += stringf(" %s=%d", it.first, it.second);
+	log("%s\n", message);
 
 	pool<pair<IdString, int>> failed_brams;
 	dict<pair<int, int>, tuple<int, int, int>> best_rule_cache;
@@ -1031,7 +1043,7 @@ void handle_memory(Mem &mem, const rules_t &rules, FfInitVals *initvals)
 		auto &match = rules.matches.at(i);
 
 		if (!rules.brams.count(rules.matches[i].name))
-			log_error("No bram description for resource %s found!\n", log_id(rules.matches[i].name));
+			log_error("No bram description for resource %s found!\n", rules.matches[i].name.unescape());
 
 		for (int vi = 0; vi < GetSize(rules.brams.at(match.name)); vi++)
 		{
@@ -1047,7 +1059,7 @@ void handle_memory(Mem &mem, const rules_t &rules, FfInitVals *initvals)
 					avail_wr_ports += GetSize(bram.ports) < j ? bram.ports.at(j) : 0;
 			}
 
-			log("  Checking rule #%d for bram type %s (variant %d):\n", i+1, log_id(bram.name), bram.variant);
+			log("  Checking rule #%d for bram type %s (variant %d):\n", i+1, bram.name.unescape(), bram.variant);
 			log("    Bram geometry: abits=%d dbits=%d wports=%d rports=%d\n", bram.abits, bram.dbits, avail_wr_ports, avail_rd_ports);
 
 			int dups = avail_rd_ports ? (match_properties["rports"] + avail_rd_ports - 1) / avail_rd_ports : 1;
@@ -1077,11 +1089,11 @@ void handle_memory(Mem &mem, const rules_t &rules, FfInitVals *initvals)
 				goto next_match_rule;
 
 			log("    Metrics for %s: awaste=%d dwaste=%d bwaste=%d waste=%d efficiency=%d\n",
-					log_id(match.name), awaste, dwaste, bwaste, waste, efficiency);
+					match.name.unescape(), awaste, dwaste, bwaste, waste, efficiency);
 
 			if (cell_init && bram.init == 0) {
 				log("    Rule #%d for bram type %s (variant %d) rejected: cannot be initialized.\n",
-						i+1, log_id(bram.name), bram.variant);
+						i+1, bram.name.unescape(), bram.variant);
 				goto next_match_rule;
 			}
 
@@ -1090,11 +1102,11 @@ void handle_memory(Mem &mem, const rules_t &rules, FfInitVals *initvals)
 					continue;
 				if (!match_properties.count(it.first))
 					log_error("Unknown property '%s' in match rule for bram type %s.\n",
-							it.first.c_str(), log_id(match.name));
+							it.first, match.name.unescape());
 				if (match_properties[it.first] >= it.second)
 					continue;
 				log("    Rule #%d for bram type %s (variant %d) rejected: requirement 'min %s %d' not met.\n",
-						i+1, log_id(bram.name), bram.variant, it.first.c_str(), it.second);
+						i+1, bram.name.unescape(), bram.variant, it.first, it.second);
 				goto next_match_rule;
 			}
 
@@ -1103,11 +1115,11 @@ void handle_memory(Mem &mem, const rules_t &rules, FfInitVals *initvals)
 					continue;
 				if (!match_properties.count(it.first))
 					log_error("Unknown property '%s' in match rule for bram type %s.\n",
-							it.first.c_str(), log_id(match.name));
+							it.first, match.name.unescape());
 				if (match_properties[it.first] <= it.second)
 					continue;
 				log("    Rule #%d for bram type %s (variant %d) rejected: requirement 'max %s %d' not met.\n",
-						i+1, log_id(bram.name), bram.variant, it.first.c_str(), it.second);
+						i+1, bram.name.unescape(), bram.variant, it.first, it.second);
 				goto next_match_rule;
 			}
 
@@ -1137,18 +1149,18 @@ void handle_memory(Mem &mem, const rules_t &rules, FfInitVals *initvals)
 					if (!exists)
 						ss << "!";
 					IdString key = std::get<1>(sums.front());
-					ss << log_id(key);
+					ss << PooledName(mem.module, key).unescape();
 					const Const &value = rules.map_case(std::get<2>(sums.front()));
 					if (exists && value != Const(1))
 						ss << "=\"" << value.decode_string() << "\"";
 
 					log("    Rule for bram type %s (variant %d) rejected: requirement 'attribute %s ...' not met.\n",
-							log_id(bram.name), bram.variant, ss.str().c_str());
+							bram.name.unescape(), bram.variant, ss.str());
 					goto next_match_rule;
 				}
 			}
 
-			log("    Rule #%d for bram type %s (variant %d) accepted.\n", i+1, log_id(bram.name), bram.variant);
+			log("    Rule #%d for bram type %s (variant %d) accepted.\n", i+1, bram.name.unescape(), bram.variant);
 
 			if (or_next_if_better || !best_rule_cache.empty())
 			{
@@ -1156,7 +1168,7 @@ void handle_memory(Mem &mem, const rules_t &rules, FfInitVals *initvals)
 					log_error("Found 'or_next_if_better' in last match rule.\n");
 
 				if (!replace_memory(mem, rules, initvals, bram, match, match_properties, 1)) {
-					log("    Mapping to bram type %s failed.\n", log_id(match.name));
+					log("    Mapping to bram type %s failed.\n", match.name.unescape());
 					failed_brams.insert(pair<IdString, int>(bram.name, bram.variant));
 					goto next_match_rule;
 				}
@@ -1183,12 +1195,12 @@ void handle_memory(Mem &mem, const rules_t &rules, FfInitVals *initvals)
 
 				auto &best_bram = rules.brams.at(rules.matches.at(best_rule.first).name).at(best_rule.second);
 				if (!replace_memory(mem, rules, initvals, best_bram, rules.matches.at(best_rule.first), match_properties, 2))
-					log_error("Mapping to bram type %s (variant %d) after pre-selection failed.\n", log_id(best_bram.name), best_bram.variant);
+					log_error("Mapping to bram type %s (variant %d) after pre-selection failed.\n", best_bram.name.unescape(), best_bram.variant);
 				return;
 			}
 
 			if (!replace_memory(mem, rules, initvals, bram, match, match_properties, 0)) {
-				log("    Mapping to bram type %s failed.\n", log_id(match.name));
+				log("    Mapping to bram type %s failed.\n", match.name.unescape());
 				failed_brams.insert(pair<IdString, int>(bram.name, bram.variant));
 				goto next_match_rule;
 			}
@@ -1313,7 +1325,7 @@ struct MemoryBramPass : public Pass {
 		size_t argidx;
 		for (argidx = 1; argidx < args.size(); argidx++) {
 			if (args[argidx] == "-rules" && argidx+1 < args.size()) {
-				rules.parse(args[++argidx]);
+				rules.parse(args[++argidx], design);
 				continue;
 			}
 			break;

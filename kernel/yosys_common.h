@@ -20,6 +20,8 @@
 #ifndef YOSYS_COMMON_H
 #define YOSYS_COMMON_H
 
+#include <array>
+#include <atomic>
 #include <map>
 #include <set>
 #include <tuple>
@@ -43,6 +45,15 @@
 #include <ostream>
 #include <iostream>
 
+#include <version>
+#if __cpp_lib_source_location >= 201907L
+	#include <source_location>
+	using std::source_location;
+#else
+	#include <experimental/source_location>
+	using std::experimental::source_location;
+#endif
+
 #include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
@@ -52,15 +63,13 @@
 #include <sys/stat.h>
 #include <errno.h>
 
-#ifdef WITH_PYTHON
-#include <Python.h>
-#endif
-
 #ifndef _YOSYS_
 #  error It looks like you are trying to build Yosys without the config defines set. \
          When building Yosys with a custom make system, make sure you set all the \
          defines the Yosys Makefile would set for your build configuration.
 #endif
+
+#include "kernel/yosys_config.h"
 
 #define FRIEND_TEST(test_case_name, test_name) \
   friend class test_case_name##_##test_name##_Test
@@ -77,7 +86,6 @@
 
 #  define strtok_r strtok_s
 #  define strdup _strdup
-#  define snprintf _snprintf
 #  define getcwd _getcwd
 #  define mkdir _mkdir
 #  define popen _popen
@@ -93,6 +101,8 @@
 #  undef CONST
 // `wingdi.h` defines a TRANSPARENT macro that conflicts with X(TRANSPARENT) entry in kernel/constids.inc
 #  undef TRANSPARENT
+// `wingdi.h` defines an ERROR macro that conflicts with `ERROR()` macro in kernel/tclapi.cc
+#  undef ERROR
 #endif
 
 #ifndef PATH_MAX
@@ -122,10 +132,16 @@
 #  define YS_MAYBE_UNUSED
 #endif
 
-#if __cplusplus >= 201703L
+#if defined(_MSC_VER)
+#  define YS_NO_UNIQUE_ADDRESS [[msvc::no_unique_address]]
+#else
+#  define YS_NO_UNIQUE_ADDRESS [[no_unique_address]]
+#endif
+
+#if __cplusplus >= 202002L
 #  define YS_FALLTHROUGH [[fallthrough]];
 #else
-#  error "C++17 or later compatible compiler is required"
+#  error "C++20 or later compatible compiler is required"
 #endif
 
 #if defined(__has_cpp_attribute) && __has_cpp_attribute(gnu::cold)
@@ -141,7 +157,23 @@
 #define YOSYS_CONSTEVAL constexpr
 #endif
 
-#define YOSYS_ABORT(s) abort()
+#define YOSYS_ABORT(s) YOSYS_NAMESPACE_PREFIX log_yosys_abort_message(__FILE__, __LINE__, __FUNCTION__, s)
+
+// This has to precede including "kernel/io.h"
+YOSYS_NAMESPACE_BEGIN
+[[noreturn]] void log_yosys_abort_message(std::string_view file, int line, std::string_view func, std::string_view message);
+
+[[noreturn]]
+void log_assert_failure(const char *expr, source_location location);
+#ifndef NDEBUG
+static inline void log_assert_worker(bool cond, const char *expr, source_location location = source_location::current()) {
+	if (!cond) log_assert_failure(expr, location);
+}
+#  define log_assert(_assert_expr_) YOSYS_NAMESPACE_PREFIX log_assert_worker(_assert_expr_, #_assert_expr_)
+#else
+#  define log_assert(_assert_expr_) do { if (0) { (void)(_assert_expr_); } } while(0)
+#endif
+YOSYS_NAMESPACE_END
 
 #include "kernel/io.h"
 
@@ -194,7 +226,6 @@ struct shared_str {
 };
 
 namespace RTLIL {
-	struct IdString;
 	struct Const;
 	struct SigBit;
 	struct SigSpec;
@@ -205,20 +236,18 @@ namespace RTLIL {
 	struct Module;
 	struct Design;
 	struct Monitor;
-    struct Selection;
+	struct Selection;
 	struct SigChunk;
+	struct PooledName;
 	enum State : unsigned char;
 
 	typedef std::pair<SigSpec, SigSpec> SigSig;
-
-    namespace ID {}
 }
 
 namespace AST {
 	struct AstNode;
 }
 
-using RTLIL::IdString;
 using RTLIL::Const;
 using RTLIL::SigBit;
 using RTLIL::SigSpec;
@@ -230,6 +259,7 @@ using RTLIL::Design;
 using RTLIL::State;
 using RTLIL::SigChunk;
 using RTLIL::SigSig;
+using RTLIL::PooledName;
 
 namespace hashlib {
 	template<> struct hash_ops<RTLIL::Wire*> : hash_obj_ops {};
@@ -264,30 +294,34 @@ int ceil_log2(int x) YS_ATTRIBUTE(const);
 template<typename T> int GetSize(const T &obj) { return obj.size(); }
 inline int GetSize(RTLIL::Wire *wire);
 
-extern int autoidx;
+// When multiple threads are accessing RTLIL, one of these guard objects
+// must exist.
+struct Multithreading
+{
+	Multithreading();
+	~Multithreading();
+	// Returns true when multiple threads are accessing RTLIL.
+	// Each thread must stick to its own Design.
+	static bool active() { return active_; }
+private:
+	static bool active_;
+};
+
 extern int yosys_xtrace;
 extern bool yosys_write_versions;
 
-RTLIL::IdString new_id(std::string file, int line, std::string func);
-RTLIL::IdString new_id_suffix(std::string file, int line, std::string func, std::string suffix);
+const std::string *create_id_prefix(std::string_view file, int line, std::string_view func);
 
 #define NEW_ID \
-	YOSYS_NAMESPACE_PREFIX new_id(__FILE__, __LINE__, __FUNCTION__)
+	YOSYS_NAMESPACE_PREFIX TwineSpec{YOSYS_NAMESPACE_PREFIX TwineSpec::AutoSuffix{[](source_location location, std::string_view func) -> const std::string * { \
+		static std::unique_ptr<const std::string> prefix(YOSYS_NAMESPACE_PREFIX create_id_prefix(location.file_name(), location.line(), func)); \
+		return prefix.get(); \
+	}(source_location::current(), __FUNCTION__), std::string()}}
 #define NEW_ID_SUFFIX(suffix) \
-	YOSYS_NAMESPACE_PREFIX new_id_suffix(__FILE__, __LINE__, __FUNCTION__, suffix)
-
-// Create a statically allocated IdString object, using for example ID::A or ID($add).
-//
-// Recipe for Converting old code that is using conversion of strings like ID::A and
-// "$add" for creating IdStrings: Run below SED command on the .cc file and then use for
-// example "meld foo.cc foo.cc.orig" to manually compile errors, if necessary.
-//
-//  sed -i.orig -r 's/"\\\\([a-zA-Z0-9_]+)"/ID(\1)/g; s/"(\$[a-zA-Z0-9_]+)"/ID(\1)/g;' <filename>
-//
-#define ID(_id) ([]() { const char *p = "\\" #_id, *q = p[1] == '$' ? p+1 : p; \
-        static const YOSYS_NAMESPACE_PREFIX RTLIL::IdString id(q); return id; })()
-namespace ID = RTLIL::ID;
-
+	YOSYS_NAMESPACE_PREFIX TwineSpec{YOSYS_NAMESPACE_PREFIX TwineSpec::AutoSuffix{[](source_location location, std::string_view func) -> const std::string * { \
+		static std::unique_ptr<const std::string> prefix(YOSYS_NAMESPACE_PREFIX create_id_prefix(location.file_name(), location.line(), func)); \
+		return prefix.get(); \
+	}(source_location::current(), __FUNCTION__), std::string(suffix) + "$"}}
 
 YOSYS_NAMESPACE_END
 

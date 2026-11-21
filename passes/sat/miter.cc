@@ -17,9 +17,8 @@
  *
  */
 
-#include "kernel/register.h"
-#include "kernel/rtlil.h"
-#include "kernel/log.h"
+#include "kernel/yosys.h"
+#include "kernel/log_help.h"
 
 USING_YOSYS_NAMESPACE
 PRIVATE_NAMESPACE_BEGIN
@@ -72,16 +71,16 @@ void create_miter_equiv(struct Pass *that, std::vector<std::string> args, RTLIL:
 	if (argidx+3 != args.size() || args[argidx].compare(0, 1, "-") == 0)
 		that->cmd_error(args, argidx, "command argument error");
 
-	RTLIL::IdString gold_name = RTLIL::escape_id(args[argidx++]);
-	RTLIL::IdString gate_name = RTLIL::escape_id(args[argidx++]);
-	RTLIL::IdString miter_name = RTLIL::escape_id(args[argidx++]);
+	IdString gold_name = design->twines().add(RTLIL::escape_id(args[argidx++]));
+	IdString gate_name = design->twines().add(RTLIL::escape_id(args[argidx++]));
+	IdString miter_name = design->twines().add(RTLIL::escape_id(args[argidx++]));
 
 	if (design->module(gold_name) == nullptr)
-		log_cmd_error("Can't find gold module %s!\n", gold_name.c_str());
+		log_cmd_error("Can't find gold module %s!\n", design->twines().str(gold_name));
 	if (design->module(gate_name) == nullptr)
-		log_cmd_error("Can't find gate module %s!\n", gate_name.c_str());
+		log_cmd_error("Can't find gate module %s!\n", design->twines().str(gate_name));
 	if (design->module(miter_name) != nullptr)
-		log_cmd_error("There is already a module %s!\n", miter_name.c_str());
+		log_cmd_error("There is already a module %s!\n", design->twines().str(miter_name));
 
 	RTLIL::Module *gold_module = design->module(gold_name);
 	RTLIL::Module *gate_module = design->module(gate_name);
@@ -106,7 +105,7 @@ void create_miter_equiv(struct Pass *that, std::vector<std::string> args, RTLIL:
 			goto match_gold_port_error;
 		continue;
 	match_gold_port_error:
-		log_cmd_error("No matching port in gate module was found for %s!\n", gold_wire->name.c_str());
+		log_cmd_error("No matching port in gate module was found for %s!\n", gold_wire->name);
 	}
 
 	for (auto gate_wire : gate_module->wires()) {
@@ -126,17 +125,17 @@ void create_miter_equiv(struct Pass *that, std::vector<std::string> args, RTLIL:
 			goto match_gate_port_error;
 		continue;
 	match_gate_port_error:
-		log_cmd_error("No matching port in gold module was found for %s!\n", gate_wire->name.c_str());
+		log_cmd_error("No matching port in gold module was found for %s!\n", gate_wire->name);
 	}
 
-	log("Creating miter cell \"%s\" with gold cell \"%s\" and gate cell \"%s\".\n", RTLIL::id2cstr(miter_name), RTLIL::id2cstr(gold_name), RTLIL::id2cstr(gate_name));
+	log("Creating miter cell \"%s\" with gold cell \"%s\" and gate cell \"%s\".\n", PooledName(design, miter_name).unescape(), PooledName(design, gold_name).unescape(), PooledName(design, gate_name).unescape());
 
-	RTLIL::Module *miter_module = new RTLIL::Module;
+	RTLIL::Module *miter_module = new RTLIL::Module(design);
 	miter_module->name = miter_name;
 	design->add(miter_module);
 
-	RTLIL::Cell *gold_cell = miter_module->addCell(ID(gold), gold_name);
-	RTLIL::Cell *gate_cell = miter_module->addCell(ID(gate), gate_name);
+	RTLIL::Cell *gold_cell = miter_module->addCell(ID::gold, gold_module->name);
+	RTLIL::Cell *gate_cell = miter_module->addCell(ID::gate, gate_module->name);
 
 	RTLIL::SigSpec all_conditions;
 
@@ -144,7 +143,7 @@ void create_miter_equiv(struct Pass *that, std::vector<std::string> args, RTLIL:
 	{
 		if (gold_cross_ports.count(gold_wire))
 		{
-			SigSpec w = miter_module->addWire("\\cross_" + RTLIL::unescape_id(gold_wire->name), gold_wire->width);
+			SigSpec w = miter_module->addWire("\\cross_" + gold_wire->name.unescape(), gold_wire->width);
 			gold_cell->setPort(gold_wire->name, w);
 			if (flag_ignore_gold_x) {
 				RTLIL::SigSpec w_x = miter_module->addWire(NEW_ID, GetSize(w));
@@ -160,7 +159,7 @@ void create_miter_equiv(struct Pass *that, std::vector<std::string> args, RTLIL:
 
 		if (gold_wire->port_input)
 		{
-			RTLIL::Wire *w = miter_module->addWire("\\in_" + RTLIL::unescape_id(gold_wire->name), gold_wire->width);
+			RTLIL::Wire *w = miter_module->addWire("\\in_" + gold_wire->name.unescape(), gold_wire->width);
 			w->port_input = true;
 
 			gold_cell->setPort(gold_wire->name, w);
@@ -169,10 +168,10 @@ void create_miter_equiv(struct Pass *that, std::vector<std::string> args, RTLIL:
 
 		if (gold_wire->port_output)
 		{
-			RTLIL::Wire *w_gold = miter_module->addWire("\\gold_" + RTLIL::unescape_id(gold_wire->name), gold_wire->width);
+			RTLIL::Wire *w_gold = miter_module->addWire("\\gold_" + gold_wire->name.unescape(), gold_wire->width);
 			w_gold->port_output = flag_make_outputs;
 
-			RTLIL::Wire *w_gate = miter_module->addWire("\\gate_" + RTLIL::unescape_id(gold_wire->name), gold_wire->width);
+			RTLIL::Wire *w_gate = miter_module->addWire("\\gate_" + gold_wire->name.unescape(), gold_wire->width);
 			w_gate->port_output = flag_make_outputs;
 
 			gold_cell->setPort(gold_wire->name, w_gold);
@@ -245,7 +244,7 @@ void create_miter_equiv(struct Pass *that, std::vector<std::string> args, RTLIL:
 
 			if (flag_make_outcmp)
 			{
-				RTLIL::Wire *w_cmp = miter_module->addWire("\\cmp_" + RTLIL::unescape_id(gold_wire->name));
+				RTLIL::Wire *w_cmp = miter_module->addWire("\\cmp_" + gold_wire->name.unescape());
 				w_cmp->port_output = true;
 				miter_module->connect(RTLIL::SigSig(w_cmp, this_condition));
 			}
@@ -253,7 +252,7 @@ void create_miter_equiv(struct Pass *that, std::vector<std::string> args, RTLIL:
 			if (flag_make_cover)
 			{
 				auto cover_condition = miter_module->Not(NEW_ID, this_condition);
-				miter_module->addCover("\\cover_" + RTLIL::unescape_id(gold_wire->name), cover_condition, State::S1);
+				miter_module->addCover("\\cover_" + gold_wire->name.unescape(), cover_condition, State::S1);
 			}
 
 			all_conditions.append(this_condition);
@@ -319,13 +318,13 @@ void create_miter_assert(struct Pass *that, std::vector<std::string> args, RTLIL
 	if ((argidx+1 != args.size() && argidx+2 != args.size()) || args[argidx].compare(0, 1, "-") == 0)
 		that->cmd_error(args, argidx, "command argument error");
 
-	IdString module_name = RTLIL::escape_id(args[argidx++]);
-	IdString miter_name = argidx < args.size() ? RTLIL::escape_id(args[argidx++]) : "";
+	IdString module_name = design->twines().add(RTLIL::escape_id(args[argidx++]));
+	IdString miter_name = argidx < args.size() ? design->twines().add(RTLIL::escape_id(args[argidx++])) : IdString::Null;
 
 	if (design->module(module_name) == nullptr)
-		log_cmd_error("Can't find module %s!\n", module_name.c_str());
+		log_cmd_error("Can't find module %s!\n", design->twines().str(module_name));
 	if (!miter_name.empty() && design->module(miter_name) != nullptr)
-		log_cmd_error("There is already a module %s!\n", miter_name.c_str());
+		log_cmd_error("There is already a module %s!\n", design->twines().str(miter_name));
 
 	Module *module = design->module(module_name);
 
@@ -395,6 +394,11 @@ void create_miter_assert(struct Pass *that, std::vector<std::string> args, RTLIL
 
 struct MiterPass : public Pass {
 	MiterPass() : Pass("miter", "automatically create a miter circuit") { }
+	bool formatted_help() override {
+		auto *help = PrettyHelp::get_current();
+		help->set_group("formal");
+		return false;
+	}
 	void help() override
 	{
 		//   |---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|

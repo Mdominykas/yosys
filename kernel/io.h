@@ -8,6 +8,8 @@
 
 YOSYS_NAMESPACE_BEGIN
 
+struct IdString;
+
 inline std::string vstringf(const char *fmt, va_list ap)
 {
 	// For the common case of strings shorter than 128, save a heap
@@ -62,7 +64,7 @@ enum ConversionSpecifier : uint8_t
 	CONVSPEC_UNSIGNED_INT,
 	// Consumes a "double"
 	CONVSPEC_DOUBLE,
-	// Consumes a "const char*"
+	// Consumes a "const char*" or other string type
 	CONVSPEC_CHAR_PTR,
 	// Consumes a "void*"
 	CONVSPEC_VOID_PTR,
@@ -193,6 +195,28 @@ check_format(std::string_view fmt, int fmt_start, bool *has_escapes, FoundFormat
 	ensure_no_format_spec(fmt, fmt_start, has_escapes);
 }
 
+template <class T>
+static auto has_name_member_imp(int)
+	-> decltype(static_cast<const IdString>(std::declval<T>().name), std::true_type{});
+
+template <class T>
+static auto has_name_member_imp(long)
+	-> std::false_type;
+
+template <class T>
+struct has_name_member : decltype(has_name_member_imp<T>(0)){};
+
+template <class T>
+static auto ptr_has_name_member_imp(int)
+	-> decltype(static_cast<const IdString>(std::declval<T>()->name), std::true_type{});
+
+template <class T>
+static auto ptr_has_name_member_imp(long)
+	-> std::false_type;
+
+template <class T>
+struct ptr_has_name_member : decltype(ptr_has_name_member_imp<T>(0)){};
+
 // Check that the format string `fmt.substr(fmt_start)` is valid for the given type arguments.
 // Fills `specs` with the FoundFormatSpecs found in the format string.
 // `int_args_consumed` is the number of int arguments already consumed to satisfy the
@@ -240,7 +264,9 @@ constexpr void check_format(std::string_view fmt, int fmt_start, bool *has_escap
 	case CONVSPEC_CHAR_PTR:
 		if constexpr (!std::is_convertible_v<Arg, const char *> &&
 		        !std::is_convertible_v<Arg, const std::string &> &&
-			!std::is_convertible_v<Arg, const std::string_view &>) {
+			!std::is_convertible_v<Arg, const std::string_view &> &&
+			!has_name_member<Arg>() &&
+			!ptr_has_name_member<Arg>()) {
 			YOSYS_ABORT("Expected type convertible to char *");
 		}
 		*specs = found;
@@ -327,6 +353,16 @@ inline void format_emit_one(std::string &result, std::string_view fmt, const Fou
 		if constexpr (std::is_convertible_v<Arg, const std::string_view &>) {
 			const std::string_view &s = arg;
 			format_emit_string_view(result, spec, dynamic_ints, num_dynamic_ints, s);
+			return;
+		}
+		if constexpr (has_name_member<Arg>()) {
+			const std::string &s = arg.name.unescape();
+			format_emit_string(result, spec, dynamic_ints, num_dynamic_ints, s);
+			return;
+		}
+		if constexpr (ptr_has_name_member<Arg>()) {
+			const std::string &s = arg->name.unescape();
+			format_emit_string(result, spec, dynamic_ints, num_dynamic_ints, s);
 			return;
 		}
 		break;
@@ -423,17 +459,19 @@ public:
 	{
 		return format_emit_toplevel(fmt, has_escapes, specs, args...);
 	}
+	std::string_view format_string() const { return fmt; }
 private:
 	std::string_view fmt;
 	bool has_escapes = false;
-	FoundFormatSpec specs[sizeof...(Args)] = {};
+	// Making array at least size of one to make MSVC happy and strict to standards
+	FoundFormatSpec specs[sizeof...(Args) ? sizeof...(Args) : 1] = {};
 };
 
 template <typename T> struct WrapType { using type = T; };
 template <typename T> using TypeIdentity = typename WrapType<T>::type;
 
 template <typename... Args>
-inline std::string stringf(FmtString<TypeIdentity<Args>...> fmt, Args... args)
+inline std::string stringf(FmtString<TypeIdentity<Args>...> fmt, const Args &... args)
 {
 	return fmt.format(args...);
 }
@@ -453,7 +491,31 @@ bool check_directory_exists(const std::string& dirname, bool is_exec = false);
 bool is_absolute_path(std::string filename);
 void remove_directory(std::string dirname);
 bool create_directory(const std::string& dirname);
+bool make_private_directory(const std::string& dirname);
+std::string make_user_tmpdir(const std::string& name);
 std::string escape_filename_spaces(const std::string& filename);
+void append_globbed(std::vector<std::string>& paths, std::string pattern);
+std::string name_from_file_path(std::string path);
+std::string absolute_path(const std::string& path);
+std::string parent_from_file_path(std::string path);
+
+// Exclusive inter-process file lock (flock/LockFileEx, no-op on WASI),
+// released on destruction. Never unlinks the lock file: that would reopen the race.
+struct ScopedFileLock {
+	ScopedFileLock(const std::string &path);
+	~ScopedFileLock();
+	ScopedFileLock(const ScopedFileLock &) = delete;
+	ScopedFileLock &operator=(const ScopedFileLock &) = delete;
+private:
+#if defined(_WIN32)
+	void *handle = nullptr;
+#elif !defined(__wasi__)
+	int fd = -1;
+#endif
+};
+
+// Current process id (0 on WASI).
+unsigned get_process_id();
 
 YOSYS_NAMESPACE_END
 

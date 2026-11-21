@@ -66,14 +66,7 @@ struct AigMaker
 	Cell *cell;
 	idict<AigNode> aig_indices;
 
-	int the_true_node;
-	int the_false_node;
-
-	AigMaker(Aig *aig, Cell *cell) : aig(aig), cell(cell)
-	{
-		the_true_node = -1;
-		the_false_node = -1;
-	}
+	AigMaker(Aig *aig, Cell *cell) : aig(aig), cell(cell) {}
 
 	int node2index(const AigNode &node)
 	{
@@ -101,7 +94,9 @@ struct AigMaker
 	int inport(IdString portname, int portbit = 0, bool inverter = false)
 	{
 		if (portbit >= GetSize(cell->getPort(portname))) {
-			if (cell->parameters.count(portname.str() + "_SIGNED") && cell->getParam(portname.str() + "_SIGNED").as_bool())
+			IdString signed_param = cell->twines().find(
+				cell->twines().str(portname) + "_SIGNED");
+		if (signed_param != IdString::Null && cell->parameters.count(signed_param) && cell->getParam(signed_param).as_bool())
 				return inport(portname, GetSize(cell->getPort(portname))-1, inverter);
 			return bool_node(inverter);
 		}
@@ -185,50 +180,68 @@ struct AigMaker
 
 	int or_gate(int A, int B)
 	{
-		return nand_gate(not_gate(A), not_gate(B));
+		int not_a = not_gate(A);
+		int not_b = not_gate(B);
+		return nand_gate(not_a, not_b);
 	}
 
 	int nor_gate(int A, int B)
 	{
-		return and_gate(not_gate(A), not_gate(B));
+		int not_a = not_gate(A);
+		int not_b = not_gate(B);
+		return and_gate(not_a, not_b);
 	}
 
 	int xor_gate(int A, int B)
 	{
-		return nor_gate(and_gate(A, B), nor_gate(A, B));
+		int a_and_b = and_gate(A, B);
+		int a_nor_b = nor_gate(A, B);
+		return nor_gate(a_and_b, a_nor_b);
 	}
 
 	int xnor_gate(int A, int B)
 	{
-		return or_gate(and_gate(A, B), nor_gate(A, B));
+		int a_and_b = and_gate(A, B);
+		int a_nor_b = nor_gate(A, B);
+		return or_gate(a_and_b, a_nor_b);
 	}
 
 	int andnot_gate(int A, int B)
 	{
-		return and_gate(A, not_gate(B));
+		int not_b = not_gate(B);
+		return and_gate(A, not_b);
 	}
 
 	int ornot_gate(int A, int B)
 	{
-		return or_gate(A, not_gate(B));
+		int not_b = not_gate(B);
+		return or_gate(A, not_b);
 	}
 
 	int mux_gate(int A, int B, int S)
 	{
-		return or_gate(and_gate(A, not_gate(S)), and_gate(B, S));
+		int not_s = not_gate(S);
+		int a_active = and_gate(A, not_s);
+		int b_active = and_gate(B, S);
+		return or_gate(a_active, b_active);
 	}
 
-	vector<int> adder(const vector<int> &A, const vector<int> &B, int carry, vector<int> *X = nullptr, vector<int> *CO = nullptr)
+	vector<int> adder(const vector<int> &A, const vector<int> &B, int carry_in, vector<int> *X = nullptr, vector<int> *CO = nullptr)
 	{
 		vector<int> Y(GetSize(A));
 		log_assert(GetSize(A) == GetSize(B));
 		for (int i = 0; i < GetSize(A); i++) {
-			Y[i] = xor_gate(xor_gate(A[i], B[i]), carry);
-			carry = or_gate(and_gate(A[i], B[i]), and_gate(or_gate(A[i], B[i]), carry));
+			int a_xor_b = xor_gate(A[i], B[i]);
+			int a_or_b = or_gate(A[i], B[i]);
+			int a_and_b = and_gate(A[i], B[i]);
+			Y[i] = xor_gate(a_xor_b, carry_in);
+			int tmp = and_gate(a_or_b, carry_in);
+			int carry_out = or_gate(a_and_b, tmp);
 			if (X != nullptr)
-				X->at(i) = xor_gate(A[i], B[i]);
+				X->at(i) = a_xor_b;
 			if (CO != nullptr)
-				CO->at(i) = carry;
+				CO->at(i) = carry_out;
+			carry_in = carry_out;
 		}
 		return Y;
 	}
@@ -255,7 +268,7 @@ struct AigMaker
 
 Aig::Aig(Cell *cell)
 {
-	if (cell->type[0] != '$')
+	if (cell->type.isPublic())
 		return;
 
 	AigMaker mk(this, cell);
@@ -307,13 +320,13 @@ Aig::Aig(Cell *cell)
 			int A = mk.inport(ID::A, i);
 			int B = mk.inport(ID::B, i);
 			int Y = cell->type.in(ID($and), ID($_AND_))   ? mk.and_gate(A, B) :
-			        cell->type.in(ID($_NAND_))          ? mk.nand_gate(A, B) :
+			        cell->type.in(ID($_NAND_))            ? mk.nand_gate(A, B) :
 			        cell->type.in(ID($or), ID($_OR_))     ? mk.or_gate(A, B) :
-			        cell->type.in(ID($_NOR_))           ? mk.nor_gate(A, B) :
+			        cell->type.in(ID($_NOR_))             ? mk.nor_gate(A, B) :
 			        cell->type.in(ID($xor), ID($_XOR_))   ? mk.xor_gate(A, B) :
 			        cell->type.in(ID($xnor), ID($_XNOR_)) ? mk.xnor_gate(A, B) :
-			        cell->type.in(ID($_ANDNOT_))        ? mk.andnot_gate(A, B) :
-			        cell->type.in(ID($_ORNOT_))         ? mk.ornot_gate(A, B) : -1;
+			        cell->type.in(ID($_ANDNOT_))          ? mk.andnot_gate(A, B) :
+			        cell->type.in(ID($_ORNOT_))           ? mk.ornot_gate(A, B) : -1;
 			mk.outport(Y, ID::Y, i);
 		}
 		goto optimize;
@@ -465,7 +478,8 @@ Aig::Aig(Cell *cell)
 		int B = mk.inport(ID::B);
 		int C = mk.inport(ID::C);
 		int D = mk.inport(ID::D);
-		int Y = mk.nor_gate(mk.and_gate(A, B), mk.and_gate(C, D));
+		int a_and_b = mk.and_gate(A, B);
+		int Y = mk.nor_gate(a_and_b, mk.and_gate(C, D));
 		mk.outport(Y, ID::Y);
 		goto optimize;
 	}
@@ -476,7 +490,8 @@ Aig::Aig(Cell *cell)
 		int B = mk.inport(ID::B);
 		int C = mk.inport(ID::C);
 		int D = mk.inport(ID::D);
-		int Y = mk.nand_gate(mk.or_gate(A, B), mk.or_gate(C, D));
+		int a_or_b = mk.or_gate(A, B);
+		int Y = mk.nand_gate(a_or_b, mk.or_gate(C, D));
 		mk.outport(Y, ID::Y);
 		goto optimize;
 	}

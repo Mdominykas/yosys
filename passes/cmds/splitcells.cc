@@ -61,14 +61,14 @@ struct SplitcellsWorker
 				SigBit bit(sig[i]);
 				if (!bit_drivers_db.count(bit)) continue;
 				bit_users_db[bit].insert(tuple<IdString,IdString,int>(wire->name,
-						IdString(), i-std::get<2>(bit_drivers_db[bit])));
+						IdString::Null, i-std::get<2>(bit_drivers_db[bit])));
 			}
 		}
 	}
 
 	int split(Cell *cell, const std::string &format)
 	{
-		if (cell->type.in("$and", "$mux", "$not", "$or", "$pmux", "$xnor", "$xor"))
+		if (cell->type.in(ID($and), ID($mux), ID($not), ID($or), ID($pmux), ID($xnor), ID($xor)))
 		{
 			SigSpec outsig = sigmap(cell->getPort(ID::Y));
 			if (GetSize(outsig) <= 1) return 0;
@@ -89,15 +89,16 @@ struct SplitcellsWorker
 			if (GetSize(slices) <= 1) return 0;
 			slices.push_back(GetSize(outsig));
 
-			log("Splitting %s cell %s/%s into %d slices:\n", log_id(cell->type), log_id(module), log_id(cell), GetSize(slices)-1);
+			log("Splitting %s cell %s/%s into %d slices:\n", cell->type.unescape(), module, cell, GetSize(slices)-1);
 			for (int i = 1; i < GetSize(slices); i++)
 			{
 				int slice_msb = slices[i]-1;
 				int slice_lsb = slices[i-1];
 
-				IdString slice_name = module->uniquify(cell->name.str() + (slice_msb == slice_lsb ?
+				std::string s = cell->name.str() + (slice_msb == slice_lsb ?
 						stringf("%c%d%c", format[0], slice_lsb, format[1]) :
-						stringf("%c%d%c%d%c", format[0], slice_msb, format[2], slice_lsb, format[1])));
+						stringf("%c%d%c%d%c", format[0], slice_msb, format[2], slice_lsb, format[1]));
+				IdString slice_name = module->uniquify(std::move(s));
 
 				Cell *slice = module->addCell(slice_name, cell);
 
@@ -126,15 +127,15 @@ struct SplitcellsWorker
 				if (slice->hasParam(ID::WIDTH))
 					slice->setParam(ID::WIDTH, GetSize(slice->getPort(ID::Y)));
 
-				log("  slice %d: %s => %s\n", i, log_id(slice_name), log_signal(slice->getPort(ID::Y)));
+				log("  slice %d: %s => %s\n", i, module->twines().str(slice_name), log_signal(slice->getPort(ID::Y)));
 			}
 
 			module->remove(cell);
 			return GetSize(slices)-1;
 		}
 
-		if (cell->type.in("$ff", "$dff", "$dffe", "$dffsr", "$dffsre", "$adff", "$adffe", "$aldff", "$aldffe",
-				"$sdff", "$sdffce", "$sdffe", "$dlatch", "$dlatchsr", "$adlatch"))
+		if (cell->type.in(ID($ff), ID($dff), ID($dffe), ID($dffsr), ID($dffsre), ID($adff), ID($adffe), ID($aldff), ID($aldffe),
+				ID($sdff), ID($sdffce), ID($sdffe), ID($dlatch), ID($dlatchsr), ID($adlatch)))
 		{
 			auto splitports = {ID::D, ID::Q, ID::AD, ID::SET, ID::CLR};
 			auto splitparams = {ID::ARST_VALUE, ID::SRST_VALUE};
@@ -155,15 +156,17 @@ struct SplitcellsWorker
 			if (GetSize(slices) <= 1) return 0;
 			slices.push_back(GetSize(outsig));
 
-			log("Splitting %s cell %s/%s into %d slices:\n", log_id(cell->type), log_id(module), log_id(cell), GetSize(slices)-1);
+			log("Splitting %s cell %s/%s into %d slices:\n", cell->type.unescape(), module, cell, GetSize(slices)-1);
 			for (int i = 1; i < GetSize(slices); i++)
 			{
 				int slice_msb = slices[i]-1;
 				int slice_lsb = slices[i-1];
 
-				IdString slice_name = module->uniquify(cell->name.str() + (slice_msb == slice_lsb ?
+				TwinePool &twines = module->twines();
+				std::string s = cell->name.str() + (slice_msb == slice_lsb ?
 						stringf("%c%d%c", format[0], slice_lsb, format[1]) :
-						stringf("%c%d%c%d%c", format[0], slice_msb, format[2], slice_lsb, format[1])));
+						stringf("%c%d%c%d%c", format[0], slice_msb, format[2], slice_lsb, format[1]));
+				IdString slice_name = module->uniquify(std::move(s));
 
 				Cell *slice = module->addCell(slice_name, cell);
 
@@ -185,7 +188,7 @@ struct SplitcellsWorker
 
 				slice->setParam(ID::WIDTH, GetSize(slice->getPort(ID::Q)));
 
-				log("  slice %d: %s => %s\n", i, log_id(slice_name), log_signal(slice->getPort(ID::Q)));
+				log("  slice %d: %s => %s\n", i, twines.unescaped_str(slice_name), log_signal(slice->getPort(ID::Q)));
 			}
 
 			module->remove(cell);
@@ -258,7 +261,7 @@ struct SplitcellsPass : public Pass {
 
 			if (count_split_pre)
 				log("Split %d cells in module %s into %d cell slices.\n",
-					count_split_pre, log_id(module), count_split_post);
+					count_split_pre, module, count_split_post);
 		}
 	}
 } SplitnetsPass;

@@ -1,12 +1,13 @@
 module dff (D, CLK, Q);
-  reg "IQ", "IQN";
+  reg IQ, IQN;
   input D;
   input CLK;
   output Q;
-  assign Q = IQ; // "IQ"
+  assign Q = IQ; // IQ
   always @(posedge CLK) begin
-      // "(D)"
-      "IQ" <= (D);
-      "IQN" <= ~((D));
+      IQ <= D;
+  end
+  always @(posedge CLK) begin
+      IQN <= ~(D);
   end
 endmodule

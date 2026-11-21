@@ -40,10 +40,10 @@ int bindec(unsigned char v)
 	r += (~((v & 2) - 1)) & 10;
 	r += (~((v & 4) - 1)) & 100;
 	r += (~((v & 8) - 1)) & 1000;
-	r += (~((v & 16) - 1)) & 10000;
-	r += (~((v & 32) - 1)) & 100000;
-	r += (~((v & 64) - 1)) & 1000000;
-	r += (~((v & 128) - 1)) & 10000000;
+	r += (~((v & 16) - 1)) & 10'000;
+	r += (~((v & 32) - 1)) & 100'000;
+	r += (~((v & 64) - 1)) & 1'000'000;
+	r += (~((v & 128) - 1)) & 10'000'000;
 	return r;
 }
 
@@ -289,7 +289,7 @@ struct ExtractFaWorker
 
 	void run()
 	{
-		log("Extracting full/half adders from %s:\n", log_id(module));
+		log("Extracting full/half adders from %s:\n", module);
 
 		for (auto it : driver)
 		{
@@ -328,10 +328,10 @@ struct ExtractFaWorker
 				if (it.first != xor3_func && it.first != xnor3_func)
 					continue;
 
-				log("      %08d ->", bindec(it.first));
+				std::string message = stringf("      %08d ->", bindec(it.first));
 				for (auto bit : it.second)
-					log(" %s", log_signal(bit));
-				log("\n");
+					message += stringf(" %s", log_signal(bit));
+				log("%s\n", message);
 			}
 
 			dict<int, tuple<SigBit, SigBit, Cell*>> facache;
@@ -354,18 +354,18 @@ struct ExtractFaWorker
 				if (!f3i.inv_a && !f3i.inv_b && !f3i.inv_c && !f3i.inv_y) {
 					log("    Majority without inversions:\n");
 				} else {
-					log("    Majority with inverted");
-					if (f3i.inv_a) log(" A");
-					if (f3i.inv_b) log(" B");
-					if (f3i.inv_c) log(" C");
-					if (f3i.inv_y) log(" Y");
-					log(":\n");
+					std::string message = "    Majority with inverted";
+					if (f3i.inv_a) message += " A";
+					if (f3i.inv_b) message += " B";
+					if (f3i.inv_c) message += " C";
+					if (f3i.inv_y) message += " Y";
+					log("%s:\n", message);
 				}
 
-				log("      %08d ->", bindec(func));
+				std::string message = stringf("      %08d ->", bindec(func));
 				for (auto bit : func3.at(key).at(func))
-					log(" %s", log_signal(bit));
-				log("\n");
+					message += stringf(" %s", log_signal(bit));
+				log("%s\n", message);
 
 				int fakey = 0;
 				if (f3i.inv_a) fakey |= 1;
@@ -381,7 +381,7 @@ struct ExtractFaWorker
 					auto &fa = facache.at(fakey);
 					X = get<0>(fa);
 					Y = get<1>(fa);
-					log("      Reusing $fa cell %s.\n", log_id(get<2>(fa)));
+					log("      Reusing $fa cell %s.\n", get<2>(fa));
 				}
 				else
 				if (facache.count(fakey_inv))
@@ -390,14 +390,14 @@ struct ExtractFaWorker
 					invert_xy = true;
 					X = get<0>(fa);
 					Y = get<1>(fa);
-					log("      Reusing $fa cell %s.\n", log_id(get<2>(fa)));
+					log("      Reusing $fa cell %s.\n", get<2>(fa));
 				}
 				else
 				{
 					Cell *cell = module->addCell(NEW_ID, ID($fa));
 					cell->setParam(ID::WIDTH, 1);
 
-					log("      Created $fa cell %s.\n", log_id(cell));
+					log("      Created $fa cell %s.\n", cell);
 
 					cell->setPort(ID::A, f3i.inv_a ? module->NotGate(NEW_ID, A) : A);
 					cell->setPort(ID::B, f3i.inv_b ? module->NotGate(NEW_ID, B) : B);
@@ -444,10 +444,10 @@ struct ExtractFaWorker
 				if (it.first != xor2_func && it.first != xnor2_func)
 					continue;
 
-				log("    %04d ->", bindec(it.first));
+				std::string message = stringf("    %04d ->", bindec(it.first));
 				for (auto bit : it.second)
-					log(" %s", log_signal(bit));
-				log("\n");
+					message += stringf(" %s", log_signal(bit));
+				log("%s\n", message);
 			}
 
 			dict<int, tuple<SigBit, SigBit, Cell*>> facache;
@@ -463,17 +463,17 @@ struct ExtractFaWorker
 				if (!f2i.inv_a && !f2i.inv_b && !f2i.inv_y) {
 					log("    AND without inversions:\n");
 				} else {
-					log("    AND with inverted");
-					if (f2i.inv_a) log(" A");
-					if (f2i.inv_b) log(" B");
-					if (f2i.inv_y) log(" Y");
-					log(":\n");
+					std::string message = "    AND with inverted";
+					if (f2i.inv_a) message += " A";
+					if (f2i.inv_b) message += " B";
+					if (f2i.inv_y) message += " Y";
+					log("%s:\n", message);
 				}
 
-				log("      %04d ->", bindec(func));
+				std::string message = stringf("      %04d ->", bindec(func));
 				for (auto bit : func2.at(key).at(func))
-					log(" %s", log_signal(bit));
-				log("\n");
+					message += stringf(" %s", log_signal(bit));
+				log("%s\n", message);
 
 				int fakey = 0;
 				if (f2i.inv_a) fakey |= 1;
@@ -488,7 +488,7 @@ struct ExtractFaWorker
 					auto &fa = facache.at(fakey);
 					X = get<0>(fa);
 					Y = get<1>(fa);
-					log("      Reusing $fa cell %s.\n", log_id(get<2>(fa)));
+					log("      Reusing $fa cell %s.\n", get<2>(fa));
 				}
 				else
 				if (facache.count(fakey_inv))
@@ -497,14 +497,14 @@ struct ExtractFaWorker
 					invert_xy = true;
 					X = get<0>(fa);
 					Y = get<1>(fa);
-					log("      Reusing $fa cell %s.\n", log_id(get<2>(fa)));
+					log("      Reusing $fa cell %s.\n", get<2>(fa));
 				}
 				else
 				{
 					Cell *cell = module->addCell(NEW_ID, ID($fa));
 					cell->setParam(ID::WIDTH, 1);
 
-					log("      Created $fa cell %s.\n", log_id(cell));
+					log("      Created $fa cell %s.\n", cell);
 
 					cell->setPort(ID::A, f2i.inv_a ? module->NotGate(NEW_ID, A) : A);
 					cell->setPort(ID::B, f2i.inv_b ? module->NotGate(NEW_ID, B) : B);
@@ -584,11 +584,11 @@ struct ExtractFaPass : public Pass {
 				config.verbose = true;
 				continue;
 			}
-			if (args[argidx] == "-d" && argidx+2 < args.size()) {
+			if (args[argidx] == "-d" && argidx+1 < args.size()) {
 				config.maxdepth = atoi(args[++argidx].c_str());
 				continue;
 			}
-			if (args[argidx] == "-b" && argidx+2 < args.size()) {
+			if (args[argidx] == "-b" && argidx+1 < args.size()) {
 				config.maxbreadth = atoi(args[++argidx].c_str());
 				continue;
 			}

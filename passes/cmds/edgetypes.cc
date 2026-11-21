@@ -19,12 +19,18 @@
 
 #include "kernel/yosys.h"
 #include "kernel/sigtools.h"
+#include "kernel/log_help.h"
 
 USING_YOSYS_NAMESPACE
 PRIVATE_NAMESPACE_BEGIN
 
 struct EdgetypePass : public Pass {
 	EdgetypePass() : Pass("edgetypes", "list all types of edges in selection") { }
+	bool formatted_help() override {
+		auto *help = PrettyHelp::get_current();
+		help->set_group("passes/status");
+		return false;
+	}
 	void help() override
 	{
 		//   |---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|
@@ -86,12 +92,12 @@ struct EdgetypePass : public Pass {
 				auto sink_bit_index = std::get<2>(sink);
 
 				string source_str = multibit_ports.count(std::pair<IdString, IdString>(source_cell_type, source_port_name)) ?
-						stringf("%s.%s[%d]", log_id(source_cell_type), log_id(source_port_name), source_bit_index) :
-						stringf("%s.%s", log_id(source_cell_type), log_id(source_port_name));
+						stringf("%s.%s[%d]", PooledName(module, source_cell_type).unescape(), PooledName(module, source_port_name).unescape(), source_bit_index) :
+						stringf("%s.%s", PooledName(module, source_cell_type).unescape(), PooledName(module, source_port_name).unescape());
 
 				string sink_str = multibit_ports.count(std::pair<IdString, IdString>(sink_cell_type, sink_port_name)) ?
-						stringf("%s.%s[%d]", log_id(sink_cell_type), log_id(sink_port_name), sink_bit_index) :
-						stringf("%s.%s", log_id(sink_cell_type), log_id(sink_port_name));
+						stringf("%s.%s[%d]", PooledName(module, sink_cell_type).unescape(), PooledName(module, sink_port_name).unescape(), sink_bit_index) :
+						stringf("%s.%s", PooledName(module, sink_cell_type).unescape(), PooledName(module, sink_port_name).unescape());
 
 				edge_cache.insert(source_str + " " + sink_str);
 			}
@@ -99,7 +105,7 @@ struct EdgetypePass : public Pass {
 
 		edge_cache.sort();
 		for (auto &str : edge_cache)
-			log("%s\n", str.c_str());
+			log("%s\n", str);
 	}
 } EdgetypePass;
 

@@ -20,11 +20,12 @@
 #ifndef DRIVERTOOLS_H
 #define DRIVERTOOLS_H
 
+#include <string>
 #include <type_traits>
 
 #include "kernel/rtlil.h"
 #include "kernel/sigtools.h"
-#include "kernel/celltypes.h"
+#include "kernel/newcelltypes.h"
 
 YOSYS_NAMESPACE_BEGIN
 
@@ -39,11 +40,11 @@ struct DriveChunk;
 
 struct DriveSpec;
 
-const char *log_signal(DriveChunkWire const &chunk);
-const char *log_signal(DriveChunkPort const &chunk);
-const char *log_signal(DriveChunkMarker const &chunk);
-const char *log_signal(DriveChunk const &chunk);
-const char *log_signal(DriveSpec const &chunk);
+std::string log_signal(DriveChunkWire const &chunk);
+std::string log_signal(DriveChunkPort const &chunk);
+std::string log_signal(DriveChunkMarker const &chunk);
+std::string log_signal(DriveChunk const &chunk);
+std::string log_signal(DriveSpec const &chunk);
 
 enum class DriveType : unsigned char
 {
@@ -1092,10 +1093,10 @@ private:
 
 struct DriverMap
 {
-	CellTypes celltypes;
+	NewCellTypes celltypes;
 
 	DriverMap() { celltypes.setup(); }
-	DriverMap(Design *design) { celltypes.setup(); celltypes.setup_design(design); }
+	DriverMap(Design *design) { celltypes.setup(design); }
 
 private:
 
@@ -1236,7 +1237,7 @@ public:
 	void add(SigSpec const &a, SigSpec const &b);
 
 private:
-	void add_port(Cell *cell, IdString const &port, SigSpec const &b);
+	void add_port(Cell *cell, IdString port, SigSpec const &b);
 
 	// Only used a local variables in `orient_undirected`, always cleared, only
 	// stored to reduce allocations.

@@ -27,10 +27,10 @@
 USING_YOSYS_NAMESPACE
 PRIVATE_NAMESPACE_BEGIN
 
-static string spice_id2str(IdString id)
+static string spice_id2str(PooledName id)
 {
 	static const char *escape_chars = "$\\[]()<>=";
-	string s = RTLIL::unescape_id(id);
+	string s = id.unescape();
 
 	for (auto &ch : s)
 		if (strchr(escape_chars, ch) != nullptr) ch = '_';
@@ -38,9 +38,9 @@ static string spice_id2str(IdString id)
 	return s;
 }
 
-static string spice_id2str(IdString id, bool use_inames, idict<IdString, 1> &inums)
+static string spice_id2str(PooledName id, bool use_inames, idict<IdString, 1> &inums)
 {
-	if (!use_inames && *id.c_str() == '$')
+	if (!use_inames && !id.isPublic())
 		return stringf("%d", inums(id));
 	return spice_id2str(id);
 }
@@ -51,16 +51,16 @@ static void print_spice_net(std::ostream &f, RTLIL::SigBit s, std::string &neg, 
 		if (s.wire->port_id)
 			use_inames = true;
 		if (s.wire->width > 1)
-			f << stringf(" %s.%d", spice_id2str(s.wire->name, use_inames, inums).c_str(), s.offset);
+			f << stringf(" %s.%d", spice_id2str(s.wire->name, use_inames, inums), s.offset);
 		else
-			f << stringf(" %s", spice_id2str(s.wire->name, use_inames, inums).c_str());
+			f << stringf(" %s", spice_id2str(s.wire->name, use_inames, inums));
 	} else {
 		if (s == RTLIL::State::S0)
-			f << stringf(" %s", neg.c_str());
+			f << stringf(" %s", neg);
 		else if (s == RTLIL::State::S1)
-			f << stringf(" %s", pos.c_str());
+			f << stringf(" %s", pos);
 		else
-			f << stringf(" %s%d", ncpf.c_str(), nc_counter++);
+			f << stringf(" %s%d", ncpf, nc_counter++);
 	}
 }
 
@@ -82,7 +82,7 @@ static void print_spice_module(std::ostream &f, RTLIL::Module *module, RTLIL::De
 		if (design->module(cell->type) == nullptr)
 		{
 			log_warning("no (blackbox) module for cell type `%s' (%s.%s) found! Guessing order of ports.\n",
-					log_id(cell->type), log_id(module), log_id(cell));
+					cell->type.unescape(), module, cell);
 			for (auto &conn : cell->connections()) {
 				RTLIL::SigSpec sig = sigmap(conn.second);
 				port_sigs.push_back(sig);
@@ -119,7 +119,7 @@ static void print_spice_module(std::ostream &f, RTLIL::Module *module, RTLIL::De
 			}
 		}
 
-		f << stringf(" %s\n", spice_id2str(cell->type).c_str());
+		f << stringf(" %s\n", spice_id2str(cell->type));
 	}
 
 	for (auto &conn : module->connections())
@@ -127,7 +127,7 @@ static void print_spice_module(std::ostream &f, RTLIL::Module *module, RTLIL::De
 		f << (buf == "DC" ? stringf("V%d", conn_counter++) : stringf("X%d", cell_counter++));
 		print_spice_net(f, conn.second.extract(i, 1), neg, pos, ncpf, nc_counter, use_inames, inums);
 		print_spice_net(f, conn.first.extract(i, 1), neg, pos, ncpf, nc_counter, use_inames, inums);
-		f << (buf == "DC" ? " DC 0\n" : stringf(" %s\n", buf.c_str()));
+		f << (buf == "DC" ? " DC 0\n" : stringf(" %s\n", buf));
 	}
 }
 
@@ -224,9 +224,9 @@ struct SpiceBackend : public Backend {
 				continue;
 
 			if (module->processes.size() != 0)
-				log_error("Found unmapped processes in module %s: unmapped processes are not supported in SPICE backend!\n", log_id(module));
+				log_error("Found unmapped processes in module %s: unmapped processes are not supported in SPICE backend!\n", module);
 			if (module->memories.size() != 0)
-				log_error("Found unmapped memories in module %s: unmapped memories are not supported in SPICE backend!\n", log_id(module));
+				log_error("Found unmapped memories in module %s: unmapped memories are not supported in SPICE backend!\n", module);
 
 			if (module->name == RTLIL::escape_id(top_module_name)) {
 				top_module = module;
@@ -242,23 +242,23 @@ struct SpiceBackend : public Backend {
 				ports.at(wire->port_id-1) = wire;
 			}
 
-			*f << stringf(".SUBCKT %s", spice_id2str(module->name).c_str());
+			*f << stringf(".SUBCKT %s", spice_id2str(module->name));
 			for (RTLIL::Wire *wire : ports) {
 				log_assert(wire != NULL);
 				if (wire->width > 1) {
 					for (int i = 0; i < wire->width; i++)
-						*f << stringf(" %s.%d", spice_id2str(wire->name).c_str(), big_endian ? wire->width - 1 - i : i);
+						*f << stringf(" %s.%d", spice_id2str(wire->name), big_endian ? wire->width - 1 - i : i);
 				} else
-					*f << stringf(" %s", spice_id2str(wire->name).c_str());
+					*f << stringf(" %s", spice_id2str(wire->name));
 			}
 			*f << stringf("\n");
 			print_spice_module(*f, module, design, neg, pos, buf, ncpf, big_endian, use_inames);
-			*f << stringf(".ENDS %s\n\n", spice_id2str(module->name).c_str());
+			*f << stringf(".ENDS %s\n\n", spice_id2str(module->name));
 		}
 
 		if (!top_module_name.empty()) {
 			if (top_module == NULL)
-				log_error("Can't find top module `%s'!\n", top_module_name.c_str());
+				log_error("Can't find top module `%s'!\n", top_module_name);
 			print_spice_module(*f, top_module, design, neg, pos, buf, ncpf, big_endian, use_inames);
 			*f << stringf("\n");
 		}

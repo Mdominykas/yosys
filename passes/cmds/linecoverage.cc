@@ -85,17 +85,17 @@ struct CoveragePass : public Pass {
 		if (!ofile.empty()) {
 			fout.open(ofile, std::ios::out | std::ios::trunc);
 			if (!fout.is_open())
-				log_error("Could not open file \"%s\" with write access.\n", ofile.c_str());
+				log_error("Could not open file \"%s\" with write access.\n", ofile);
 		}
 
 		std::map<std::string, std::set<int>> uncovered_lines;
 		std::map<std::string, std::set<int>> all_lines;
-		
+
 		for (auto module : design->modules())
 		{
-			log_debug("Module %s:\n", log_id(module));
+			log_debug("Module %s:\n", module);
 			for (auto wire: module->wires()) {
-				log_debug("%s\t%s\t%s\n", module->selected(wire) ? "*" : " ", wire->get_src_attribute().c_str(), log_id(wire->name));
+				log_debug("%s\t%s\t%s\n", module->selected(wire) ? "*" : " ", wire->get_src_attribute(), wire);
 				for (auto src: wire->get_strpool_attribute(ID::src)) {
 					auto filename = extract_src_filename(src);
 					if (filename.empty()) continue;
@@ -109,7 +109,7 @@ struct CoveragePass : public Pass {
 				}
 			}
 			for (auto cell: module->cells()) {
-				log_debug("%s\t%s\t%s\n", module->selected(cell) ? "*" : " ", cell->get_src_attribute().c_str(), log_id(cell->name));
+				log_debug("%s\t%s\t%s\n", module->selected(cell) ? "*" : " ", cell->get_src_attribute(), cell);
 				for (auto src: cell->get_strpool_attribute(ID::src)) {
 					auto filename = extract_src_filename(src);
 					if (filename.empty()) continue;
@@ -128,7 +128,7 @@ struct CoveragePass : public Pass {
 		for (const auto& file_entry : all_lines) {
 			int lines_found = file_entry.second.size();
 			int lines_hit = file_entry.second.size() - (uncovered_lines.count(file_entry.first) ? uncovered_lines[file_entry.first].size() : 0);
-			log("File %s: %d/%d lines covered\n", file_entry.first.c_str(), lines_hit, lines_found);
+			log("File %s: %d/%d lines covered\n", file_entry.first, lines_hit, lines_found);
 
 			if(!ofile.empty()) {
 				fout << "SF:" << file_entry.first << "\n";
@@ -136,7 +136,7 @@ struct CoveragePass : public Pass {
 					fout << "DA:" << l << ",";
 					if (uncovered_lines.count(file_entry.first) && uncovered_lines[file_entry.first].count(l))
 						fout << "0";
-					else 
+					else
 						fout << "1";
 					fout << "\n";
 				}

@@ -104,14 +104,14 @@ struct WreduceWorker
 			sig_removed.append(bits_removed[i]);
 
 		if (GetSize(bits_removed) == GetSize(sig_y)) {
-			log("Removed cell %s.%s (%s).\n", log_id(module), log_id(cell), log_id(cell->type));
+			log("Removed cell %s.%s (%s).\n", module, cell, cell->type.unescape());
 			module->connect(sig_y, sig_removed);
 			module->remove(cell);
 			return;
 		}
 
 		log("Removed top %d bits (of %d) from mux cell %s.%s (%s).\n",
-				GetSize(sig_removed), GetSize(sig_y), log_id(module), log_id(cell), log_id(cell->type));
+				GetSize(sig_removed), GetSize(sig_y), module, cell, cell->type.unescape());
 
 		int n_removed = GetSize(sig_removed);
 		int n_kept = GetSize(sig_y) - GetSize(sig_removed);
@@ -204,13 +204,13 @@ struct WreduceWorker
 			return;
 
 		if (GetSize(sig_q) == 0) {
-			log("Removed cell %s.%s (%s).\n", log_id(module), log_id(cell), log_id(cell->type));
+			log("Removed cell %s.%s (%s).\n", module, cell, cell->type.unescape());
 			module->remove(cell);
 			return;
 		}
 
 		log("Removed top %d bits (of %d) from FF cell %s.%s (%s).\n", width_before - GetSize(sig_q), width_before,
-				log_id(module), log_id(cell), log_id(cell->type));
+				module, cell, cell->type.unescape());
 
 		for (auto bit : sig_d)
 			work_queue_bits.insert(bit);
@@ -220,10 +220,10 @@ struct WreduceWorker
 
 		// Narrow ARST_VALUE parameter to new size.
 		if (cell->parameters.count(ID::ARST_VALUE)) {
-			rst_value.bits().resize(GetSize(sig_q));
+			rst_value.resize(GetSize(sig_q), State::S0);
 			cell->setParam(ID::ARST_VALUE, rst_value);
 		} else if (cell->parameters.count(ID::SRST_VALUE)) {
-			rst_value.bits().resize(GetSize(sig_q));
+			rst_value.resize(GetSize(sig_q), State::S0);
 			cell->setParam(ID::SRST_VALUE, rst_value);
 		}
 
@@ -234,8 +234,9 @@ struct WreduceWorker
 
 	void run_reduce_inport(Cell *cell, char port, int max_port_size, bool &port_signed, bool &did_something)
 	{
-		port_signed = cell->getParam(stringf("\\%c_SIGNED", port)).as_bool();
-		SigSpec sig = mi.sigmap(cell->getPort(stringf("\\%c", port)));
+		IdString port_name = port == 'A' ? ID::A : ID::B;
+		port_signed = cell->getParam(port == 'A' ? ID::A_SIGNED : ID::B_SIGNED).as_bool();
+		SigSpec sig = mi.sigmap(cell->getPort(port_name));
 
 		if (port == 'B' && cell->type.in(ID($shl), ID($shr), ID($sshl), ID($sshr)))
 			port_signed = false;
@@ -258,8 +259,8 @@ struct WreduceWorker
 
 		if (bits_removed) {
 			log("Removed top %d bits (of %d) from port %c of cell %s.%s (%s).\n",
-					bits_removed, GetSize(sig) + bits_removed, port, log_id(module), log_id(cell), log_id(cell->type));
-			cell->setPort(stringf("\\%c", port), sig);
+					bits_removed, GetSize(sig) + bits_removed, port, module, cell, cell->type.unescape());
+			cell->setPort(port_name, sig);
 			did_something = true;
 		}
 	}
@@ -331,7 +332,7 @@ struct WreduceWorker
 
 			if (!port_a_signed && !port_b_signed && signed_cost < unsigned_cost) {
 				log("Converting cell %s.%s (%s) from unsigned to signed.\n",
-						log_id(module), log_id(cell), log_id(cell->type));
+						module, cell, cell->type.unescape());
 				cell->setParam(ID::A_SIGNED, 1);
 				cell->setParam(ID::B_SIGNED, 1);
 				port_a_signed = true;
@@ -339,7 +340,7 @@ struct WreduceWorker
 				did_something = true;
 			} else if (port_a_signed && port_b_signed && unsigned_cost < signed_cost) {
 				log("Converting cell %s.%s (%s) from signed to unsigned.\n",
-						log_id(module), log_id(cell), log_id(cell->type));
+						module, cell, cell->type.unescape());
 				cell->setParam(ID::A_SIGNED, 0);
 				cell->setParam(ID::B_SIGNED, 0);
 				port_a_signed = false;
@@ -359,7 +360,7 @@ struct WreduceWorker
 			if (GetSize(sig_a) > 0 && sig_a[GetSize(sig_a)-1] == State::S0 &&
 					GetSize(sig_b) > 0 && sig_b[GetSize(sig_b)-1] == State::S0) {
 				log("Converting cell %s.%s (%s) from signed to unsigned.\n",
-						log_id(module), log_id(cell), log_id(cell->type));
+						module, cell, cell->type.unescape());
 				cell->setParam(ID::A_SIGNED, 0);
 				cell->setParam(ID::B_SIGNED, 0);
 				port_a_signed = false;
@@ -372,7 +373,7 @@ struct WreduceWorker
 			SigSpec sig_a = mi.sigmap(cell->getPort(ID::A));
 			if (GetSize(sig_a) > 0 && sig_a[GetSize(sig_a)-1] == State::S0) {
 				log("Converting cell %s.%s (%s) from signed to unsigned.\n",
-						log_id(module), log_id(cell), log_id(cell->type));
+						module, cell, cell->type.unescape());
 				cell->setParam(ID::A_SIGNED, 0);
 				port_a_signed = false;
 				did_something = true;
@@ -431,14 +432,14 @@ struct WreduceWorker
 		}
 
 		if (GetSize(sig) == 0) {
-			log("Removed cell %s.%s (%s).\n", log_id(module), log_id(cell), log_id(cell->type));
+			log("Removed cell %s.%s (%s).\n", module, cell, cell->type.unescape());
 			module->remove(cell);
 			return;
 		}
 
 		if (bits_removed) {
 			log("Removed top %d bits (of %d) from port Y of cell %s.%s (%s).\n",
-					bits_removed, GetSize(sig) + bits_removed, log_id(module), log_id(cell), log_id(cell->type));
+					bits_removed, GetSize(sig) + bits_removed, module, cell, cell->type.unescape());
 			cell->setPort(ID::Y, sig);
 			did_something = true;
 		}
@@ -453,7 +454,6 @@ struct WreduceWorker
 	{
 		int count = w->attributes.size();
 		count -= w->attributes.count(ID::src);
-		count -= w->attributes.count(ID::unused_bits);
 		return count;
 	}
 
@@ -510,7 +510,7 @@ struct WreduceWorker
 			if (complete_wires[mi.sigmap(w).extract(0, GetSize(w) - unused_top_bits)])
 				continue;
 
-			log("Removed top %d bits (of %d) from wire %s.%s.\n", unused_top_bits, GetSize(w), log_id(module), log_id(w));
+			log("Removed top %d bits (of %d) from wire %s.%s.\n", unused_top_bits, GetSize(w), module, w);
 			Wire *nw = module->addWire(NEW_ID, GetSize(w) - unused_top_bits);
 			module->connect(nw, SigSpec(w).extract(0, GetSize(nw)));
 			module->swap_names(w, nw);
@@ -576,6 +576,10 @@ struct WreducePass : public Pass {
 			if (module->has_processes_warn())
 				continue;
 
+			dict<std::string, RTLIL::Memory*> memory_by_name;
+			for (auto &it : module->memories)
+				memory_by_name[design->twines().str(it.first)] = it.second;
+
 			for (auto c : module->selected_cells())
 			{
 				if (c->type.in(ID($reduce_and), ID($reduce_or), ID($reduce_xor), ID($reduce_xnor), ID($reduce_bool),
@@ -603,7 +607,7 @@ struct WreducePass : public Pass {
 					}
 					if (original_a_width != GetSize(A)) {
 						log("Removed top %d bits (of %d) from port A of cell %s.%s (%s).\n",
-								original_a_width-GetSize(A), original_a_width, log_id(module), log_id(c), log_id(c->type));
+								original_a_width-GetSize(A), original_a_width, module, c, c->type.unescape());
 						c->setPort(ID::A, A);
 						c->setParam(ID::A_WIDTH, GetSize(A));
 					}
@@ -619,15 +623,15 @@ struct WreducePass : public Pass {
 					}
 					if (original_b_width != GetSize(B)) {
 						log("Removed top %d bits (of %d) from port B of cell %s.%s (%s).\n",
-								original_b_width-GetSize(B), original_b_width, log_id(module), log_id(c), log_id(c->type));
+								original_b_width-GetSize(B), original_b_width, module, c, c->type.unescape());
 						c->setPort(ID::B, B);
 						c->setParam(ID::B_WIDTH, GetSize(B));
 					}
 				}
 
 				if (!opt_memx && c->type.in(ID($memrd), ID($memrd_v2), ID($memwr), ID($memwr_v2), ID($meminit), ID($meminit_v2))) {
-					IdString memid = c->getParam(ID::MEMID).decode_string();
-					RTLIL::Memory *mem = module->memories.at(memid);
+					std::string memid = c->getParam(ID::MEMID).decode_string();
+					RTLIL::Memory *mem = memory_by_name.at(memid);
 					if (mem->start_offset >= 0) {
 						int cur_addrbits = c->getParam(ID::ABITS).as_int();
 						int max_addrbits = ceil_log2(mem->start_offset + mem->size);
@@ -635,7 +639,7 @@ struct WreducePass : public Pass {
 							log("Removed top %d address bits (of %d) from memory %s port %s.%s (%s).\n",
 									cur_addrbits-max_addrbits, cur_addrbits,
 									c->type == ID($memrd) ? "read" : c->type == ID($memwr) ? "write" : "init",
-									log_id(module), log_id(c), log_id(memid));
+									module, c, mem->name.unescape());
 							c->setParam(ID::ABITS, max_addrbits);
 							c->setPort(ID::ADDR, c->getPort(ID::ADDR).extract(0, max_addrbits));
 						}
@@ -650,4 +654,3 @@ struct WreducePass : public Pass {
 } WreducePass;
 
 PRIVATE_NAMESPACE_END
-

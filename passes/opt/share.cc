@@ -23,6 +23,7 @@
 #include "kernel/modtools.h"
 #include "kernel/utils.h"
 #include "kernel/macc.h"
+#include "kernel/newcelltypes.h"
 #include <iterator>
 
 USING_YOSYS_NAMESPACE
@@ -35,26 +36,28 @@ struct ShareWorkerConfig
 {
 	int limit;
 	size_t pattern_limit;
-	bool opt_force;
+	int sat_effort;
 	bool opt_aggressive;
 	bool opt_fast;
-	pool<RTLIL::IdString> generic_uni_ops, generic_bin_ops, generic_cbin_ops, generic_other_ops;
+	StaticCellTypes::Categories::Category generic_uni_ops, generic_bin_ops, generic_cbin_ops, generic_other_ops;
 };
 
 struct ShareWorker
 {
 	const ShareWorkerConfig config;
 	int limit;
-	pool<RTLIL::IdString> generic_ops;
+	StaticCellTypes::Categories::Category generic_ops;
 
 	RTLIL::Design *design;
 	RTLIL::Module *module;
 
-	CellTypes fwd_ct, cone_ct;
 	ModWalker modwalker;
 
 	pool<RTLIL::Cell*> cells_to_remove;
 	pool<RTLIL::Cell*> recursion_state;
+
+	SatEffortBudget sat_budget;
+	bool sat_warned = false;
 
 	SigMap topo_sigmap;
 	std::map<RTLIL::Cell*, std::set<RTLIL::Cell*, cell_ptr_cmp>, cell_ptr_cmp> topo_cell_drivers;
@@ -74,8 +77,14 @@ struct ShareWorker
 
 		queue_bits.insert(modwalker.signal_outputs.begin(), modwalker.signal_outputs.end());
 
+		for (auto wire : module->wires())
+			if (wire->get_bool_attribute(ID::keep))
+				for (auto bit : modwalker.sigmap(wire))
+					queue_bits.insert(bit);
+
+		// never share through a barrier
 		for (auto &it : module->cells_)
-			if (!fwd_ct.cell_known(it.second->type)) {
+			if (!StaticCellTypes::Compat::internals_nomem_noff(it.second->type) || it.second->type == ID($barrier)) {
 				pool<RTLIL::SigBit> &bits = modwalker.cell_inputs[it.second];
 				queue_bits.insert(bits.begin(), bits.end());
 			}
@@ -95,7 +104,7 @@ struct ShareWorker
 					queue_bits.insert(bits.begin(), bits.end());
 					visited_cells.insert(pbit.cell);
 				}
-				if (fwd_ct.cell_known(pbit.cell->type) && visited_cells.count(pbit.cell) == 0) {
+				if (StaticCellTypes::Compat::internals_nomem_noff(pbit.cell->type) && visited_cells.count(pbit.cell) == 0) {
 					pool<RTLIL::SigBit> &bits = modwalker.cell_inputs[pbit.cell];
 					terminal_bits.insert(bits.begin(), bits.end());
 					queue_bits.insert(bits.begin(), bits.end());
@@ -363,11 +372,6 @@ struct ShareWorker
 		not_a_muxed_cell:
 				continue;
 
-			if (config.opt_force) {
-				shareable_cells.insert(cell);
-				continue;
-			}
-
 			if (cell->type.in(ID($memrd), ID($memrd_v2))) {
 				if (cell->parameters.at(ID::CLK_ENABLE).as_bool())
 					continue;
@@ -388,7 +392,7 @@ struct ShareWorker
 				continue;
 			}
 
-			if (generic_ops.count(cell->type)) {
+			if (generic_ops(cell->type)) {
 				if (config.opt_aggressive)
 					shareable_cells.insert(cell);
 				continue;
@@ -412,7 +416,7 @@ struct ShareWorker
 			return true;
 		}
 
-		if (config.generic_uni_ops.count(c1->type))
+		if (config.generic_uni_ops(c1->type))
 		{
 			if (!config.opt_aggressive)
 			{
@@ -429,7 +433,7 @@ struct ShareWorker
 			return true;
 		}
 
-		if (config.generic_bin_ops.count(c1->type) || c1->type == ID($alu))
+		if (config.generic_bin_ops(c1->type) || c1->type == ID($alu))
 		{
 			if (!config.opt_aggressive)
 			{
@@ -449,7 +453,7 @@ struct ShareWorker
 			return true;
 		}
 
-		if (config.generic_cbin_ops.count(c1->type))
+		if (config.generic_cbin_ops(c1->type))
 		{
 			if (!config.opt_aggressive)
 			{
@@ -511,12 +515,12 @@ struct ShareWorker
 	{
 		log_assert(c1->type == c2->type);
 
-		if (config.generic_uni_ops.count(c1->type))
+		if (config.generic_uni_ops(c1->type))
 		{
 			if (c1->parameters.at(ID::A_SIGNED).as_bool() != c2->parameters.at(ID::A_SIGNED).as_bool())
 			{
 				RTLIL::Cell *unsigned_cell = c1->parameters.at(ID::A_SIGNED).as_bool() ? c2 : c1;
-				if (unsigned_cell->getPort(ID::A).to_sigbit_vector().back() != RTLIL::State::S0) {
+				if (GetSize(unsigned_cell->getPort(ID::A)) == 0 || unsigned_cell->getPort(ID::A).msb() != RTLIL::State::S0) {
 					unsigned_cell->parameters.at(ID::A_WIDTH) = unsigned_cell->parameters.at(ID::A_WIDTH).as_int() + 1;
 					RTLIL::SigSpec new_a = unsigned_cell->getPort(ID::A);
 					new_a.append(RTLIL::State::S0);
@@ -560,11 +564,11 @@ struct ShareWorker
 			return supercell;
 		}
 
-		if (config.generic_bin_ops.count(c1->type) || config.generic_cbin_ops.count(c1->type) || c1->type == ID($alu))
+		if (config.generic_bin_ops(c1->type) || config.generic_cbin_ops(c1->type) || c1->type == ID($alu))
 		{
 			bool modified_src_cells = false;
 
-			if (config.generic_cbin_ops.count(c1->type))
+			if (config.generic_cbin_ops(c1->type))
 			{
 				int score_unflipped = max(c1->parameters.at(ID::A_WIDTH).as_int(), c2->parameters.at(ID::A_WIDTH).as_int()) +
 						max(c1->parameters.at(ID::B_WIDTH).as_int(), c2->parameters.at(ID::B_WIDTH).as_int());
@@ -588,7 +592,7 @@ struct ShareWorker
 
 			{
 				RTLIL::Cell *unsigned_cell = c1->parameters.at(ID::A_SIGNED).as_bool() ? c2 : c1;
-				if (unsigned_cell->getPort(ID::A).to_sigbit_vector().back() != RTLIL::State::S0) {
+				if (GetSize(unsigned_cell->getPort(ID::A)) == 0 || unsigned_cell->getPort(ID::A).msb() != RTLIL::State::S0) {
 					unsigned_cell->parameters.at(ID::A_WIDTH) = unsigned_cell->parameters.at(ID::A_WIDTH).as_int() + 1;
 					RTLIL::SigSpec new_a = unsigned_cell->getPort(ID::A);
 					new_a.append(RTLIL::State::S0);
@@ -601,7 +605,7 @@ struct ShareWorker
 			if (c1->parameters.at(ID::B_SIGNED).as_bool() != c2->parameters.at(ID::B_SIGNED).as_bool())
 			{
 				RTLIL::Cell *unsigned_cell = c1->parameters.at(ID::B_SIGNED).as_bool() ? c2 : c1;
-				if (unsigned_cell->getPort(ID::B).to_sigbit_vector().back() != RTLIL::State::S0) {
+				if (GetSize(unsigned_cell->getPort(ID::B)) == 0 || unsigned_cell->getPort(ID::B).msb() != RTLIL::State::S0) {
 					unsigned_cell->parameters.at(ID::B_WIDTH) = unsigned_cell->parameters.at(ID::B_WIDTH).as_int() + 1;
 					RTLIL::SigSpec new_b = unsigned_cell->getPort(ID::B);
 					new_b.append(RTLIL::State::S0);
@@ -758,7 +762,7 @@ struct ShareWorker
 		recursion_state.insert(cell);
 
 		for (auto c : consumer_cells)
-			if (fwd_ct.cell_known(c->type)) {
+			if (StaticCellTypes::Compat::internals_nomem_noff(c->type)) {
 				const pool<RTLIL::SigBit> &bits = find_forbidden_controls(c);
 				forbidden_controls_cache[cell].insert(bits.begin(), bits.end());
 			}
@@ -790,12 +794,13 @@ struct ShareWorker
 		}
 
 		p.first = RTLIL::SigSpec();
-		p.second.bits().clear();
 
+		RTLIL::Const::Builder new_bits(p_bits.size());
 		for (auto &it : p_bits) {
 			p.first.append(it.first);
-			p.second.bits().push_back(it.second);
+			new_bits.push_back(it.second);
 		}
+		p.second = new_bits.build();
 
 		return true;
 	}
@@ -818,9 +823,9 @@ struct ShareWorker
 				auto otherval = val;
 
 				if (otherval[i] == State::S0)
-					otherval.bits()[i] = State::S1;
+					otherval.set(i, State::S1);
 				else if (otherval[i] == State::S1)
-					otherval.bits()[i] = State::S0;
+					otherval.set(i, State::S0);
 				else
 					continue;
 
@@ -829,8 +834,11 @@ struct ShareWorker
 					auto newsig = sig;
 					newsig.remove(i);
 
-					auto newval = val;
-					newval.bits().erase(newval.bits().begin() + i);
+					RTLIL::Const::Builder new_bits(val.size() - 1);
+					for (int j = 0; j < val.size(); ++j)
+						if (j != i)
+							new_bits.push_back(val[j]);
+					RTLIL::Const newval = new_bits.build();
 
 					db[newsig].insert(newval);
 					db[sig].erase(otherval);
@@ -893,7 +901,7 @@ struct ShareWorker
 				return activation_patterns_cache.at(cell);
 			}
 			for (auto &pbit : modwalker.signal_consumers[bit]) {
-				log_assert(fwd_ct.cell_known(pbit.cell->type));
+				log_assert(StaticCellTypes::Compat::internals_nomem_noff(pbit.cell->type));
 				if ((pbit.cell->type == ID($mux) || pbit.cell->type == ID($pmux)) && (pbit.port == ID::A || pbit.port == ID::B))
 					driven_data_muxes.insert(pbit.cell);
 				else
@@ -926,7 +934,8 @@ struct ShareWorker
 			if (used_in_a)
 				for (auto p : c_patterns) {
 					for (int i = 0; i < GetSize(sig_s); i++)
-						p.first.append(sig_s[i]), p.second.bits().push_back(RTLIL::State::S0);
+						p.first.append(sig_s[i]);
+					p.second.append(RTLIL::Const(RTLIL::State::S0, GetSize(sig_s)));
 					if (sort_check_activation_pattern(p))
 						if (!insert_capped(activation_patterns_cache[cell], p)) {
 							recursion_state.erase(cell);
@@ -936,7 +945,8 @@ struct ShareWorker
 
 			for (int idx : used_in_b_parts)
 				for (auto p : c_patterns) {
-					p.first.append(sig_s[idx]), p.second.bits().push_back(RTLIL::State::S1);
+					p.first.append(sig_s[idx]);
+					p.second.append(RTLIL::Const(RTLIL::State::S1));
 					if (sort_check_activation_pattern(p))
 					if (!insert_capped(activation_patterns_cache[cell], p)) {
 						recursion_state.erase(cell);
@@ -958,7 +968,7 @@ struct ShareWorker
 
 		optimize_activation_patterns(activation_patterns_cache[cell]);
 		if (activation_patterns_cache[cell].empty()) {
-			log("%sFound cell that is never activated: %s\n", indent, log_id(cell));
+			log("%sFound cell that is never activated: %s\n", indent, cell);
 			RTLIL::SigSpec cell_outputs = modwalker.cell_outputs[cell];
 			module->connect(RTLIL::SigSig(cell_outputs, RTLIL::SigSpec(RTLIL::State::Sx, cell_outputs.size())));
 			cells_to_remove.insert(cell);
@@ -989,12 +999,14 @@ struct ShareWorker
 		{
 			std::vector<RTLIL::SigBit> p_first = p.first;
 			ssc_pair_t new_p;
+			RTLIL::Const::Builder new_p_second_bits;
 
 			for (int i = 0; i < GetSize(p_first); i++)
 				if (filter_bits.count(p_first[i]) == 0) {
 					new_p.first.append(p_first[i]);
-					new_p.second.bits().push_back(p.second.at(i));
+					new_p_second_bits.push_back(p.second.at(i));
 				}
+			new_p.second = new_p_second_bits.build();
 
 			out.insert(new_p);
 		}
@@ -1121,7 +1133,7 @@ struct ShareWorker
 			for (auto &loop : toposort.loops) {
 				log("### loop ###\n");
 				for (auto &c : loop)
-					log("%s (%s)\n", log_id(c), log_id(c->type));
+					log("%s (%s)\n", c, c->type.unescape());
 			}
 
 		return found_scc;
@@ -1195,6 +1207,18 @@ struct ShareWorker
 	// Setup and run
 	// -------------
 
+	bool warn_if_budget_spent()
+	{
+		if (!sat_budget.spent())
+			return false;
+		if (!sat_warned)
+			log_warning("share: solver effort budget for module %s is exhausted, leaving the "
+					"remaining cells un-shared. Raise or clear the limit with the scratchpad "
+					"option 'share.sat_effort' (0 disables it).\n", module);
+		sat_warned = true;
+		return true;
+	}
+
 	void remove_cell(Cell *cell)
 	{
 		shareable_cells.erase(cell);
@@ -1206,24 +1230,10 @@ struct ShareWorker
 	ShareWorker(ShareWorkerConfig config, RTLIL::Design* design) :
 			config(config), design(design), modwalker(design)
 	{
-		generic_ops.insert(config.generic_uni_ops.begin(), config.generic_uni_ops.end());
-		generic_ops.insert(config.generic_bin_ops.begin(), config.generic_bin_ops.end());
-		generic_ops.insert(config.generic_cbin_ops.begin(), config.generic_cbin_ops.end());
-		generic_ops.insert(config.generic_other_ops.begin(), config.generic_other_ops.end());
-
-		fwd_ct.setup_internals();
-
-		cone_ct.setup_internals();
-		cone_ct.cell_types.erase(ID($mul));
-		cone_ct.cell_types.erase(ID($mod));
-		cone_ct.cell_types.erase(ID($div));
-		cone_ct.cell_types.erase(ID($modfloor));
-		cone_ct.cell_types.erase(ID($divfloor));
-		cone_ct.cell_types.erase(ID($pow));
-		cone_ct.cell_types.erase(ID($shl));
-		cone_ct.cell_types.erase(ID($shr));
-		cone_ct.cell_types.erase(ID($sshl));
-		cone_ct.cell_types.erase(ID($sshr));
+		generic_ops = StaticCellTypes::Categories::join(generic_ops, config.generic_uni_ops);
+		generic_ops = StaticCellTypes::Categories::join(generic_ops, config.generic_bin_ops);
+		generic_ops = StaticCellTypes::Categories::join(generic_ops, config.generic_cbin_ops);
+		generic_ops = StaticCellTypes::Categories::join(generic_ops, config.generic_other_ops);
 	}
 
 	void operator()(RTLIL::Module *module) {
@@ -1234,6 +1244,8 @@ struct ShareWorker
 	#endif
 
 		limit = config.limit;
+		sat_budget = SatEffortBudget(config.sat_effort);
+		sat_warned = false;
 		modwalker.setup(module);
 
 		cells_to_remove.clear();
@@ -1252,14 +1264,14 @@ struct ShareWorker
 			return;
 
 		log("Found %d cells in module %s that may be considered for resource sharing.\n",
-				GetSize(shareable_cells), log_id(module));
+				GetSize(shareable_cells), module);
 
-		while (!shareable_cells.empty() && config.limit != 0)
+		while (!shareable_cells.empty() && config.limit != 0 && !warn_if_budget_spent())
 		{
 			RTLIL::Cell *cell = *shareable_cells.begin();
 			shareable_cells.erase(cell);
 
-			log("  Analyzing resource sharing options for %s (%s):\n", log_id(cell), log_id(cell->type));
+			log("  Analyzing resource sharing options for %s (%s):\n", cell, cell->type.unescape());
 
 			const pool<ssc_pair_t> &cell_activation_patterns = find_cell_activation_patterns(cell, "    ");
 			RTLIL::SigSpec cell_activation_signals = bits_from_activation_patterns(cell_activation_patterns);
@@ -1285,14 +1297,17 @@ struct ShareWorker
 				continue;
 			}
 
-			log("    Found %d candidates:", GetSize(candidates));
+			std::string message = stringf("    Found %d candidates:", GetSize(candidates));
 			for (auto c : candidates)
-				log(" %s", log_id(c));
-			log("\n");
+				message += stringf(" %s", c);
+			log("%s\n", message);
 
 			for (auto other_cell : candidates)
 			{
-				log("    Analyzing resource sharing with %s (%s):\n", log_id(other_cell), log_id(other_cell->type));
+				if (warn_if_budget_spent())
+					break;
+
+				log("    Analyzing resource sharing with %s (%s):\n", other_cell, other_cell->type.unescape());
 
 				const pool<ssc_pair_t> &other_cell_activation_patterns = find_cell_activation_patterns(other_cell, "      ");
 				RTLIL::SigSpec other_cell_activation_signals = bits_from_activation_patterns(other_cell_activation_patterns);
@@ -1337,6 +1352,7 @@ struct ShareWorker
 					qcsat.max_cell_outs = 3;
 					qcsat.max_cell_count = 100;
 				}
+				int64_t cells_charged = 0;
 
 				std::set<RTLIL::SigBit> bits_queue;
 
@@ -1344,30 +1360,53 @@ struct ShareWorker
 				RTLIL::SigSpec all_ctrl_signals;
 
 				for (auto &p : filtered_cell_activation_patterns) {
-					log("      Activation pattern for cell %s: %s = %s\n", log_id(cell), log_signal(p.first), log_signal(p.second));
+					log("      Activation pattern for cell %s: %s = %s\n", cell, log_signal(p.first), log_signal(p.second));
 					cell_active.push_back(qcsat.ez->vec_eq(qcsat.importSig(p.first), qcsat.importSig(p.second)));
 					all_ctrl_signals.append(p.first);
 				}
 
 				for (auto &p : filtered_other_cell_activation_patterns) {
-					log("      Activation pattern for cell %s: %s = %s\n", log_id(other_cell), log_signal(p.first), log_signal(p.second));
+					log("      Activation pattern for cell %s: %s = %s\n", other_cell, log_signal(p.first), log_signal(p.second));
 					other_cell_active.push_back(qcsat.ez->vec_eq(qcsat.importSig(p.first), qcsat.importSig(p.second)));
 					all_ctrl_signals.append(p.first);
 				}
 				int sub1 = qcsat.ez->expression(qcsat.ez->OpOr, cell_active);
 				int sub2 = qcsat.ez->expression(qcsat.ez->OpOr, other_cell_active);
 
-				bool pattern_only_solve = qcsat.ez->solve(qcsat.ez->AND(sub1, sub2));
-				qcsat.prepare();
+				auto pattern_res = sat_budget.solve(qcsat, 0, {qcsat.ez->AND(sub1, sub2)});
+				if (pattern_res == SatEffortBudget::Result::LimitReached) {
+					warn_if_budget_spent();
+					break;
+				}
+				bool pattern_only_solve = pattern_res == SatEffortBudget::Result::Sat;
 
-				if (!qcsat.ez->solve(sub1)) {
-					log("      According to the SAT solver the cell %s is never active. Sharing is pointless, we simply remove it.\n", log_id(cell));
+				// Don't import more of the cone than the budget can still pay for
+				if (sat_budget.enabled()) {
+					int import_cap = max(int(sat_budget.remaining / SatEffortBudget::import_cell_cost), 1);
+					if (!qcsat.max_cell_count || import_cap < qcsat.max_cell_count)
+						qcsat.max_cell_count = import_cap;
+				}
+				qcsat.prepare();
+				sat_budget.charge_import(qcsat, cells_charged);
+
+				auto act_res = sat_budget.solve(qcsat, 0, {sub1});
+				if (act_res == SatEffortBudget::Result::LimitReached) {
+					warn_if_budget_spent();
+					break;
+				}
+				if (act_res == SatEffortBudget::Result::Unsat) {
+					log("      According to the SAT solver the cell %s is never active. Sharing is pointless, we simply remove it.\n", cell);
 					cells_to_remove.insert(cell);
 					break;
 				}
 
-				if (!qcsat.ez->solve(sub2)) {
-					log("      According to the SAT solver the cell %s is never active. Sharing is pointless, we simply remove it.\n", log_id(other_cell));
+				act_res = sat_budget.solve(qcsat, 0, {sub2});
+				if (act_res == SatEffortBudget::Result::LimitReached) {
+					warn_if_budget_spent();
+					break;
+				}
+				if (act_res == SatEffortBudget::Result::Unsat) {
+					log("      According to the SAT solver the cell %s is never active. Sharing is pointless, we simply remove it.\n", other_cell);
 					cells_to_remove.insert(other_cell);
 					shareable_cells.erase(other_cell);
 					continue;
@@ -1388,12 +1427,18 @@ struct ShareWorker
 					log("      Size of SAT problem: %zu cells, %d variables, %d clauses\n",
 							qcsat.imported_cells.size(), qcsat.ez->numCnfVariables(), qcsat.ez->numCnfClauses());
 
-					if (qcsat.ez->solve(sat_model, sat_model_values)) {
+					auto res = sat_budget.solve(qcsat, 0, sat_model, sat_model_values, {});
+					if (res == SatEffortBudget::Result::LimitReached) {
+						warn_if_budget_spent();
+						break;
+					}
+
+					if (res == SatEffortBudget::Result::Sat) {
 						log("      According to the SAT solver this pair of cells can not be shared.\n");
-						log("      Model from SAT solver: %s = %d'", log_signal(all_ctrl_signals), GetSize(sat_model_values));
+						std::string value;
 						for (int i = GetSize(sat_model_values)-1; i >= 0; i--)
-							log("%c", sat_model_values[i] ? '1' : '0');
-						log("\n");
+							value += sat_model_values[i] ? '1' : '0';
+						log("      Model from SAT solver: %s = %d'%s\n", log_signal(all_ctrl_signals), GetSize(sat_model_values), value);
 						continue;
 					}
 
@@ -1403,20 +1448,20 @@ struct ShareWorker
 
 					if (restrict_activation_patterns(optimized_cell_activation_patterns, optimized_other_cell_activation_patterns)) {
 						for (auto &p : optimized_cell_activation_patterns)
-							log("      Simplified activation pattern for cell %s: %s = %s\n", log_id(cell), log_signal(p.first), log_signal(p.second));
+							log("      Simplified activation pattern for cell %s: %s = %s\n", cell, log_signal(p.first), log_signal(p.second));
 
 						for (auto &p : optimized_other_cell_activation_patterns)
-							log("      Simplified activation pattern for cell %s: %s = %s\n", log_id(other_cell), log_signal(p.first), log_signal(p.second));
+							log("      Simplified activation pattern for cell %s: %s = %s\n", other_cell, log_signal(p.first), log_signal(p.second));
 					}
 				}
 
 				if (find_in_input_cone(cell, other_cell)) {
-					log("      Sharing not possible: %s is in input cone of %s.\n", log_id(other_cell), log_id(cell));
+					log("      Sharing not possible: %s is in input cone of %s.\n", other_cell, cell);
 					continue;
 				}
 
 				if (find_in_input_cone(other_cell, cell)) {
-					log("      Sharing not possible: %s is in input cone of %s.\n", log_id(cell), log_id(other_cell));
+					log("      Sharing not possible: %s is in input cone of %s.\n", cell, other_cell);
 					continue;
 				}
 
@@ -1436,14 +1481,14 @@ struct ShareWorker
 				if (cell_select_score <= other_cell_select_score) {
 					RTLIL::SigSpec act = make_cell_activation_logic(optimized_cell_activation_patterns, supercell_aux);
 					supercell = make_supercell(cell, other_cell, act, supercell_aux);
-					log("      Activation signal for %s: %s\n", log_id(cell), log_signal(act));
+					log("      Activation signal for %s: %s\n", cell, log_signal(act));
 				} else {
 					RTLIL::SigSpec act = make_cell_activation_logic(optimized_other_cell_activation_patterns, supercell_aux);
 					supercell = make_supercell(other_cell, cell, act, supercell_aux);
-					log("      Activation signal for %s: %s\n", log_id(other_cell), log_signal(act));
+					log("      Activation signal for %s: %s\n", other_cell, log_signal(act));
 				}
 
-				log("      New cell: %s (%s)\n", log_id(supercell), log_id(supercell->type));
+				log("      New cell: %s (%s)\n", supercell, supercell->type.unescape());
 
 				cells_to_remove.insert(cell);
 				cells_to_remove.insert(other_cell);
@@ -1488,9 +1533,9 @@ struct ShareWorker
 		}
 
 		if (!cells_to_remove.empty()) {
-			log("Removing %d cells in module %s:\n", GetSize(cells_to_remove), log_id(module));
+			log("Removing %d cells in module %s:\n", GetSize(cells_to_remove), module);
 			for (auto c : cells_to_remove) {
-				log("  Removing cell %s (%s).\n", log_id(c), log_id(c->type));
+				log("  Removing cell %s (%s).\n", c, c->type.unescape());
 				remove_cell(c);
 			}
 		}
@@ -1514,14 +1559,6 @@ struct SharePass : public Pass {
 		log("\n");
 		log("This pass merges shareable resources into a single resource. A SAT solver\n");
 		log("is used to determine if two resources are share-able.\n");
-		log("\n");
-		log("  -force\n");
-		log("    Per default the selection of cells that is considered for sharing is\n");
-		log("    narrowed using a list of cell types. With this option all selected\n");
-		log("    cells are considered for resource sharing.\n");
-		log("\n");
-		log("    IMPORTANT NOTE: If the -all option is used then no cells with internal\n");
-		log("    state must be selected!\n");
 		log("\n");
 		log("  -aggressive\n");
 		log("    Per default some heuristics are used to reduce the number of cells\n");
@@ -1549,58 +1586,54 @@ struct SharePass : public Pass {
 
 		config.limit = -1;
 		config.pattern_limit = design->scratchpad_get_int("share.pattern_limit", 1000);
-		config.opt_force = false;
+		config.sat_effort = design->scratchpad_get_int("share.sat_effort", 1000000000);
 		config.opt_aggressive = false;
 		config.opt_fast = false;
 
-		config.generic_uni_ops.insert(ID($not));
-		// config.generic_uni_ops.insert(ID($pos));
-		config.generic_uni_ops.insert(ID($neg));
+		config.generic_uni_ops.set_id(ID($not));
+		// config.generic_uni_ops.set_id(ID($pos));
+		config.generic_uni_ops.set_id(ID($neg));
 
-		config.generic_cbin_ops.insert(ID($and));
-		config.generic_cbin_ops.insert(ID($or));
-		config.generic_cbin_ops.insert(ID($xor));
-		config.generic_cbin_ops.insert(ID($xnor));
+		config.generic_cbin_ops.set_id(ID($and));
+		config.generic_cbin_ops.set_id(ID($or));
+		config.generic_cbin_ops.set_id(ID($xor));
+		config.generic_cbin_ops.set_id(ID($xnor));
 
-		config.generic_bin_ops.insert(ID($shl));
-		config.generic_bin_ops.insert(ID($shr));
-		config.generic_bin_ops.insert(ID($sshl));
-		config.generic_bin_ops.insert(ID($sshr));
+		config.generic_bin_ops.set_id(ID($shl));
+		config.generic_bin_ops.set_id(ID($shr));
+		config.generic_bin_ops.set_id(ID($sshl));
+		config.generic_bin_ops.set_id(ID($sshr));
 
-		config.generic_bin_ops.insert(ID($lt));
-		config.generic_bin_ops.insert(ID($le));
-		config.generic_bin_ops.insert(ID($eq));
-		config.generic_bin_ops.insert(ID($ne));
-		config.generic_bin_ops.insert(ID($eqx));
-		config.generic_bin_ops.insert(ID($nex));
-		config.generic_bin_ops.insert(ID($ge));
-		config.generic_bin_ops.insert(ID($gt));
+		config.generic_bin_ops.set_id(ID($lt));
+		config.generic_bin_ops.set_id(ID($le));
+		config.generic_bin_ops.set_id(ID($eq));
+		config.generic_bin_ops.set_id(ID($ne));
+		config.generic_bin_ops.set_id(ID($eqx));
+		config.generic_bin_ops.set_id(ID($nex));
+		config.generic_bin_ops.set_id(ID($ge));
+		config.generic_bin_ops.set_id(ID($gt));
 
-		config.generic_cbin_ops.insert(ID($add));
-		config.generic_cbin_ops.insert(ID($mul));
+		config.generic_cbin_ops.set_id(ID($add));
+		config.generic_cbin_ops.set_id(ID($mul));
 
-		config.generic_bin_ops.insert(ID($sub));
-		config.generic_bin_ops.insert(ID($div));
-		config.generic_bin_ops.insert(ID($mod));
-		config.generic_bin_ops.insert(ID($divfloor));
-		config.generic_bin_ops.insert(ID($modfloor));
-		// config.generic_bin_ops.insert(ID($pow));
+		config.generic_bin_ops.set_id(ID($sub));
+		config.generic_bin_ops.set_id(ID($div));
+		config.generic_bin_ops.set_id(ID($mod));
+		config.generic_bin_ops.set_id(ID($divfloor));
+		config.generic_bin_ops.set_id(ID($modfloor));
+		// config.generic_bin_ops.set_id(ID($pow));
 
-		config.generic_uni_ops.insert(ID($logic_not));
-		config.generic_cbin_ops.insert(ID($logic_and));
-		config.generic_cbin_ops.insert(ID($logic_or));
+		config.generic_uni_ops.set_id(ID($logic_not));
+		config.generic_cbin_ops.set_id(ID($logic_and));
+		config.generic_cbin_ops.set_id(ID($logic_or));
 
-		config.generic_other_ops.insert(ID($alu));
-		config.generic_other_ops.insert(ID($macc));
+		config.generic_other_ops.set_id(ID($alu));
+		config.generic_other_ops.set_id(ID($macc));
 
 		log_header(design, "Executing SHARE pass (SAT-based resource sharing).\n");
 
 		size_t argidx;
 		for (argidx = 1; argidx < args.size(); argidx++) {
-			if (args[argidx] == "-force") {
-				config.opt_force = true;
-				continue;
-			}
 			if (args[argidx] == "-aggressive") {
 				config.opt_aggressive = true;
 				continue;

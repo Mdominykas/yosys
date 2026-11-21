@@ -28,6 +28,19 @@ PRIVATE_NAMESPACE_BEGIN
 struct SynthAchronixPass : public ScriptPass {
   SynthAchronixPass() : ScriptPass("synth_achronix", "synthesis for Achronix Speedster22i FPGAs.") { }
 
+	void on_register() override
+	{
+		target_register.emplace("achronix", Target{
+			"Achronix Speedster22i",
+			{
+				{"", { // default
+					"",
+					{"+/achronix/speedster22i/cells_sim.v"}
+				}}
+			}
+		});
+	}
+
   void help() override
   {
     //   |---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|
@@ -51,9 +64,6 @@ struct SynthAchronixPass : public ScriptPass {
     log("    -noflatten\n");
     log("        do not flatten design before synthesis\n");
     log("\n");
-    log("    -retime\n");
-    log("        run 'abc' with '-dff -D 1' options\n");
-    log("\n");
     log("\n");
     log("The following commands are executed by this synthesis command:\n");
     help_script();
@@ -61,13 +71,12 @@ struct SynthAchronixPass : public ScriptPass {
   }
 
   string top_opt, family_opt, vout_file;
-  bool retime, flatten;
+  bool flatten;
 
   void clear_flags() override
   {
     top_opt = "-auto-top";
     vout_file = "";
-    retime = false;
     flatten = true;
   }
 
@@ -100,7 +109,7 @@ struct SynthAchronixPass : public ScriptPass {
           continue;
         }
         if (args[argidx] == "-retime") {
-          retime = true;
+          // Removed: ABC9 does not support retiming.
           continue;
         }
         break;
@@ -123,12 +132,13 @@ struct SynthAchronixPass : public ScriptPass {
     if (check_label("begin"))
       {
         run("read_verilog -sv -lib +/achronix/speedster22i/cells_sim.v");
-        run(stringf("hierarchy -check %s", help_mode ? "-top <top>" : top_opt.c_str()));
+        run(stringf("hierarchy -check %s", help_mode ? "-top <top>" : top_opt));
       }
 
     if (flatten && check_label("flatten", "(unless -noflatten)"))
       {
         run("proc");
+        run("check");
         run("flatten");
         run("tribuf -logic");
         run("deminout");
@@ -150,19 +160,17 @@ struct SynthAchronixPass : public ScriptPass {
         run("clean -purge");
         run("setundef -undriven -zero");
         run("dfflegalize -cell $_DFF_P_ x");
-        if (retime || help_mode)
-          run("abc -markgroups -dff -D 1", "(only if -retime)");
       }
 
     if (check_label("map_luts"))
       {
-        run("abc -lut 4" + string(retime ? " -dff -D 1" : ""));
+        run("abc9 -lut 4");
         run("clean");
       }
 
     if (check_label("map_cells"))
       {
-        run("iopadmap -bits -outpad $__outpad I:O -inpad $__inpad O:I");
+        run("iopadmap -bits -outpad $__outpad I:O -inpad $__inpad O:I A:top");
         run("techmap -map +/achronix/speedster22i/cells_map.v");
         // VT: not done yet run("dffinit -highlow -ff DFF q power_up");
         run("clean -purge");
@@ -180,7 +188,7 @@ struct SynthAchronixPass : public ScriptPass {
       {
         if (!vout_file.empty() || help_mode)
           run(stringf("write_verilog -nodec -attr2comment -defparam -renameprefix syn_ %s",
-                      help_mode ? "<file-name>" : vout_file.c_str()));
+                      help_mode ? "<file-name>" : vout_file));
       }
   }
 } SynthAchronixPass;

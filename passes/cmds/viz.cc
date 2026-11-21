@@ -19,6 +19,7 @@
 
 #include "kernel/yosys.h"
 #include "kernel/sigtools.h"
+#include "kernel/log_help.h"
 
 #ifndef _WIN32
 #  include <dirent.h>
@@ -222,10 +223,10 @@ struct Graph {
 	bool update()
 	{
 		if (!dirty) {
-			log("    Largest non-term group sizes: ");
+			std::string message = "    Largest non-term group sizes: ";
 			for (int i = 0; i < config.large_group_count; i++)
-				log("%d%s", max_group_sizes[i], i+1 == config.large_group_count ? ".\n" : " ");
-
+				message += stringf("%d%s", max_group_sizes[i], i+1 == config.large_group_count ? "." : " ");
+			log("%s\n", message);
 			// log("    Mean and Root-Mean-Square group sizes: %.1f and %.1f\n", mean_group_size, rms_group_size);
 
 			return false;
@@ -278,7 +279,7 @@ struct Graph {
 
 	Graph(Module *module, const VizConfig &config) : module(module), config(config)
 	{
-		log("Running 'viz -%d' for module %s:\n", config.effort, log_id(module));
+		log("Running 'viz -%d' for module %s:\n", config.effort, module);
 		log("  Phase %d: Construct initial graph\n", phase_counter++);
 
 		SigMap sigmap(module);
@@ -702,13 +703,13 @@ struct VizWorker
 
 	void update_attrs()
 	{
-		IdString vg_id("\\vg");
+		IdString vg_id = module->twines().add("\\vg");
 		for (auto c : module->cells())
 			c->attributes.erase(vg_id);
 		for (auto g : graph.nodes) {
-			for (auto name : g->names()) {
-				auto w = module->wire(name);
-				auto c = module->cell(name);
+			for (auto ref : g->names()) {
+				auto w = module->wire(ref);
+				auto c = module->cell(ref);
 				if (w) w->attributes[vg_id] = g->index;
 				if (c) c->attributes[vg_id] = g->index;
 			}
@@ -717,7 +718,7 @@ struct VizWorker
 
 	void write_dot(FILE *f)
 	{
-		fprintf(f, "digraph \"%s\" {\n", log_id(module));
+		fprintf(f, "digraph \"%s\" {\n", module->name.unescape().c_str());
 		fprintf(f, "  rankdir = LR;\n");
 
 		dict<GraphNode*, std::vector<std::vector<std::string>>> extra_lines;
@@ -733,7 +734,7 @@ struct VizWorker
 			buffer.emplace_back();
 
 			for (auto name : g->names())
-				buffer.back().push_back(log_id(name));
+				buffer.back().push_back(module->twines().unescaped_str(name));
 
 			std::sort(buffer.back().begin(), buffer.back().end());
 			std::sort(buffer.begin(), buffer.end());
@@ -781,7 +782,7 @@ struct VizWorker
 				g->names().sort();
 				std::string label; // = stringf("vg=%d\\n", g->index);
 				for (auto n : g->names())
-					label = label + (label.empty() ? "" : "\\n") + log_id(n);
+					label = label + (label.empty() ? "" : "\\n") + PooledName(module, n).unescape();
 				fprintf(f, "\tn%d [shape=rectangle,label=\"%s\"];\n", g->index, label.c_str());
 			} else {
 				std::string label = stringf("vg=%d | %d cells", g->index, GetSize(g->names()));
@@ -817,6 +818,11 @@ struct VizWorker
 
 struct VizPass : public Pass {
 	VizPass() : Pass("viz", "visualize data flow graph") { }
+	bool formatted_help() override {
+		auto *help = PrettyHelp::get_current();
+		help->set_group("passes/status");
+		return false;
+	}
 	void help() override
 	{
 		//   |---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|
@@ -892,7 +898,7 @@ struct VizPass : public Pass {
 		log_header(design, "Generating Graphviz representation of design.\n");
 		log_push();
 
-#if defined(_WIN32) || defined(YOSYS_DISABLE_SPAWN)
+#if defined(_WIN32) || !defined(YOSYS_ENABLE_SPAWN)
 		std::string format = "dot";
 		std::string prefix = "show";
 #else
@@ -976,19 +982,19 @@ struct VizPass : public Pass {
 		if (modlist.empty())
 			log_cmd_error("Nothing there to show.\n");
 
-		std::string dot_file = stringf("%s.dot", prefix.c_str());
-		std::string out_file = stringf("%s.%s", prefix.c_str(), format.empty() ? "svg" : format.c_str());
+		std::string dot_file = stringf("%s.dot", prefix);
+		std::string out_file = stringf("%s.%s", prefix, format.empty() ? "svg" : format);
 
 		if (custom_prefix)
 			yosys_output_files.insert(dot_file);
 
-		log("Writing dot description to `%s'.\n", dot_file.c_str());
+		log("Writing dot description to `%s'.\n", dot_file);
 		FILE *f = nullptr;
 		auto open_dot_file = [&]() {
 			if (f != nullptr) return;
 			f = fopen(dot_file.c_str(), "w");
 			if (f == nullptr)
-				log_cmd_error("Can't open dot file `%s' for writing.\n", dot_file.c_str());
+				log_cmd_error("Can't open dot file `%s' for writing.\n", dot_file);
 		};
 		for (auto module : modlist) {
 			VizWorker worker(module, config);
@@ -1020,16 +1026,16 @@ struct VizPass : public Pass {
 			#else
 				#define DOT_CMD "dot -T%s '%s' > '%s.new' && mv '%s.new' '%s'"
 			#endif
-			std::string cmd = stringf(DOT_CMD, format.c_str(), dot_file.c_str(), out_file.c_str(), out_file.c_str(), out_file.c_str());
+			std::string cmd = stringf(DOT_CMD, format, dot_file, out_file, out_file, out_file);
 			#undef DOT_CMD
-			log("Exec: %s\n", cmd.c_str());
-			#if !defined(YOSYS_DISABLE_SPAWN)
+			log("Exec: %s\n", cmd);
+			#if defined(YOSYS_ENABLE_SPAWN)
 				if (run_command(cmd) != 0)
 					log_cmd_error("Shell command failed!\n");
 			#endif
 		}
 
-		#if defined(YOSYS_DISABLE_SPAWN)
+		#if !defined(YOSYS_ENABLE_SPAWN)
 			log_assert(viewer_exe.empty() && !format.empty());
 		#else
 		if (!viewer_exe.empty()) {
@@ -1037,21 +1043,21 @@ struct VizPass : public Pass {
 				// system()/cmd.exe does not understand single quotes nor
 				// background tasks on Windows. So we have to pause yosys
 				// until the viewer exits.
-				std::string cmd = stringf("%s \"%s\"", viewer_exe.c_str(), out_file.c_str());
+				std::string cmd = stringf("%s \"%s\"", viewer_exe, out_file);
 			#else
-				std::string cmd = stringf("%s '%s' %s", viewer_exe.c_str(), out_file.c_str(), background.c_str());
+				std::string cmd = stringf("%s '%s' %s", viewer_exe, out_file, background);
 			#endif
-			log("Exec: %s\n", cmd.c_str());
+			log("Exec: %s\n", cmd);
 			if (run_command(cmd) != 0)
 				log_cmd_error("Shell command failed!\n");
 		} else
 		if (format.empty()) {
 			#ifdef __APPLE__
-			std::string cmd = stringf("ps -fu %d | grep -q '[ ]%s' || xdot '%s' %s", getuid(), dot_file.c_str(), dot_file.c_str(), background.c_str());
+			std::string cmd = stringf("ps -fu %d | grep -q '[ ]%s' || xdot '%s' %s", getuid(), dot_file, dot_file, background);
 			#else
-			std::string cmd = stringf("{ test -f '%s.pid' && fuser -s '%s.pid' 2> /dev/null; } || ( echo $$ >&3; exec xdot '%s'; ) 3> '%s.pid' %s", dot_file.c_str(), dot_file.c_str(), dot_file.c_str(), dot_file.c_str(), background.c_str());
+			std::string cmd = stringf("{ test -f '%s.pid' && fuser -s '%s.pid' 2> /dev/null; } || ( echo $$ >&3; exec xdot '%s'; ) 3> '%s.pid' %s", dot_file, dot_file, dot_file, dot_file, background);
 			#endif
-			log("Exec: %s\n", cmd.c_str());
+			log("Exec: %s\n", cmd);
 			if (run_command(cmd) != 0)
 				log_cmd_error("Shell command failed!\n");
 		}

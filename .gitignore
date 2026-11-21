@@ -1,7 +1,13 @@
 ## user config
 /Makefile.conf
+/Configuration.cmake
+/CMakeUserPresets.json
+
+## homebrew
+/Brewfile.lock.json
 
 ## build artifacts
+/.git-abc-submodule-hash
 # compiler intermediate files
 *.o
 *.d
@@ -10,6 +16,12 @@
 *.gcda
 *.gcno
 *.so.dSYM/
+
+## test artifacts
+**/run-test.mk
+*.err
+*.log
+*.tmp
 
 # compiler output files
 /kernel/version_*.cc
@@ -39,25 +51,30 @@
 /tests/unit/objtest/
 /tests/ystests
 /build
+/build-*
 /result
+/result-*
 /dist
 
 # pyosys
 /kernel/*.pyh
 /kernel/python_wrappers.cc
-/boost
 /ffi
+/bison
+/flex
+/ccache
 /venv
 /*.whl
 /*.egg-info
+/wheelhouse
 
 # yosysjs dependency
 /viz.js
 
 # other
-/coverage.info
+/yosys.profdata
+/coverage
 /coverage_html
-
 
 # these really belong in global gitignore since they're not specific to this project but rather to user tool choice
 # but too many people don't have a global gitignore configured:
@@ -76,3 +93,5 @@ __pycache__
 /qtcreator.creator
 /qtcreator.creator.user
 /compile_commands.json
+/.direnv
+/.envrc

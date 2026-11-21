@@ -28,6 +28,8 @@
 #  define WEXITSTATUS(x) ((x) & 0xff)
 #  define WTERMSIG(x) SIGTERM
 #  define WSTOPSIG(x) 0
+#else
+#include <sys/wait.h>
 #endif
 
 USING_YOSYS_NAMESPACE
@@ -122,18 +124,16 @@ struct BugpointPass : public Pass {
 
 	int run_yosys(RTLIL::Design *design, string runner, string yosys_cmd, string yosys_arg, string suffix, bool catch_err)
 	{
-		design->sort();
-
 		string bugpoint_file = "bugpoint-case";
 		if (suffix.size())
-			bugpoint_file += stringf(".%.8s", suffix.c_str());
+			bugpoint_file += stringf(".%.8s", suffix);
 
 		std::ofstream f(bugpoint_file + ".il");
 		RTLIL_BACKEND::dump_design(f, design, /*only_selected=*/false, /*flag_m=*/true, /*flag_n=*/false);
 		f.close();
 
-		string yosys_cmdline = stringf("%s %s -qq -L %s.log %s %s.il", runner.c_str(), yosys_cmd.c_str(), bugpoint_file.c_str(), yosys_arg.c_str(), bugpoint_file.c_str());
-		if (catch_err) yosys_cmdline += stringf(" 2>%s.err", bugpoint_file.c_str());
+		string yosys_cmdline = stringf("%s %s -qq -L %s.log %s %s.il", runner, yosys_cmd, bugpoint_file, yosys_arg, bugpoint_file);
+		if (catch_err) yosys_cmdline += stringf(" 2>%s.err", bugpoint_file);
 		auto status = run_command(yosys_cmdline);
 		// we're not processing lines, which means we're getting raw system() returns
 		if(WIFEXITED(status))
@@ -156,7 +156,7 @@ struct BugpointPass : public Pass {
 
 		string bugpoint_file = "bugpoint-case";
 		if (suffix.size())
-			bugpoint_file += stringf(".%.8s", suffix.c_str());
+			bugpoint_file += stringf(".%.8s", suffix);
 		bugpoint_file += err ? ".err" : ".log";
 
 		std::ifstream f(bugpoint_file);
@@ -176,27 +176,21 @@ struct BugpointPass : public Pass {
 		return check_logfile(grep, suffix) && check_logfile(err_grep, suffix, true);
 	}
 
-	RTLIL::Design *clean_design(RTLIL::Design *design, bool do_clean = true, bool do_delete = false)
+	std::unique_ptr<RTLIL::Design> clean_design(RTLIL::Design *design)
 	{
-		if (!do_clean)
-			return design;
-
-		RTLIL::Design *design_copy = new RTLIL::Design;
+		auto design_copy = std::make_unique<RTLIL::Design>();
 		for (auto module : design->modules())
-			design_copy->add(module->clone());
-		Pass::call(design_copy, "proc_clean -quiet");
-		Pass::call(design_copy, "clean -purge");
-
-		if (do_delete)
-			delete design;
+			module->clone(design_copy.get());
+		Pass::call(design_copy.get(), "proc_clean -quiet");
+		Pass::call(design_copy.get(), "clean -purge");
 		return design_copy;
 	}
 
-	RTLIL::Design *simplify_something(RTLIL::Design *design, int &seed, bool stage2, bool modules, bool ports, bool cells, bool connections, bool processes, bool assigns, bool updates, bool wires)
+	std::unique_ptr<RTLIL::Design> simplify_something(RTLIL::Design *design, int &seed, bool stage2, bool modules, bool ports, bool cells, bool connections, bool processes, bool assigns, bool updates, bool wires)
 	{
-		RTLIL::Design *design_copy = new RTLIL::Design;
+		auto design_copy = std::make_unique<RTLIL::Design>();
 		for (auto module : design->modules())
-			design_copy->add(module->clone());
+			module->clone(design_copy.get());
 
 		int index = 0;
 		if (modules)
@@ -212,7 +206,7 @@ struct BugpointPass : public Pass {
 
 				if (index++ == seed)
 				{
-					log_header(design, "Trying to remove module %s.\n", log_id(module));
+					log_header(design, "Trying to remove module %s.\n", module);
 					removed_module = module;
 					break;
 				}
@@ -242,7 +236,7 @@ struct BugpointPass : public Pass {
 
 					if (index++ == seed)
 					{
-						log_header(design, "Trying to remove module port %s.\n", log_id(wire));
+						log_header(design, "Trying to remove module port %s.\n", wire);
 						wire->port_input = wire->port_output = false;
 						mod->fixup_ports();
 						return design_copy;
@@ -265,7 +259,7 @@ struct BugpointPass : public Pass {
 
 					if (index++ == seed)
 					{
-						log_header(design, "Trying to remove cell %s.%s.\n", log_id(mod), log_id(cell));
+						log_header(design, "Trying to remove cell %s.%s.\n", mod, cell);
 						removed_cell = cell;
 						break;
 					}
@@ -296,7 +290,7 @@ struct BugpointPass : public Pass {
 
 						if (index++ == seed)
 						{
-							log_header(design, "Trying to remove cell port %s.%s.%s.\n", log_id(mod), log_id(cell), log_id(it.first));
+							log_header(design, "Trying to remove cell port %s.%s.%s.\n", mod, cell, PooledName(design_copy.get(), it.first).unescape());
 							RTLIL::SigSpec port_x(State::Sx, port.size());
 							cell->unsetPort(it.first);
 							cell->setPort(it.first, port_x);
@@ -305,7 +299,7 @@ struct BugpointPass : public Pass {
 
 						if (!stage2 && (cell->input(it.first) || cell->output(it.first)) && index++ == seed)
 						{
-							log_header(design, "Trying to expose cell port %s.%s.%s as module port.\n", log_id(mod), log_id(cell), log_id(it.first));
+							log_header(design, "Trying to expose cell port %s.%s.%s as module port.\n", mod, cell, PooledName(design_copy.get(), it.first).unescape());
 							RTLIL::Wire *wire = mod->addWire(NEW_ID, port.size());
 							wire->set_bool_attribute(ID($bugpoint));
 							wire->port_input = cell->input(it.first);
@@ -334,7 +328,7 @@ struct BugpointPass : public Pass {
 
 					if (index++ == seed)
 					{
-						log_header(design, "Trying to remove process %s.%s.\n", log_id(mod), log_id(process.first));
+						log_header(design, "Trying to remove process %s.%s.\n", mod, PooledName(design_copy.get(), process.first).unescape());
 						removed_process = process.second;
 						break;
 					}
@@ -363,7 +357,7 @@ struct BugpointPass : public Pass {
 						{
 							if (index++ == seed)
 							{
-								log_header(design, "Trying to remove assign %s %s in %s.%s.\n", log_signal(it->first), log_signal(it->second), log_id(mod), log_id(pr.first));
+								log_header(design, "Trying to remove assign %s %s in %s.%s.\n", log_signal(it->first), log_signal(it->second), mod, PooledName(design_copy.get(), pr.first).unescape());
 								cs->actions.erase(it);
 								return design_copy;
 							}
@@ -389,7 +383,7 @@ struct BugpointPass : public Pass {
 						{
 							if (index++ == seed)
 							{
-								log_header(design, "Trying to remove sync %s update %s %s in %s.%s.\n", log_signal(sy->signal), log_signal(it->first), log_signal(it->second), log_id(mod), log_id(pr.first));
+								log_header(design, "Trying to remove sync %s update %s %s in %s.%s.\n", log_signal(sy->signal), log_signal(it->first), log_signal(it->second), mod, PooledName(design_copy.get(), pr.first).unescape());
 								sy->actions.erase(it);
 								return design_copy;
 							}
@@ -399,13 +393,17 @@ struct BugpointPass : public Pass {
 						{
 							if (index++ == seed)
 							{
-								log_header(design, "Trying to remove sync %s memwr %s %s %s %s in %s.%s.\n", log_signal(sy->signal), log_id(it->memid), log_signal(it->address), log_signal(it->data), log_signal(it->enable), log_id(mod), log_id(pr.first));
+								log_header(design, "Trying to remove sync %s memwr %s %s %s %s in %s.%s.\n", log_signal(sy->signal), PooledName(design_copy.get(), it->memid).unescape(), log_signal(it->address), log_signal(it->data), log_signal(it->enable), mod, PooledName(design_copy.get(), pr.first).unescape());
 								sy->mem_write_actions.erase(it);
 								// Remove the bit for removed action from other actions' priority masks.
 								for (auto it2 = sy->mem_write_actions.begin(); it2 != sy->mem_write_actions.end(); ++it2) {
 									auto &mask = it2->priority_mask;
 									if (GetSize(mask) > i) {
-										mask.bits().erase(mask.bits().begin() + i);
+										RTLIL::Const::Builder new_mask_builder(GetSize(mask) - 1);
+										for (int k = 0; k < GetSize(mask); k++)
+											if (k != i)
+												new_mask_builder.push_back(mask[k]);
+										mask = new_mask_builder.build();
 									}
 								}
 								return design_copy;
@@ -433,7 +431,7 @@ struct BugpointPass : public Pass {
 
 					if (index++ == seed)
 					{
-						log_header(design, "Trying to remove wire %s.%s.\n", log_id(mod), log_id(wire));
+						log_header(design, "Trying to remove wire %s.%s.\n", mod, wire);
 						removed_wire = wire;
 						break;
 					}
@@ -444,7 +442,6 @@ struct BugpointPass : public Pass {
 				}
 			}
 		}
-		delete design_copy;
 		return nullptr;
 	}
 
@@ -469,13 +466,13 @@ struct BugpointPass : public Pass {
 			if (args[argidx] == "-script" && argidx + 1 < args.size()) {
 				if (!yosys_arg.empty())
 					log_cmd_error("A -script or -command option can be only provided once!\n");
-				yosys_arg = stringf("-s %s", args[++argidx].c_str());
+				yosys_arg = stringf("-s %s", args[++argidx]);
 				continue;
 			}
 			if (args[argidx] == "-command" && argidx + 1 < args.size()) {
 				if (!yosys_arg.empty())
 					log_cmd_error("A -script or -command option can be only provided once!\n");
-				yosys_arg = stringf("-p %s", args[++argidx].c_str());
+				yosys_arg = stringf("-p %s", args[++argidx]);
 				continue;
 			}
 			if (args[argidx] == "-grep" && argidx + 1 < args.size()) {
@@ -587,8 +584,10 @@ struct BugpointPass : public Pass {
 		if (!design->full_selection())
 			log_cmd_error("This command only operates on fully selected designs!\n");
 
-		RTLIL::Design *crashing_design = clean_design(design, clean);
-		int retval = run_yosys(crashing_design, runner, yosys_cmd, yosys_arg, suffix, check_err);
+		std::unique_ptr<RTLIL::Design> crashing_design;
+		if (clean)
+			crashing_design = clean_design(design);
+		int retval = run_yosys(crashing_design ? crashing_design.get() : design, runner, yosys_cmd, yosys_arg, suffix, check_err);
 		if (flag_expect_return && retval != expect_return_value)
 			log_cmd_error("The provided script file or command and Yosys binary returned value %d instead of expected %d on this design!\n", retval, expect_return_value);
 		if (!flag_expect_return && retval == 0)
@@ -602,19 +601,19 @@ struct BugpointPass : public Pass {
 		bool found_something = false, stage2 = false;
 		while (true)
 		{
-			if (RTLIL::Design *simplified = simplify_something(crashing_design, seed, stage2, modules, ports, cells, connections, processes, assigns, updates, wires))
+			if (auto simplified = simplify_something(crashing_design ? crashing_design.get() : design, seed, stage2, modules, ports, cells, connections, processes, assigns, updates, wires))
 			{
-				simplified = clean_design(simplified, fast, /*do_delete=*/true);
+				if (fast)
+					simplified = clean_design(simplified.get());
 
 				if (clean)
 				{
-					RTLIL::Design *testcase = clean_design(simplified);
-					retval = run_yosys(testcase, runner, yosys_cmd, yosys_arg, suffix, check_err);
-					delete testcase;
+					auto testcase = clean_design(simplified.get());
+					retval = run_yosys(testcase.get(), runner, yosys_cmd, yosys_arg, suffix, check_err);
 				}
 				else
 				{
-					retval = run_yosys(simplified, runner, yosys_cmd, yosys_arg, suffix, check_err);
+					retval = run_yosys(simplified.get(), runner, yosys_cmd, yosys_arg, suffix, check_err);
 				}
 
 				bool crashes = false;
@@ -637,14 +636,11 @@ struct BugpointPass : public Pass {
 
 				if (crashes)
 				{
-					if (crashing_design != design)
-						delete crashing_design;
-					crashing_design = simplified;
+					crashing_design = std::move(simplified);
 					found_something = true;
 				}
 				else
 				{
-					delete simplified;
 					seed++;
 				}
 			}
@@ -669,13 +665,13 @@ struct BugpointPass : public Pass {
 			}
 		}
 
-		if (crashing_design != design)
+		if (crashing_design)
 		{
 			Pass::call(design, "design -reset");
-			crashing_design = clean_design(crashing_design, clean, /*do_delete=*/true);
+			if (clean)
+				crashing_design = clean_design(crashing_design.get());
 			for (auto module : crashing_design->modules())
-				design->add(module->clone());
-			delete crashing_design;
+				module->clone(design);
 		}
 
 		log_pop();

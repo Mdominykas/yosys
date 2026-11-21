@@ -22,6 +22,29 @@
 USING_YOSYS_NAMESPACE
 PRIVATE_NAMESPACE_BEGIN
 
+static IdString publish(TwinePool &twines, IdString id) {
+	std::string name = twines.str(id);
+	if (!name.starts_with("$"))
+		return id;
+	log_debug("publishing %s\n", name);
+	IdString published = twines.add("\\" + name);
+	log_debug("published %s\n", twines.str(published));
+	return published;
+}
+
+static void publish_design(RTLIL::Design* design) {
+	auto saved_modules = design->modules_;
+	design->modules_.clear();
+	for (auto& [_, mod] : saved_modules) {
+		IdString new_name = publish(design->twines(), mod->name);
+		mod->name = new_name;
+		design->modules_[new_name] = mod;
+		for (auto* cell : mod->cells())
+			cell->type = publish(design->twines(), cell->type);
+	}
+}
+
+
 struct ChtypePass : public Pass {
 	ChtypePass() : Pass("chtype", "change type of cells in the design") { }
 	void help() override
@@ -38,29 +61,40 @@ struct ChtypePass : public Pass {
 		log("    -map <old_type> <new_type>\n");
 		log("        change cells types that match <old_type> to <new_type>\n");
 		log("\n");
+		log("    -publish_icells\n");
+		log("        change internal cells types to public types\n");
+		log("\n");
 		log("\n");
 	}
 	void execute(std::vector<std::string> args, RTLIL::Design *design) override
 	{
 		IdString set_type;
 		dict<IdString, IdString> map_types;
+		bool publish_mode = false;
 
 		size_t argidx;
 		for (argidx = 1; argidx < args.size(); argidx++)
 		{
 			if (set_type == IdString() && args[argidx] == "-set" && argidx+1 < args.size()) {
-				set_type = RTLIL::escape_id(args[++argidx]);
+				set_type = design->twines().add(RTLIL::escape_id(args[++argidx]));
 				continue;
 			}
 			if (args[argidx] == "-map" && argidx+2 < args.size()) {
-				IdString old_type = RTLIL::escape_id(args[++argidx]);
-				IdString new_type = RTLIL::escape_id(args[++argidx]);
+				IdString old_type = design->twines().add(RTLIL::escape_id(args[++argidx]));
+				IdString new_type = design->twines().add(RTLIL::escape_id(args[++argidx]));
 				map_types[old_type] = new_type;
+				continue;
+			}
+			if (args[argidx] == "-publish_icells") {
+				publish_mode = true;
 				continue;
 			}
 			break;
 		}
 		extra_args(args, argidx, design);
+
+		if (publish_mode)
+			publish_design(design);
 
 		for (auto module : design->selected_modules())
 		{

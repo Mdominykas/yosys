@@ -1,0 +1,25 @@
+yosys_gtest(kernel
+	bitpatternTest.cc
+	cellTypesTest.cc
+	designStateTest.cc
+	flattenPerfTest.cc
+	hashTest.cc
+	ioTest.cc
+	logTest.cc
+	modindexTest.cc
+	ownedIdTest.cc
+	perfHelpers.h
+	pooledNameTest.cc
+	rtlilHelpers.h
+	rtlilStringTest.cc
+	rtlilTest.cc
+	sigbitPerfTest.cc
+	sigspecExtractTest.cc
+	sigspecRemove2Test.cc
+	threadingTest.cc
+	twineHashTest.cc
+	twineSortTest.cc
+	twinePublicityTest.cc
+	COMPONENTS
+		flatten
+)

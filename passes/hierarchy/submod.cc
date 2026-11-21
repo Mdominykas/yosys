@@ -53,7 +53,7 @@ struct SubmodWorker
 		bool is_int_used, is_ext_driven, is_ext_used;
 		wire_flags_t(RTLIL::Wire* wire) : new_wire(nullptr), is_int_driven(State::S0, GetSize(wire)), is_int_used(false), is_ext_driven(false), is_ext_used(false) { }
 	};
-	std::map<RTLIL::Wire*, wire_flags_t> wire_flags;
+	dict<RTLIL::Wire*, wire_flags_t> wire_flags;
 	bool flag_found_something;
 
 	void flag_wire(RTLIL::Wire *wire, bool create, bool set_int_used, bool set_ext_driven, bool set_ext_used)
@@ -79,7 +79,7 @@ struct SubmodWorker
 				flag_wire(c.wire, create, set_int_used, set_ext_driven, set_ext_used);
 				if (set_int_driven)
 					for (int i = c.offset; i < c.offset+c.width; i++) {
-						wire_flags.at(c.wire).is_int_driven.bits()[i] = State::S1;
+						wire_flags.at(c.wire).is_int_driven.set(i, State::S1);
 						flag_found_something = true;
 					}
 			}
@@ -87,7 +87,7 @@ struct SubmodWorker
 
 	void handle_submodule(SubModule &submod)
 	{
-		log("Creating submodule %s (%s) of module %s.\n", submod.name.c_str(), submod.full_name.c_str(), module->name.c_str());
+		log("Creating submodule %s (%s) of module %s.\n", submod.name, submod.full_name, module->name);
 
 		wire_flags.clear();
 		for (RTLIL::Cell *cell : submod.cells) {
@@ -95,7 +95,7 @@ struct SubmodWorker
 				for (auto &conn : cell->connections())
 					flag_signal(conn.second, true, ct.cell_output(cell->type, conn.first), ct.cell_input(cell->type, conn.first), false, false);
 			} else {
-				log_warning("Port directions for cell %s (%s) are unknown. Assuming inout for all ports.\n", cell->name.c_str(), cell->type.c_str());
+				log_warning("Port directions for cell %s (%s) are unknown. Assuming inout for all ports.\n", cell->name, cell->type);
 				for (auto &conn : cell->connections())
 					flag_signal(conn.second, true, true, true, false, false);
 			}
@@ -111,16 +111,14 @@ struct SubmodWorker
 				for (auto &conn : cell->connections())
 					flag_signal(conn.second, false, false, false, true, true);
 				if (flag_found_something)
-					log_warning("Port directions for cell %s (%s) are unknown. Assuming inout for all ports.\n", cell->name.c_str(), cell->type.c_str());
+					log_warning("Port directions for cell %s (%s) are unknown. Assuming inout for all ports.\n", cell->name, cell->type);
 			}
 		}
 
-		RTLIL::Module *new_mod = new RTLIL::Module;
-		new_mod->name = submod.full_name;
-		design->add(new_mod);
+		RTLIL::Module *new_mod = design->addModule(submod.full_name);
 		int auto_name_counter = 1;
 
-		std::set<RTLIL::IdString> all_wire_names;
+		std::set<std::string> all_wire_names;
 		for (auto &it : wire_flags) {
 			all_wire_names.insert(it.first->name);
 		}
@@ -154,9 +152,9 @@ struct SubmodWorker
 			if (!flags.is_int_driven.is_fully_zero() && flags.is_ext_driven)
 				new_wire_port_input = true, new_wire_port_output = true;
 
-			std::string new_wire_name = wire->name.str();
+			std::string new_wire_name;
 			if (new_wire_port_input || new_wire_port_output) {
-				if (new_wire_name[0] == '$')
+				if (!wire->name.isPublic())
 					while (1) {
 						std::string next_wire_name = stringf("%s\\n%d", hidden_mode ? "$submod" : "", auto_name_counter++);
 						if (all_wire_names.count(next_wire_name) == 0) {
@@ -166,10 +164,11 @@ struct SubmodWorker
 						}
 					}
 				else if (hidden_mode)
-					new_wire_name = stringf("$submod%s", new_wire_name.c_str());
+					new_wire_name = stringf("$submod%s", wire->name.str());
 			}
 
-			RTLIL::Wire *new_wire = new_mod->addWire(new_wire_name, wire->width);
+			IdString new_wire_ref = new_wire_name.empty() ? IdString(wire->name) : IdString(design->twines().add(new_wire_name));
+			RTLIL::Wire *new_wire = new_mod->addWire(new_wire_ref, wire->width);
 			new_wire->port_input = new_wire_port_input;
 			new_wire->port_output = new_wire_port_output;
 			new_wire->start_offset = wire->start_offset;
@@ -185,20 +184,20 @@ struct SubmodWorker
 					auto it = sig[i].wire->attributes.find(ID::init);
 					if (it != sig[i].wire->attributes.end()) {
 						auto jt = new_wire->attributes.insert(std::make_pair(ID::init, Const(State::Sx, GetSize(sig)))).first;
-						jt->second.bits()[i] = it->second[sig[i].offset];
-						it->second.bits()[sig[i].offset] = State::Sx;
+						jt->second.set(i, it->second[sig[i].offset]);
+						it->second.set(sig[i].offset, State::Sx);
 					}
 				}
 			}
 
 			if (new_wire->port_input && new_wire->port_output)
-				log("  signal %s: inout %s\n", wire->name.c_str(), new_wire->name.c_str());
+				log("  signal %s: inout %s\n", wire->name, new_wire->name);
 			else if (new_wire->port_input)
-				log("  signal %s: input %s\n", wire->name.c_str(), new_wire->name.c_str());
+				log("  signal %s: input %s\n", wire->name, new_wire->name);
 			else if (new_wire->port_output)
-				log("  signal %s: output %s\n", wire->name.c_str(), new_wire->name.c_str());
+				log("  signal %s: output %s\n", wire->name, new_wire->name);
 			else
-				log("  signal %s: internal\n", wire->name.c_str());
+				log("  signal %s: internal\n", wire->name);
 
 			flags.new_wire = new_wire;
 		}
@@ -214,14 +213,15 @@ struct SubmodWorker
 						log_assert(wire_flags.count(bit.wire) > 0);
 						bit.wire = wire_flags.at(bit.wire).new_wire;
 					}
-			log("  cell %s (%s)\n", new_cell->name.c_str(), new_cell->type.c_str());
+			log("  cell %s (%s)\n", new_cell->name, new_cell->type);
 			if (!copy_mode)
 				module->remove(cell);
 		}
 		submod.cells.clear();
 
 		if (!copy_mode) {
-			RTLIL::Cell *new_cell = module->addCell(submod.full_name, submod.full_name);
+			IdString submod_type = design->twines().add(submod.full_name);
+		RTLIL::Cell *new_cell = module->addCell(submod.full_name, submod_type);
 			for (auto &it : wire_flags)
 			{
 				RTLIL::SigSpec old_sig = sigmap(it.first);
@@ -250,12 +250,12 @@ struct SubmodWorker
 			return;
 
 		if (module->processes.size() > 0) {
-			log("Skipping module %s as it contains processes (run 'proc' pass first).\n", module->name.c_str());
+			log("Skipping module %s as it contains processes (run 'proc' pass first).\n", module->name);
 			return;
 		}
 
 		if (module->memories.size() > 0) {
-			log("Skipping module %s as it contains memories (run 'memory' pass first).\n", module->name.c_str());
+			log("Skipping module %s as it contains memories (run 'memory' pass first).\n", module->name);
 			return;
 		}
 
@@ -289,9 +289,10 @@ struct SubmodWorker
 
 				if (submodules.count(submod_str) == 0) {
 					submodules[submod_str].name = submod_str;
-					submodules[submod_str].full_name = module->name.str() + "_" + submod_str;
-					while (design->module(submodules[submod_str].full_name) != nullptr ||
-							module->count_id(submodules[submod_str].full_name) != 0)
+					std::string module_name_str(module->name.str());
+					submodules[submod_str].full_name = module_name_str + "_" + submod_str;
+					while (design->module(design->twines().add(submodules[submod_str].full_name)) != nullptr ||
+							module->count_id(design->twines().add(submodules[submod_str].full_name)) != 0)
 						submodules[submod_str].full_name += "_";
 				}
 
@@ -389,10 +390,12 @@ struct SubmodPass : public Pass {
 			bool did_something = true;
 			while (did_something) {
 				did_something = false;
-				std::vector<RTLIL::IdString> queued_modules;
-				for (auto mod : design->modules())
-					if (handled_modules.count(mod->name) == 0 && design->selected_whole_module(mod->name))
-						queued_modules.push_back(mod->name);
+				std::vector<IdString> queued_modules;
+				for (auto mod : design->modules()) {
+					IdString mod_name = mod->name;
+					if (handled_modules.count(mod_name) == 0 && design->selected_whole_module(mod))
+						queued_modules.push_back(mod_name);
+				}
 				for (auto &modname : queued_modules)
 					if (design->module(modname) != nullptr) {
 						SubmodWorker worker(design, design->module(modname), copy_mode, hidden_mode);
@@ -408,7 +411,7 @@ struct SubmodPass : public Pass {
 			RTLIL::Module *module = nullptr;
 			for (auto mod : design->selected_modules()) {
 				if (module != nullptr)
-					log_cmd_error("More than one module selected: %s %s\n", module->name.c_str(), mod->name.c_str());
+					log_cmd_error("More than one module selected: %s %s\n", module->name, mod->name);
 				module = mod;
 			}
 			if (module == nullptr)

@@ -16,27 +16,27 @@ struct FunctionalDummyBackend : public Backend {
 
 		for (auto module : design->selected_modules())
 		{
-			log("Processing module `%s`.\n", module->name.c_str());
+			log("Processing module `%s`.\n", module->name);
 
 			// convert module to FunctionalIR
 			auto ir = Functional::IR::from_module(module);
-			*f << "module " << module->name.c_str() << "\n";
+			*f << "module " << module->name.str() << "\n";
 
 			// write node functions
 			for (auto node : ir)
-				*f << "  assign " << id2cstr(node.name())
+				*f << "  assign " << node.name().unescape()
 				   << " = " << node.to_string() << "\n";
 			*f << "\n";
 
 			// write outputs and next state
 			for (auto output : ir.outputs())
-				*f << " " << id2cstr(output->kind)
-				   << " " << id2cstr(output->name)
-				   << " = " << id2cstr(output->value().name()) << "\n";
+				*f << " " << output->kind.unescape()
+				   << " " << output->name.unescape()
+				   << " = " << output->value().name().unescape() << "\n";
 			for (auto state : ir.states())
-				*f << " " << id2cstr(state->kind)
-				   << " " << id2cstr(state->name)
-				   << " = " << id2cstr(state->next_value().name()) << "\n";
+				*f << " " << state->kind.unescape()
+				   << " " << state->name.unescape()
+				   << " = " << state->next_value().name().unescape() << "\n";
 		}
 	}
 } FunctionalDummyBackend;

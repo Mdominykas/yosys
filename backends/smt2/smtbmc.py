@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!@PYTHON_SHEBANG@
 #
 # yosys -- Yosys Open SYnthesis Suite
 #
@@ -18,7 +18,7 @@
 #
 
 import os, sys, getopt, re, bisect, json
-##yosys-sys-path##
+sys.path += [os.path.dirname(os.path.realpath(__file__)) + p for p in ["/share/python3", "/../share/@YOSYS_PROGRAM_PREFIX@yosys/python3"]]
 from smtio import SmtIo, SmtOpts, MkVcd
 from ywio import ReadWitness, WriteWitness, WitnessValues
 from collections import defaultdict
@@ -735,6 +735,12 @@ def ywfile_signal(sig, step, mask=None):
 
     output = []
 
+    def ywfile_signal_error(reason, detail=None):
+        msg = f"Yosys witness signal mismatch for {sig.pretty()}: {reason}"
+        if detail:
+            msg += f" ({detail})"
+        raise ValueError(msg)
+
     if sig.path in smt_wires:
         for wire in smt_wires[sig.path]:
             width, offset = wire["width"], wire["offset"]
@@ -765,6 +771,12 @@ def ywfile_signal(sig, step, mask=None):
             for mem in smt_mems[sig.memory_path]:
                 width, size, bv = mem["width"], mem["size"], mem["statebv"]
 
+                if sig.memory_addr is not None and sig.memory_addr >= size:
+                    ywfile_signal_error(
+                        "memory address out of bounds",
+                        f"address={sig.memory_addr} size={size}",
+                    )
+
                 smt_expr = smt.net_expr(topmod, f"s{step}", mem["smtpath"])
 
                 if bv:
@@ -781,18 +793,34 @@ def ywfile_signal(sig, step, mask=None):
                     smt_expr = "((_ extract %d %d) %s)" % (slice_high, sig.offset, smt_expr)
 
                 output.append((0, sig.width, smt_expr))
+        else:
+            ywfile_signal_error("memory not found in design")
 
     output.sort()
 
     output = [chunk for chunk in output if chunk[0] != chunk[1]]
 
+    if not output:
+        if sig.memory_path:
+            ywfile_signal_error("memory signal has no matching bits in design")
+        else:
+            ywfile_signal_error("signal not found in design")
+
     pos = 0
 
     for start, end, smt_expr in output:
-        assert start == pos
+        if start != pos:
+            ywfile_signal_error(
+                "signal width/offset mismatch",
+                f"expected coverage at bit {pos}",
+            )
         pos = end
 
-    assert pos == sig.width
+    if pos != sig.width:
+        ywfile_signal_error(
+            "signal width/offset mismatch",
+            f"covered {pos} of {sig.width} bits",
+        )
 
     if len(output) == 1:
         return output[0][-1]
@@ -1874,6 +1902,11 @@ elif covermode:
         else:
             smt_assert_antecedent("(|%s_t| s%d s%d)" % (topmod, step-1, step))
             smt_assert_antecedent("(not (|%s_is| s%d))" % (topmod, step))
+
+        if step < skip_steps:
+            print_msg("Skipping step %d.." % (step))
+            step += 1
+            continue
 
         while "1" in cover_mask:
             print_msg("Checking cover reachability in step %d.." % (step))

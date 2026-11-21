@@ -18,6 +18,7 @@
  */
 
 #include "kernel/yosys.h"
+#include "kernel/log_help.h"
 #include "kernel/sigtools.h"
 #include "kernel/utils.h"
 
@@ -147,7 +148,7 @@ struct AssertpmuxWorker
 
 	void run(Cell *pmux)
 	{
-		log("Adding assert for $pmux cell %s.%s.\n", log_id(module), log_id(pmux));
+		log("Adding assert for $pmux cell %s.%s.\n", module, pmux);
 
 		int swidth = pmux->getParam(ID::S_WIDTH).as_int();
 		int cntbits = ceil_log2(swidth+1);
@@ -182,6 +183,11 @@ struct AssertpmuxWorker
 
 struct AssertpmuxPass : public Pass {
 	AssertpmuxPass() : Pass("assertpmux", "adds asserts for parallel muxes") { }
+	bool formatted_help() override {
+		auto *help = PrettyHelp::get_current();
+		help->set_group("formal");
+		return false;
+	}
 	void help() override
 	{
 		//   |---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|

@@ -19,6 +19,7 @@
 
 #include "kernel/satgen.h"
 #include "kernel/ff.h"
+#include "kernel/yosys_common.h"
 
 USING_YOSYS_NAMESPACE
 
@@ -1202,7 +1203,7 @@ bool SatGen::importCell(RTLIL::Cell *cell, int timestep)
 		return true;
 	}
 
-	if (timestep > 0 && (RTLIL::builtin_ff_cell_types().count(cell->type) || cell->type == ID($anyinit)))
+	if (timestep > 0 && (cell->is_builtin_ff() || cell->type == ID($anyinit)))
 	{
 		FfData ff(nullptr, cell);
 
@@ -1213,7 +1214,7 @@ bool SatGen::importCell(RTLIL::Cell *cell, int timestep)
 		if (timestep == 1)
 		{
 			initial_state.add((*sigmap)(cell->getPort(ID::Q)));
-			if (model_undef && def_formal) {
+			if (model_undef && def_formal && cell->type == ID($anyinit)) {
 				std::vector<int> undef_q = importUndefSigSpec(cell->getPort(ID::Q), timestep);
 				ez->assume(ez->NOT(ez->vec_reduce_or(undef_q)));
 			}
@@ -1324,7 +1325,10 @@ bool SatGen::importCell(RTLIL::Cell *cell, int timestep)
 		return true;
 	}
 
-	if (cell->type.in(ID($_BUF_), ID($equiv)))
+	if (cell->type == ID($barrier) && !model_barriers)
+		return true;
+
+	if (cell->type.in(ID($_BUF_), ID($equiv), ID($barrier)))
 	{
 		std::vector<int> a = importDefSigSpec(cell->getPort(ID::A), timestep);
 		std::vector<int> y = importDefSigSpec(cell->getPort(ID::Y), timestep);
@@ -1378,7 +1382,7 @@ bool SatGen::importCell(RTLIL::Cell *cell, int timestep)
 		return true;
 	}
 
-	if (cell->type == ID($scopeinfo))
+	if (cell->type == ID($scopeinfo) || cell->type == ID($input_port))
 	{
 		return true;
 	}
@@ -1386,4 +1390,23 @@ bool SatGen::importCell(RTLIL::Cell *cell, int timestep)
 	// Unsupported internal cell types: $pow $fsm $mem*
 	// .. and all sequential cells with asynchronous inputs
 	return false;
+}
+
+namespace Yosys {
+
+void report_missing_model(bool warn_only, RTLIL::Cell* cell)
+{
+	std::string s;
+	if (cell->is_builtin_ff())
+		s = stringf("No SAT model available for async FF cell %s (%s).  Consider running `async2sync` or `clk2fflogic` first.", cell, cell->type.unescape());
+	else
+		s = stringf("No SAT model available for cell %s (%s).", cell, cell->type.unescape());
+
+	if (warn_only) {
+		log_warning_noprefix("%s\n", s);
+	} else {
+		log_error("%s\n", s);
+	}
+}
+
 }

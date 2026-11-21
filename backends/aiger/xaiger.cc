@@ -95,7 +95,7 @@ struct XAigerWriter
 		}
 
 		bit2aig_stack.push_back(bit);
-		
+
 		// NB: Cannot use iterator returned from aig_map.insert()
 		//     since this function is called recursively
 
@@ -127,6 +127,9 @@ struct XAigerWriter
 
 	XAigerWriter(Module *module, bool dff_mode) : design(module->design), module(module), sigmap(module)
 	{
+#ifndef NDEBUG
+		pool<std::pair<IdString,TimingInfo::NameBit>> seen;
+#endif
 		pool<SigBit> undriven_bits;
 		pool<SigBit> unused_bits;
 
@@ -266,9 +269,8 @@ struct XAigerWriter
 
 #ifndef NDEBUG
 					if (ys_debug(1)) {
-						static pool<std::pair<IdString,TimingInfo::NameBit>> seen;
 						if (seen.emplace(inst_module->name, i.first).second) log("%s.%s[%d] abc9_arrival = %d\n",
-								log_id(cell->type), log_id(i.first.name), offset, d);
+								cell->type.unescape(), cell->twines().unescaped_str(i.first.name), offset, d);
 					}
 #endif
 					arrival_times[rhs[offset]] = d;
@@ -285,7 +287,7 @@ struct XAigerWriter
 				auto is_input = (port_wire && port_wire->port_input) || !cell_known || cell->input(c.first);
 				auto is_output = (port_wire && port_wire->port_output) || !cell_known || cell->output(c.first);
 				if (!is_input && !is_output)
-					log_error("Connection '%s' on cell '%s' (type '%s') not recognised!\n", log_id(c.first), log_id(cell), log_id(cell->type));
+					log_error("Connection '%s' on cell '%s' (type '%s') not recognised!\n", cell->twines().unescaped_str(c.first), cell, cell->type.unescape());
 
 				if (is_input)
 					for (auto b : c.second) {
@@ -303,7 +305,7 @@ struct XAigerWriter
 					}
 			}
 
-			//log_warning("Unsupported cell type: %s (%s)\n", log_id(cell->type), log_id(cell));
+			//log_warning("Unsupported cell type: %s (%s)\n", cell->type.unescape(), cell);
 		}
 
 		dict<IdString, std::vector<IdString>> box_ports;
@@ -325,12 +327,12 @@ struct XAigerWriter
 					if (w->get_bool_attribute(ID::abc9_carry)) {
 						if (w->port_input) {
 							if (carry_in != IdString())
-								log_error("Module '%s' contains more than one 'abc9_carry' input port.\n", log_id(box_module));
+								log_error("Module '%s' contains more than one 'abc9_carry' input port.\n", box_module);
 							carry_in = port_name;
 						}
 						if (w->port_output) {
 							if (carry_out != IdString())
-								log_error("Module '%s' contains more than one 'abc9_carry' output port.\n", log_id(box_module));
+								log_error("Module '%s' contains more than one 'abc9_carry' output port.\n", box_module);
 							carry_out = port_name;
 						}
 					}
@@ -339,9 +341,9 @@ struct XAigerWriter
 				}
 
 				if (carry_in != IdString() && carry_out == IdString())
-					log_error("Module '%s' contains an 'abc9_carry' input port but no output port.\n", log_id(box_module));
+					log_error("Module '%s' contains an 'abc9_carry' input port but no output port.\n", box_module);
 				if (carry_in == IdString() && carry_out != IdString())
-					log_error("Module '%s' contains an 'abc9_carry' output port but no input port.\n", log_id(box_module));
+					log_error("Module '%s' contains an 'abc9_carry' output port but no input port.\n", box_module);
 				if (carry_in != IdString()) {
 					r.first->second.push_back(carry_in);
 					r.first->second.push_back(carry_out);
@@ -393,8 +395,8 @@ struct XAigerWriter
 
 		struct sort_by_port_id {
 			bool operator()(const RTLIL::SigBit& a, const RTLIL::SigBit& b) const {
-				return a.wire->port_id < b.wire->port_id ||
-				    (a.wire->port_id == b.wire->port_id && a.offset < b.offset);
+				return std::tie(a.wire->port_id, a.wire->name, a.offset) <
+				    std::tie(b.wire->port_id, b.wire->name, b.offset);
 			}
 		};
 		input_bits.sort(sort_by_port_id());
@@ -612,7 +614,7 @@ struct XAigerWriter
 				write_r_buffer(mergeability);
 
 				State init = init_map.at(q, State::Sx);
-				log_debug("Cell '%s' (type %s) has (* init *) value '%s'.\n", log_id(cell), log_id(cell->type), log_signal(init));
+				log_debug("Cell '%s' (type %s) has (* init *) value '%s'.\n", cell, cell->type.unescape(), log_signal(init));
 				if (init == State::S1)
 					write_s_buffer(1);
 				else if (init == State::S0)
@@ -640,10 +642,11 @@ struct XAigerWriter
 			RTLIL::Design *holes_design;
 			auto it = saved_designs.find("$abc9_holes");
 			if (it != saved_designs.end())
-				holes_design = it->second;
+				holes_design = it->second.get();
 			else
 				holes_design = nullptr;
-			RTLIL::Module *holes_module = holes_design ? holes_design->module(module->name) : nullptr;
+			RTLIL::Module *holes_module = holes_design ?
+					holes_design->module(holes_design->twines().find_from(module->twines(), module->name)) : nullptr;
 			if (holes_module) {
 				std::stringstream a_buffer;
 				XAigerWriter writer(holes_module, false /* dff_mode */);
@@ -679,25 +682,26 @@ struct XAigerWriter
 		design->scratchpad_set_int("write_xaiger.num_outputs", output_bits.size());
 	}
 
-	void write_map(std::ostream &f)
+	void write_map(std::ostream &f, bool name_mode)
 	{
 		dict<int, string> input_lines;
 		dict<int, string> output_lines;
 
 		for (auto wire : module->wires())
 		{
+			std::string sym = name_mode ? wire->name.unescape() : design->twines().ref_token(wire->name);
 			for (int i = 0; i < GetSize(wire); i++)
 			{
 				RTLIL::SigBit b(wire, i);
 				if (input_bits.count(b)) {
 					int a = aig_map.at(b);
 					log_assert((a & 1) == 0);
-					input_lines[a] += stringf("input %d %d %s\n", (a >> 1)-1, wire->start_offset+i, log_id(wire));
+					input_lines[a] += stringf("input %d %d %s\n", (a >> 1)-1, wire->start_offset+i, sym);
 				}
 
 				if (output_bits.count(b)) {
 					int o = ordered_outputs.at(b);
-					output_lines[o] += stringf("output %d %d %s\n", o - GetSize(co_bits), wire->start_offset+i, log_id(wire));
+					output_lines[o] += stringf("output %d %d %s\n", o - GetSize(co_bits), wire->start_offset+i, sym);
 				}
 			}
 		}
@@ -709,7 +713,8 @@ struct XAigerWriter
 
 		int box_count = 0;
 		for (auto cell : box_list)
-			f << stringf("box %d %d %s\n", box_count++, 0, log_id(cell->name));
+			f << stringf("box %d %d %s\n", box_count++, 0,
+					name_mode ? cell->name.unescape() : design->twines().ref_token(cell->name));
 
 		output_lines.sort();
 		for (auto &it : output_lines)
@@ -736,7 +741,13 @@ struct XAigerBackend : public Backend {
 		log("        write ASCII version of AIGER format\n");
 		log("\n");
 		log("    -map <filename>\n");
-		log("        write an extra file with port and box symbols\n");
+		log("        write an extra file with port and box symbols, as opaque name\n");
+		log("        references that 'abc_ops_reintegrate' resolves. They are only\n");
+		log("        valid within the run of yosys that wrote them.\n");
+		log("\n");
+		log("    -map-strings\n");
+		log("        write strings into the -map file instead of internal ID integers.\n");
+		log("        Not readable with read_xaiger, for debugging only.\n");
 		log("\n");
 		log("    -dff\n");
 		log("        write $_DFF_[NP]_ cells\n");
@@ -744,7 +755,7 @@ struct XAigerBackend : public Backend {
 	}
 	void execute(std::ostream *&f, std::string filename, std::vector<std::string> args, RTLIL::Design *design) override
 	{
-		bool ascii_mode = false, dff_mode = false;
+		bool ascii_mode = false, dff_mode = false, map_names_mode = false;
 		std::string map_filename;
 
 		log_header(design, "Executing XAIGER backend.\n");
@@ -760,6 +771,10 @@ struct XAigerBackend : public Backend {
 				map_filename = args[++argidx];
 				continue;
 			}
+			if (args[argidx] == "-map-strings") {
+				map_names_mode = true;
+				continue;
+			}
 			if (args[argidx] == "-dff") {
 				dff_mode = true;
 				continue;
@@ -768,18 +783,21 @@ struct XAigerBackend : public Backend {
 		}
 		extra_args(f, filename, args, argidx, !ascii_mode);
 
+		if (map_names_mode && map_filename.empty())
+			log_cmd_error("The -map-names option requires -map.\n");
+
 		Module *top_module = design->top_module();
 
 		if (top_module == nullptr)
 			log_error("Can't find top module in current design!\n");
 
 		if (!design->selected_whole_module(top_module))
-			log_cmd_error("Can't handle partially selected module %s!\n", log_id(top_module));
+			log_cmd_error("Can't handle partially selected module %s!\n", top_module);
 
 		if (!top_module->processes.empty())
-			log_error("Found unmapped processes in module %s: unmapped processes are not supported in XAIGER backend!\n", log_id(top_module));
+			log_error("Found unmapped processes in module %s: unmapped processes are not supported in XAIGER backend!\n", top_module);
 		if (!top_module->memories.empty())
-			log_error("Found unmapped memories in module %s: unmapped memories are not supported in XAIGER backend!\n", log_id(top_module));
+			log_error("Found unmapped memories in module %s: unmapped memories are not supported in XAIGER backend!\n", top_module);
 
 		XAigerWriter writer(top_module, dff_mode);
 		writer.write_aiger(*f, ascii_mode);
@@ -788,8 +806,8 @@ struct XAigerBackend : public Backend {
 			std::ofstream mapf;
 			mapf.open(map_filename.c_str(), std::ofstream::trunc);
 			if (mapf.fail())
-				log_error("Can't open file `%s' for writing: %s\n", map_filename.c_str(), strerror(errno));
-			writer.write_map(mapf);
+				log_error("Can't open file `%s' for writing: %s\n", map_filename, strerror(errno));
+			writer.write_map(mapf, map_names_mode);
 		}
 	}
 } XAigerBackend;
