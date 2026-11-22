@@ -78,12 +78,8 @@ struct AddEqualityCheck : public Pass {
 		}
 
 		for(auto mod : design->selected_modules()){
-			RTLIL::IdString l_id = IdString(l_name);
-			RTLIL::IdString r_id = IdString(r_name);
-			RTLIL::IdString out_id = IdString(out_name);
-
-			RTLIL::Wire *l_wire = mod->wire(l_id);
-			RTLIL::Wire *r_wire = mod->wire(r_id);
+			RTLIL::Wire *l_wire = mod->wire(l_name);
+			RTLIL::Wire *r_wire = mod->wire(r_name);
 
 			if(l_wire == nullptr){
 				std::string error_msg = "Left wire (" + l_name + ") does not exist";
@@ -116,17 +112,16 @@ struct AddEqualityCheck : public Pass {
 				return;
 			}
 
-			RTLIL::Wire *out_wire = mod->addWire(out_id);
+			RTLIL::Wire *out_wire = mod->addWire(out_name);
 
 			std::string eq_cell_name = RTLIL::escape_id(out_name + "_eq_constraint");
-			RTLIL::IdString eq_id = IdString(eq_cell_name);
 			if(mod->cell(eq_cell_name) != nullptr){
 				log_error("Due to name duplication can't create an equality cell");
 				return;
 			}
 
-			RTLIL::Cell *eq_cell = mod->addCell(eq_cell_name, IdString("$eq"));
-		
+			RTLIL::Cell *eq_cell = mod->addCell(eq_cell_name, ID($eq));
+
 			eq_cell->setPort(ID::A, l_wire);
 			eq_cell->setPort(ID::B, r_wire);
 			eq_cell->setPort(ID::Y, out_wire);

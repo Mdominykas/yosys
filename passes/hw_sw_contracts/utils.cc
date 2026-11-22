@@ -55,88 +55,89 @@ std::vector<std::string> split_into_parts(std::string name){
     return parts;
 }
 
-USING_YOSYS_NAMESPACE
+// Legacy code
+// USING_YOSYS_NAMESPACE
 
-// here the convention is that inputs to the predictor have a prefix inp
-IdString hardware_software_contracts::remove_input_from_wire_name(IdString wire_name){
-	std::string inp_pref = "inp_";
-	std::string name_without_inp = RTLIL::unescape_id(wire_name).substr(inp_pref.size());
-	return IdString(RTLIL::escape_id(name_without_inp));
-}
+// // here the convention is that inputs to the predictor have a prefix inp
+// IdString hardware_software_contracts::remove_input_from_wire_name(IdString wire_name){
+// 	std::string inp_pref = "inp_";
+// 	std::string name_without_inp = RTLIL::unescape_id(wire_name).substr(inp_pref.size());
+// 	return IdString(RTLIL::escape_id(name_without_inp));
+// }
 
-IdString hardware_software_contracts::add_input_to_wire_name(IdString wire_name){
-	std::string inp_pref = "inp_";
-	return RTLIL::escape_id(inp_pref + RTLIL::unescape_id(wire_name.str()));
-}
+// IdString hardware_software_contracts::add_input_to_wire_name(IdString wire_name){
+// 	std::string inp_pref = "inp_";
+// 	return RTLIL::escape_id(inp_pref + RTLIL::unescape_id(wire_name.str()));
+// }
 
-// All IdString must have already escaped with '\\'
-void hardware_software_contracts::add_predictor_to_mod(Module *mod, Module *predictor, IdString observation_in_predictor, IdString observation_in_mod, IdString applicability_in_predictor, IdString applicability_in_mod){
-	predictor->fixup_ports();
+// // All IdString must have already escaped with '\\'
+// void hardware_software_contracts::add_predictor_to_mod(Module *mod, Module *predictor, IdString observation_in_predictor, IdString observation_in_mod, IdString applicability_in_predictor, IdString applicability_in_mod){
+// 	predictor->fixup_ports();
 
-	Cell* predictor_cell = mod->addCell(mod->uniquify(RTLIL::escape_id("predictor_cell")), predictor->name);
-	vector<Wire*> input_wires;
-	for(Wire *wire : predictor->wires()){
-		if(wire->port_input){
-			input_wires.push_back(wire);
-		}
-	}
+// 	Cell* predictor_cell = mod->addCell(mod->uniquify(RTLIL::escape_id("predictor_cell")), predictor->name);
+// 	vector<Wire*> input_wires;
+// 	for(Wire *wire : predictor->wires()){
+// 		if(wire->port_input){
+// 			input_wires.push_back(wire);
+// 		}
+// 	}
 
-	// set the input wires
-	for(Wire *wire : input_wires){
-		IdString pred_input_name = wire->name;
-		IdString input_name = hardware_software_contracts::remove_input_from_wire_name(pred_input_name);
+// 	// set the input wires
+// 	for(Wire *wire : input_wires){
+// 		IdString pred_input_name = wire->name;
+// 		IdString input_name = hardware_software_contracts::remove_input_from_wire_name(pred_input_name);
 
-		predictor_cell->setPort(pred_input_name, SigSpec(mod->wire(input_name)));
-	}
+// 		predictor_cell->setPort(pred_input_name, SigSpec(mod->wire(input_name)));
+// 	}
 
-	// set the observation
-	Wire *obs = mod->addWire(observation_in_mod, predictor->wire(observation_in_predictor));
-	predictor_cell->setPort(observation_in_predictor, SigSpec(obs));
-	obs->port_output = true;
+// 	// set the observation
+// 	Wire *obs = mod->addWire(observation_in_mod, predictor->wire(observation_in_predictor));
+// 	predictor_cell->setPort(observation_in_predictor, SigSpec(obs));
+// 	obs->port_output = true;
 
-	// set the applicability
-	Wire *applicability = mod->addWire(applicability_in_mod, predictor->wire(applicability_in_predictor));
-	predictor_cell->setPort(applicability_in_predictor, applicability);
-	applicability->port_output = true;
+// 	// set the applicability
+// 	Wire *applicability = mod->addWire(applicability_in_mod, predictor->wire(applicability_in_predictor));
+// 	predictor_cell->setPort(applicability_in_predictor, applicability);
+// 	applicability->port_output = true;
 
-	mod->fixup_ports();
-}
+// 	mod->fixup_ports();
+// }
 
-void hardware_software_contracts::make_wire_input(Module *predictor, Wire *wire, IdString new_wire_name){
-	assert(wire != nullptr);
-	IdString input_wire_name = add_input_to_wire_name(new_wire_name);
-	Wire *input_wire = predictor->addWire(input_wire_name, wire);
-	std::cout << "pridedu nauja wire su pavadinimu: " << input_wire_name.str() << std::endl;
-	input_wire->port_input = true;
+// void hardware_software_contracts::make_wire_input(Module *predictor, Wire *wire, IdString new_wire_name){
+// 	assert(wire != nullptr);
+// 	IdString input_wire_name = add_input_to_wire_name(new_wire_name);
+// 	Wire *input_wire = predictor->addWire(input_wire_name, wire);
+// 	std::cout << "pridedu nauja wire su pavadinimu: " << input_wire_name.str() << std::endl;
+// 	input_wire->port_input = true;
 
-	// these are difficult to deal with, but may give some optimizations
-	assert((predictor->processes.empty()) && (predictor->memories.empty()));
+// 	// these are difficult to deal with, but may give some optimizations
+// 	assert((predictor->processes.empty()) && (predictor->memories.empty()));
 
-	for(Cell *cell : predictor->cells()){
-		for(auto [name, sigSpec] : cell->connections()){
-			vector<SigChunk> new_chunks;
-			for(auto chunk : sigSpec.chunks()){
-				if((chunk.is_wire()) && (chunk.wire->name == wire->name) && (cell->input(name))){
-					std::cout << "previous chunk wire was: " << chunk.wire->name.str() << std::endl;
-					chunk.wire = input_wire;
-				}
-				new_chunks.push_back(chunk);
-			}
-			cell->setPort(name, new_chunks);
-		}
-	}
+// 	for(Cell *cell : predictor->cells()){
+// 		for(auto [name, sigSpec] : cell->connections()){
+// 			vector<SigChunk> new_chunks;
+// 			for(auto chunk : sigSpec.chunks()){
+// 				if((chunk.is_wire()) && (chunk.wire->name == wire->name) && (cell->input(name))){
+// 					std::cout << "previous chunk wire was: " << chunk.wire->name.str() << std::endl;
+// 					chunk.wire = input_wire;
+// 				}
+// 				new_chunks.push_back(chunk);
+// 			}
+// 			cell->setPort(name, new_chunks);
+// 		}
+// 	}
 
-	// a check that the wires were really changed
-	for(Cell *cell : predictor->cells()){
-		for(auto [name, sigSpec] : cell->connections()){
-			for(auto chunk : sigSpec.chunks()){
-				if((chunk.is_wire()) && (chunk.wire->name == wire->name) && (cell->input(name))){
-					std::cout << "now chunk is called: " << chunk.wire->name.str() << std::endl;
-					assert(false);
-				}
-			}
-		}
-	}
+// 	// a check that the wires were really changed
+// 	for(Cell *cell : predictor->cells()){
+// 		for(auto [name, sigSpec] : cell->connections()){
+// 			for(auto chunk : sigSpec.chunks()){
+// 				if((chunk.is_wire()) && (chunk.wire->name == wire->name) && (cell->input(name))){
+// 					std::cout << "now chunk is called: " << chunk.wire->name.str() << std::endl;
+// 					assert(false);
+// 				}
+// 			}
+// 		}
+// 	}
 
-	predictor->fixup_ports();
-}
+// 	predictor->fixup_ports();
+// }

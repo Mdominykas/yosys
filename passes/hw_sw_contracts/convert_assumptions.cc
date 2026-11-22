@@ -4,7 +4,6 @@
 #include "kernel/json.h"
 #include "passes/hw_sw_contracts/lifting_wires.h"
 #include "passes/hw_sw_contracts/utils.h"
-#include "passes/hw_sw_contracts/configuration_file.cc"
 #include "passes/hw_sw_contracts/my_json_parser.cc"
 
 
@@ -165,7 +164,7 @@ struct ConvertAssumptions : public Pass {
     {
         if (mod->name.begins_with("$paramod")) {
             if (!mod->has_attribute(ID::hdlname))
-                log_error("Module %s has no hdlname attribute.\n", log_id(mod));
+                log_error("Module %s has no hdlname attribute.\n", mod);
             return mod->get_string_attribute(ID::hdlname);
         }
         return RTLIL::unescape_id(mod->name);
@@ -251,9 +250,9 @@ struct ConvertAssumptions : public Pass {
                 }
                 last_modules.push_back(cur_node);
                 needs_escaping.push_back((parts.size()) > 1);
-                RTLIL::IdString last_wire_name = RTLIL::escape_id(parts.back());
+                std::string last_wire_name = RTLIL::escape_id(parts.back());
                 if(cur_module->wire(last_wire_name) == nullptr){
-                    log_error("Wire named %s is not in module %s ", last_wire_name.c_str(), cur_module->name.c_str());
+                    log_error("Wire named %s is not in module %s ", last_wire_name, cur_module->name);
                 }
                 widths.push_back(cur_module->wire(last_wire_name)->width);
             }

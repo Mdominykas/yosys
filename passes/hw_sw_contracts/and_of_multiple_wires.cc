@@ -43,7 +43,7 @@ struct AndOfMultipleWires : public Pass {
         Module *mod = design->selected_modules()[0];
 
 
-        std::vector<IdString> wire_ids;
+        std::vector<std::string> wire_names;
         std::ifstream readFile(wire_file);
         int wire_cnt;
         readFile >> wire_cnt;
@@ -55,11 +55,10 @@ struct AndOfMultipleWires : public Pass {
         for(int i = 0; i < wire_cnt; i++){
             std::string cur_name;
             readFile >> cur_name;
-            wire_ids.push_back(IdString(RTLIL::escape_id(cur_name)));
+            wire_names.push_back(RTLIL::escape_id(cur_name));
         }
 
-        RTLIL::Wire *cum_and = mod->wire(wire_ids[0]);
-
+        RTLIL::Wire *cum_and = mod->wire(wire_names[0]);
 
         for(int i = 0; i < wire_cnt; i++){
 
@@ -71,12 +70,12 @@ struct AndOfMultipleWires : public Pass {
                 current_output_name = output_wire + "_partial_" + std::to_string(i);
             }
 
-            RTLIL::IdString and_cell_name = RTLIL::escape_id("cell_for_"  + current_output_name);
+            std::string and_cell_name = RTLIL::escape_id("cell_for_"  + current_output_name);
 
-            RTLIL::Cell *and_cell = mod->addCell(and_cell_name, IdString("$and"));
+            RTLIL::Cell *and_cell = mod->addCell(and_cell_name, ID($and));
 
             and_cell->setPort(ID::A, cum_and);
-			and_cell->setPort(ID::B, mod->wire(wire_ids[i]));
+			and_cell->setPort(ID::B, mod->wire(wire_names[i]));
 
             RTLIL::Wire *out_wire = mod->addWire(RTLIL::escape_id(current_output_name));
 
@@ -89,17 +88,9 @@ struct AndOfMultipleWires : public Pass {
             and_cell->setParam(ID::B_WIDTH, 1);
             and_cell->setParam(ID::Y_WIDTH, 1);
 
-
             cum_and = out_wire;
-        }
-
-        
-
-        
-
 	}
-
-
+	}
 } AndOfMultipleWires;
 
 PRIVATE_NAMESPACE_END

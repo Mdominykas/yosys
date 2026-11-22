@@ -63,30 +63,25 @@ struct AddLogicalOrWire : public Pass {
 
 
 		for(auto mod : design->selected_modules()){
-			RTLIL::IdString out_id = IdString(out_name);
-			RTLIL::IdString wire_a_id = IdString(wire_a_name);
-			RTLIL::IdString wire_b_id = IdString(wire_b_name);
-
-			RTLIL::Wire *wire_a = mod->wire(wire_a_id);
-			RTLIL::Wire *wire_b = mod->wire(wire_b_id);
+			RTLIL::Wire *wire_a = mod->wire(wire_a_name);
+			RTLIL::Wire *wire_b = mod->wire(wire_b_name);
 			if(wire_a == nullptr){
-				log_error("Input wire_a named %s not found", wire_a_id.c_str());
+				log_error("Input wire_a named %s not found", wire_a_name);
 				return;
 			}
 			if(wire_b == nullptr){
-				log_error("Input wire_b named %s not found", wire_b_id.c_str());
+				log_error("Input wire_b named %s not found", wire_b_name);
 				return;
 			}
-			if(mod->wire(out_id) != nullptr){
-				log_error("Found output wire with named %s ", out_id.c_str());
+			if (mod->wire(out_name) != nullptr) {
+				log_error("Found output wire with named %s ", out_name);
 				return;
 			}
 
 			assert(wire_a->width == 1);
 			assert(wire_b->width == 1);
 
-			RTLIL::Wire *out_wire = mod->addWire(out_id, 1);
-
+			RTLIL::Wire *out_wire = mod->addWire(out_name, 1);
 
 			std::string out_cell_name = RTLIL::escape_id(RTLIL::unescape_id(wire_a_name) + "_comparing_less_with_" + RTLIL::unescape_id(wire_b_name) + "_gives_" + RTLIL::unescape_id(out_name));
 			if(mod->cell(out_cell_name) != nullptr){
@@ -106,13 +101,8 @@ struct AddLogicalOrWire : public Pass {
 			out_cell->setParam(ID::A_WIDTH, RTLIL::Const(wire_a->width));
 			out_cell->setParam(ID::B_WIDTH, RTLIL::Const(wire_b->width));
 			out_cell->setParam(ID::Y_WIDTH, RTLIL::Const(1));
-			
-
-		}
-		
+		}	
 	}
-
-
 } AddBitwiseNegation;
 
 PRIVATE_NAMESPACE_END

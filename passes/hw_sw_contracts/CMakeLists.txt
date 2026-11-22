@@ -1,0 +1,17 @@
+yosys_pass(hw_sw_contracts
+	add_bitwise_negation.cc
+	add_equality_contraint.cc
+	add_less_or_equal_wire.cc
+	add_less_wire.cc
+	add_logical_or_wire.cc
+	and_of_multiple_wires.cc
+	convert_assumptions.cc
+	lifting_wires.cc
+	my_json_parser.cc
+	preserve_past_values.cc
+	utils.cc
+	generatable_expressions/basic_expressions.cc
+	leave_passes/addmodule.cc
+	leave_passes/show_regs_mems.cc
+	leave_passes/stuttering.cc
+)

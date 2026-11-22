@@ -62,10 +62,7 @@ struct AddBitwiseNegation : public Pass {
 
 
 		for(auto mod : design->selected_modules()){
-			RTLIL::IdString out_id = IdString(out_name);
-			RTLIL::IdString in_id = IdString(in_name);
-
-			RTLIL::Wire *in_wire = mod->wire(in_id);
+			RTLIL::Wire *in_wire = mod->wire(in_name);
 			if(in_wire == nullptr){
 				log_error("Wire with input wire name not found");
 				return;
@@ -75,8 +72,7 @@ struct AddBitwiseNegation : public Pass {
 				return;
 			}
 
-			RTLIL::Wire *out_wire = mod->addWire(out_id, in_wire->width);
-
+			RTLIL::Wire *out_wire = mod->addWire(out_name, in_wire->width);
 
 			std::string not_cell_name = RTLIL::escape_id(in_name + "_negation_to_" + out_name);
 			if(mod->cell(not_cell_name) != nullptr){

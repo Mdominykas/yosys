@@ -52,7 +52,6 @@ struct PreservePastValues : public Pass {
 		}
 
 		std::string component_name = RTLIL::escape_id(args[1]);
-		RTLIL::IdString component_id = IdString(component_name);
 
 		char *endptr;
         errno = 0;
@@ -79,25 +78,23 @@ struct PreservePastValues : public Pass {
 
 			for(int i = 0; i < number_of_cycles; i++){
 				std::string flip_flop_cell_name = RTLIL::escape_id(component_name + "_delay_cell_" + std::to_string(i + 1));
-				RTLIL::IdString ff_cell_id = IdString(flip_flop_cell_name);
-
-				if(mod->cell(ff_cell_id) != nullptr){
+				
+				if(mod->cell(flip_flop_cell_name) != nullptr){
 					log_error("Due to name duplication can't create a cell for delay");
 					return;
 				}
 
-				RTLIL::Cell *flip_flop_cell = mod->addCell(ff_cell_id, ID($ff));
-				flip_flop_cell->parameters["\\WIDTH"] = RTLIL::Const(wire_width);
+				RTLIL::Cell *flip_flop_cell = mod->addCell(flip_flop_cell_name, ID($ff));
+				flip_flop_cell->parameters[design->twines().add("\\WIDTH")] = RTLIL::Const(wire_width);
 
 				flip_flop_cell->setPort(ID::D, previous_wire);
 
 				std::string flip_flop_out_wire_name = RTLIL::escape_id(component_name + "_delayed_for_" + std::to_string(i + 1));
-				RTLIL::IdString ff_out_id = IdString(flip_flop_out_wire_name);
-				if(mod->wire(ff_out_id) != nullptr){
+				if(mod->wire(flip_flop_out_wire_name) != nullptr){
 					log_error("Due to name duplication couldn't create a wire");
 					return;
 				}
-				RTLIL::Wire *ff_out_wire = mod->addWire(ff_out_id, wire_width);
+				RTLIL::Wire *ff_out_wire = mod->addWire(flip_flop_out_wire_name, wire_width);
 
 				flip_flop_cell->setPort(ID::Q, ff_out_wire);
 

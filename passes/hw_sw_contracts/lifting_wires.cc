@@ -6,7 +6,6 @@
 #include "kernel/json.h"
 #include "libs/sha1/sha1.h"
 #include "passes/hw_sw_contracts/lifting_wires.h"
-#include "passes/hw_sw_contracts/configuration_file.cc"
 #include "passes/hw_sw_contracts/my_json_parser.cc"
 
 #include <stdlib.h>
@@ -81,8 +80,8 @@ struct LiftingWires : public Pass {
 
     RTLIL::Module *find_unique_parameterized_module(RTLIL::Design *design, const std::string &module_name)
     {
-        RTLIL::IdString wanted = RTLIL::escape_id(module_name);
-        RTLIL::IdString exact = "";
+        std::string wanted = RTLIL::escape_id(module_name);
+        RTLIL::IdString exact;
 
         pool<RTLIL::IdString> candidates;
 
@@ -103,12 +102,12 @@ struct LiftingWires : public Pass {
             if (pos_mod->has_attribute(ID::hdlname))
             {
                 std::string original_name = pos_mod->get_string_attribute(ID::hdlname);
-                if (IdString(RTLIL::escape_id(original_name)) == wanted)
+                if (RTLIL::escape_id(original_name) == wanted)
                     candidates.insert(pos_mod->name);
             }
         }
 
-        if((candidates.empty()) && (exact != "")){
+        if((candidates.empty()) && (!exact.empty())){
             candidates.insert(exact);
         }
 
@@ -119,8 +118,9 @@ struct LiftingWires : public Pass {
         if (candidates.size() != 1) {
             log("Found multiple elaborated variants of `%s':\n", module_name.c_str());
 
-            for (auto type : candidates)
-                log("    %s\n", type.c_str());
+            for (auto type : candidates){
+		        log("    %s\n", design->twines().str(type));
+	        }
 
             log_error("Module `%s' does not have a unique elaborated variant.\n", module_name.c_str());
         }
@@ -173,11 +173,11 @@ struct LiftingWires : public Pass {
 
             RTLIL::Cell *inner_cell = outer_mod->cell(RTLIL::escape_id(lifting.instance_name));
             if (inner_cell == nullptr || inner_cell->type != inner_mod->name){
-                log_error("%s has no instance %s of %s.\n", log_id(outer_mod),
-                        lifting.instance_name.c_str(), log_id(inner_mod));
+                log_error("%s has no instance %s of %s.\n", outer_mod,
+                        lifting.instance_name.c_str(), inner_mod);
             }
             
-            RTLIL::IdString port_name = RTLIL::escape_id(lifting.inner_wire);
+            RTLIL::IdString port_name = inner_cell->twines().add(RTLIL::escape_id(lifting.inner_wire));
             bool is_port = inner_wire->port_input || inner_wire->port_output;
             RTLIL::SigSpec existing;
             assert(existing.empty());
@@ -189,8 +189,8 @@ struct LiftingWires : public Pass {
                 // A connected port (input, output or inout): its value already lives in outer_mod.
                 if (!is_port || GetSize(existing) != inner_wire->width) {
                     log_error("Connection of %s on %s doesn't match the port.\nis_port = %d, GetSize(existing) = %d, inner_wire->width = %d\n",
-                        log_id(port_name),
-                        log_id(inner_cell),
+                        lifting.inner_wire,
+                        inner_cell,
                         is_port, GetSize(existing), inner_wire->width);
                 }
                 if (existing != RTLIL::SigSpec(outer_wire)) {
@@ -201,15 +201,15 @@ struct LiftingWires : public Pass {
 
             // Nothing is connected to this port on this instance, so setPort can't disconnect anything.
             if (inner_wire->port_input) {
-                log_error("Input %s of %s is not connected.\n", log_id(port_name), log_id(inner_cell));
+                log_error("Input %s of %s is not connected.\n", lifting.inner_wire, inner_cell);
             }
             if (!inner_wire->port_output) {
-                log("Modulyje %s padariau outputu: %s\n", inner_mod->name.c_str(), inner_wire->name.c_str());
+                log("Modulyje %s padariau outputu: %s\n", inner_mod, inner_wire);
                 inner_wire->port_output = true;
                 inner_mod->fixup_ports();
             }
             inner_cell->setPort(port_name, RTLIL::SigSpec(outer_wire));
-        }
+	}
     }
 
 } LiftingWires;
