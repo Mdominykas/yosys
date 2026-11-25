@@ -6,6 +6,7 @@ yosys_pass(hw_sw_contracts
 	add_logical_or_wire.cc
 	and_of_multiple_wires.cc
 	convert_assumptions.cc
+	get_reset_state.cc
 	lifting_wires.cc
 	my_json_parser.cc
 	preserve_past_values.cc
